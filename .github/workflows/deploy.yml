@@ -1,0 +1,91 @@
+name: Deploy to Cloud Run (Staging)
+
+on:
+  push:
+    branches: [develop]
+
+env:
+  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+  REGION: europe-west1
+  SERVICE_BACKEND: nd-marketing-api
+  SERVICE_WORKER:  nd-marketing-worker
+  REGISTRY: europe-west1-docker.pkg.dev
+
+jobs:
+  deploy-backend:
+    name: Deploy API to Cloud Run
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ env.REGISTRY }}
+
+      - name: Build and push API image
+        run: |
+          docker build -t $REGISTRY/$PROJECT_ID/nd-marketing/$SERVICE_BACKEND:$GITHUB_SHA \
+            --target runtime ./backend
+          docker push $REGISTRY/$PROJECT_ID/nd-marketing/$SERVICE_BACKEND:$GITHUB_SHA
+
+      - name: Deploy API to Cloud Run
+        run: |
+          gcloud run deploy $SERVICE_BACKEND \
+            --image $REGISTRY/$PROJECT_ID/nd-marketing/$SERVICE_BACKEND:$GITHUB_SHA \
+            --region $REGION \
+            --platform managed \
+            --allow-unauthenticated \
+            --set-secrets "APP_SECRET_KEY=nd-app-secret-key:latest,GEMINI_API_KEY=nd-gemini-api-key:latest,SUPABASE_SERVICE_KEY=nd-supabase-service-key:latest" \
+            --set-env-vars "APP_ENV=staging,APP_DEBUG=false" \
+            --min-instances 0 \
+            --max-instances 5 \
+            --memory 512Mi \
+            --cpu 1
+
+  deploy-worker:
+    name: Deploy Celery Worker to Cloud Run
+    runs-on: ubuntu-latest
+    needs: deploy-backend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker
+        run: gcloud auth configure-docker ${{ env.REGISTRY }}
+
+      - name: Build and push Worker image
+        run: |
+          docker build -t $REGISTRY/$PROJECT_ID/nd-marketing/$SERVICE_WORKER:$GITHUB_SHA \
+            --target runtime ./backend
+          docker push $REGISTRY/$PROJECT_ID/nd-marketing/$SERVICE_WORKER:$GITHUB_SHA
+
+      - name: Deploy Worker to Cloud Run (jobs / always-on)
+        run: |
+          gcloud run deploy $SERVICE_WORKER \
+            --image $REGISTRY/$PROJECT_ID/nd-marketing/$SERVICE_WORKER:$GITHUB_SHA \
+            --region $REGION \
+            --platform managed \
+            --no-allow-unauthenticated \
+            --set-secrets "GEMINI_API_KEY=nd-gemini-api-key:latest,SUPABASE_SERVICE_KEY=nd-supabase-service-key:latest,CELERY_BROKER_URL=nd-redis-url:latest" \
+            --set-env-vars "APP_ENV=staging" \
+            --command "celery,-A,app.workers.celery_app,worker,--loglevel=info,-Q,default\\,llm\\,exports,--concurrency=2" \
+            --min-instances 1 \
+            --max-instances 3 \
+            --memory 1Gi \
+            --cpu 1

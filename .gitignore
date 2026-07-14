@@ -1,0 +1,29 @@
+# Node
+node_modules/
+dist/
+
+# Python
+venv/
+__pycache__/
+*.pyc
+
+# VS Code
+.vscode/
+
+# Env
+.env
+*.env
+backend/firebase-key.json
+firebase-key.json
+service-account*.json
+backend/marketgen-ai-*.json
+
+# Logs
+*.log
+
+.vercel
+
+# Credenciales de Firebase / cuentas de servicio
+*firebase-adminsdk*.json
+*-firebase-adminsdk-*.json
+serviceAccountKey.json
