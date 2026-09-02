@@ -1,0 +1,114 @@
+# ── Development docker-compose ────────────────────────────────────────────────
+# Usage:
+#   docker-compose up                # start all services
+#   docker-compose up --build api    # rebuild and restart only the API
+#   docker-compose logs -f worker    # tail Celery worker logs
+
+services:
+
+  # ── API ─────────────────────────────────────────────────────────────────────
+  api:
+    build:
+      context: ./backend
+      target: runtime
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./backend/.env
+    environment:
+      - APP_ENV=development
+      - APP_DEBUG=true
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+    volumes:
+      - ./backend:/app            # hot-reload for development
+    depends_on:
+      - redis
+    command: >
+      uvicorn app.main:app
+      --host 0.0.0.0
+      --port 8000
+      --reload
+
+  # ── Celery Worker ────────────────────────────────────────────────────────────
+  worker:
+    build:
+      context: ./backend
+      target: runtime
+    env_file:
+      - ./backend/.env
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+    volumes:
+      - ./backend:/app
+    depends_on:
+      - redis
+    command: >
+      celery -A app.workers.celery_app worker
+      --loglevel=info
+      -Q default,llm,exports
+      --concurrency=2
+
+  # ── Flower (Celery monitoring) ───────────────────────────────────────────────
+  flower:
+    build:
+      context: ./backend
+      target: runtime
+    ports:
+      - "5555:5555"
+    env_file:
+      - ./backend/.env
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+    depends_on:
+      - redis
+    command: >
+      celery -A app.workers.celery_app flower
+      --port=5555
+
+  # ── Redis ────────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --save 60 1 --loglevel warning
+
+  # ── Keycloak ─────────────────────────────────────────────────────────────────
+  keycloak:
+    image: quay.io/keycloak/keycloak:24.0
+    ports:
+      - "8080:8080"
+    environment:
+      - KEYCLOAK_ADMIN=admin
+      - KEYCLOAK_ADMIN_PASSWORD=admin
+    command: start-dev
+    volumes:
+      - keycloak_data:/opt/keycloak/data
+
+  # ── Frontend (dev server) ────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    ports:
+      - "5173:5173"
+    environment:
+      - VITE_API_URL=http://127.0.0.1:8000/api/v1
+      - VITE_KEYCLOAK_URL=http://localhost:8080
+      - VITE_KEYCLOAK_REALM=nd-marketing
+      - VITE_KEYCLOAK_CLIENT_ID=nd-frontend
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules          # prevent overwriting node_modules
+    depends_on:
+      - api
+      - keycloak
+
+volumes:
+  redis_data:
+  keycloak_data:

@@ -1,0 +1,1 @@
+"""Shared document rendering helpers."""

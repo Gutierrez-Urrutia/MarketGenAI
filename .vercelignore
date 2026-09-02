@@ -1,0 +1,14 @@
+node_modules
+frontend/node_modules
+frontend/dist
+backend/.pytest_cache
+.pytest_cache
+__pycache__
+*.pyc
+backend/generated_files
+backend/firebase-key.json
+backend/marketgen-ai-*.json
+firebase-key.json
+service-account*.json
+.env
+*.env

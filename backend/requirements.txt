@@ -1,0 +1,56 @@
+# ── Web Framework ─────────────────────────────────────────────────────────────
+fastapi==0.115.5
+uvicorn[standard]==0.32.1
+python-multipart==0.0.12
+slowapi==0.1.10
+
+# ── Config & Env ──────────────────────────────────────────────────────────────
+pydantic==2.10.2
+email-validator
+pydantic-settings==2.6.1
+python-dotenv==1.0.1
+
+# ── Database ──────────────────────────────────────────────────────────────────
+sqlalchemy==2.0.36
+psycopg2-binary==2.9.10
+
+# ── Authentication (Keycloak JWT) ─────────────────────────────────────────────
+python-jose[cryptography]==3.3.0
+httpx==0.27.2
+
+# ── Firestore ─────────────────────────────────────────────────────────────────
+google-cloud-firestore==2.19.0
+google-auth==2.36.0
+
+# ── LLM ───────────────────────────────────────────────────────────────────────
+openai==2.38.0
+
+# ── Supabase Storage ──────────────────────────────────────────────────────────
+supabase==2.10.0
+storage3==0.9.0
+
+# ── Celery + Redis ────────────────────────────────────────────────────────────
+celery[redis]==5.4.0
+redis==5.2.0
+flower==2.0.1
+
+# ── Document generation ───────────────────────────────────────────────────────
+python-docx==1.1.2
+beautifulsoup4==4.14.3
+reportlab==4.2.5
+pypdf==5.1.0
+weasyprint==62.3
+jinja2==3.1.4
+openpyxl==3.1.5
+
+# ── Utils ─────────────────────────────────────────────────────────────────────
+python-slugify==8.0.4
+Pillow==11.0.0
+aiofiles==24.1.0
+
+# ── Testing ───────────────────────────────────────────────────────────────────
+pytest==8.3.3
+pytest-asyncio==0.24.0
+anyio[trio]==4.6.2
+httpx==0.27.2
+
