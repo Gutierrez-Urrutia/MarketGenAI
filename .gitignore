@@ -1,29 +1,89 @@
-# Node
-node_modules/
-dist/
-
-# Python
+# =============================================================================
+# Python & Virtual Environments (¡Causa de miles de archivos no deseados!)
+# =============================================================================
+.venv/
 venv/
-__pycache__/
+ENV/
+env/
+env.bak/
+venv.bak/
+*/.venv/
+*/venv/
+*/env/
 *.pyc
+*.pyo
+*.pyd
+__pycache__/
+*/__pycache__/
+*/*/__pycache__/
+.pytest_cache/
+*/.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
 
-# VS Code
-.vscode/
+# =============================================================================
+# Node & Frontend Dependencies & Builds
+# =============================================================================
+node_modules/
+*/node_modules/
+*/*/node_modules/
+dist/
+*/dist/
+build/
+*/build/
+.npm/
+.eslintcache
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
 
-# Env
+# =============================================================================
+# Environment Variables & Secrets (CRÍTICO: Nunca subir a Git)
+# =============================================================================
 .env
+.env.*
+!.env.example
 *.env
-backend/firebase-key.json
-firebase-key.json
-service-account*.json
-backend/marketgen-ai-*.json
+*/.env
+*/.env.*
+!*/.env.example
 
-# Logs
-*.log
-
-.vercel
-
-# Credenciales de Firebase / cuentas de servicio
-*firebase-adminsdk*.json
-*-firebase-adminsdk-*.json
+# =============================================================================
+# Firebase & Cloud Credentials (CRÍTICO: Nunca subir a Git)
+# =============================================================================
+*.json.secret
+*service-account*.json
+*-adminsdk-*.json
 serviceAccountKey.json
+firebase-key.json
+backend/service-account.json
+backend/firebase-key.json
+*/service-account.json
+
+# =============================================================================
+# Vercel & Deployment
+# =============================================================================
+.vercel
+*/.vercel
+
+# =============================================================================
+# IDEs & System Files
+# =============================================================================
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# =============================================================================
+# Generated Application Files
+# =============================================================================
+backend/generated_files/*
+!backend/generated_files/.gitkeep
+generated_files/*
+*.log

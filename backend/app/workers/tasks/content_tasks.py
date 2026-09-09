@@ -264,7 +264,7 @@ CONTENT:
 """,
                     system_prompt="You are a professional translator. Preserve HTML tags exactly and return only translated HTML.",
                     temperature=0.2,
-                    timeout=settings.llm_default_timeout_seconds,
+                    timeout=None,
                 ))
 
                 if save_as == "overwrite":

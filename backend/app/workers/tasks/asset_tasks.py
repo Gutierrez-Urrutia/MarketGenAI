@@ -218,7 +218,7 @@ async def generate_one_pager_now(
     html_content = await deepseek_service.generate_text(
         prompt,
         system_prompt="You are an expert marketing copywriter specializing in concise, persuasive one-page sales collateral. Return clean HTML only.",
-        timeout=settings.llm_long_timeout_seconds,
+        timeout=None,
         **extra_kwargs,
     )
     html_content = book_ai_service._clean_fenced_text(html_content)
@@ -446,7 +446,7 @@ async def generate_infographic_now(
     raw = await deepseek_service.generate_text(
         prompt,
         system_prompt="You are an expert data storyteller who converts book content into structured infographic data. Return strict JSON only, no markdown, no commentary.",
-        timeout=settings.llm_long_timeout_seconds,
+        timeout=None,
         **extra_kwargs,
     )
     infographic_data = book_ai_service._safe_json(raw)

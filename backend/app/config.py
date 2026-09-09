@@ -49,9 +49,12 @@ class Settings(BaseSettings):
 
     deepseek_api_key: str = ""
     deepseek_base_url: str = "https://api.deepseek.com"
-    llm_short_timeout_seconds: int = 20
-    llm_default_timeout_seconds: int = 45
-    llm_long_timeout_seconds: int = 90
+    deepseek_model: str = "deepseek-v4-flash"
+    gemini_api_key: str = ""
+    gemini_default_model: str = "gemini-3.6-flash"
+    llm_short_timeout_seconds: int | None = None
+    llm_default_timeout_seconds: int | None = None
+    llm_long_timeout_seconds: int | None = None
 
     google_oauth_client_id: str = ""
     google_oauth_client_secret: str = ""

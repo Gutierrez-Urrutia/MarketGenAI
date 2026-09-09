@@ -1,10 +1,9 @@
 """Authentication router backed by Firestore users."""
-from __future__ import annotations
 
 import secrets
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status, Body
 from fastapi.responses import Response
 from google.auth.exceptions import DefaultCredentialsError
 
@@ -116,13 +115,14 @@ def _local_current_user_info(current_user: CurrentUser) -> UserInfo:
         id=current_user.sub,
         email=current_user.email or settings.local_dev_auth_email.lower(),
         name=current_user.name or settings.local_dev_auth_name,
-        role=", ".join(roles),
+        role=roles[0] if roles else "admin",
+        roles=roles,
     )
 
 
 @router.post("/register", response_model=LoginResponse, status_code=status.HTTP_201_CREATED)
 @limiter.limit("5/minute")
-async def register(request: Request, body: RegisterRequest) -> LoginResponse:
+async def register(request: Request, body: RegisterRequest = Body(...)) -> LoginResponse:
     email = body.email.lower()
     existing = await users_repo.get_by_email(email)
     if existing:
@@ -145,13 +145,14 @@ async def register(request: Request, body: RegisterRequest) -> LoginResponse:
 
 @router.post("/login", response_model=LoginResponse, status_code=status.HTTP_200_OK)
 @limiter.limit("10/minute")
-async def login(request: Request, body: LoginRequest) -> LoginResponse:
+async def login(request: Request, body: LoginRequest = Body(...)) -> LoginResponse:
+    local_user = _authenticate_local_dev_user(body.usernameOrEmail, body.password)
+    if local_user:
+        return await _issue_local_dev_session(local_user)
+
     try:
         user = await users_repo.get_by_email(body.usernameOrEmail.lower())
     except DefaultCredentialsError as exc:
-        local_user = _authenticate_local_dev_user(body.usernameOrEmail, body.password)
-        if local_user:
-            return await _issue_local_dev_session(local_user)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail={
@@ -290,6 +291,9 @@ async def reset_password(body: ResetPasswordRequest) -> MessageResponse:
 
 @router.get("/me", response_model=UserInfo, status_code=status.HTTP_200_OK)
 async def me(current_user: CurrentUser = Depends(get_current_user)) -> UserInfo:
+    if _local_dev_auth_is_enabled() and current_user.sub == "local-dev-admin":
+        return _local_current_user_info(current_user)
+
     try:
         user = await users_repo.get(current_user.sub)
     except DefaultCredentialsError as exc:
@@ -303,6 +307,8 @@ async def me(current_user: CurrentUser = Depends(get_current_user)) -> UserInfo:
             },
         ) from exc
     if not user:
+        if _local_dev_auth_is_enabled():
+            return _local_current_user_info(current_user)
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")
     return UserInfo(**public_user(user))
 

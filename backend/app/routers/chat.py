@@ -77,7 +77,7 @@ async def send_chat_message(
         body.message,
         system_prompt=SYSTEM_PROMPT,
         temperature=0.7,
-        timeout=settings.llm_default_timeout_seconds,
+        timeout=None,
         messages=[*history, {"role": "user", "content": body.message}],
     )
 

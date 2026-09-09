@@ -95,7 +95,7 @@ async def _generate_campaign_content(campaign: dict, channels: list[str]) -> dic
         last_response = await deepseek_service.generate_text(
             _campaign_posts_prompt(campaign, channels, retry=attempt == 1),
             system_prompt="You are an expert B2B marketing copywriter.",
-            timeout=settings.llm_short_timeout_seconds,
+            timeout=None,
         )
         try:
             return {"posts": _parse_campaign_posts(last_response, channels)}

@@ -5595,7 +5595,7 @@ function ContentLibraryPage({ navigationState = {}, onNavigate = () => {}, campa
     setContentAiStep(2);
     setContentGenerating(true);
     try {
-      const response = await api.post(`/content/generate/${contentTypeEndpoint[createType]}`, buildAiContentPayload(), { timeout: 90000 });
+      const response = await api.post(`/content/generate/${contentTypeEndpoint[createType]}`, buildAiContentPayload(), { timeout: 0 });
       setGeneratedContentItem(normalizeGeneratedContentItem(response.data));
       setContentAiStep(3);
     } catch (error) {
@@ -9793,7 +9793,21 @@ function ContentGeneratorPage() {
   };
 
   const openSavedBook = async (bookId) => {
-    await loadBook(bookId);
+    const loaded = await loadBook(bookId);
+    if (loaded) {
+      setForm({
+        title: loaded.title || "",
+        description: loaded.description || "",
+        keywords: Array.isArray(loaded.keywords) ? loaded.keywords.join(", ") : (loaded.keywords || ""),
+        chapterCount: (loaded.chapters && loaded.chapters.length) || 5,
+      });
+      if (loaded.chapters && loaded.chapters.length > 0) {
+        const hasContent = loaded.chapters.some((c) => c.content?.trim());
+        setActiveBookStep(hasContent ? 3 : 2);
+      } else {
+        setActiveBookStep(1);
+      }
+    }
     setBookView("creating");
   };
 
@@ -9903,15 +9917,9 @@ function ContentGeneratorPage() {
             return cleaned;
           });
           if (kind === 'chapters') setActiveBookStep(2);
-            if (kind === 'content') {
-              setActiveBookStep(3);
-              // after content is generated, trigger marketing assets generation
-              try {
-                await exportBook();
-              } catch (e) {
-                console.error('[BookConcepts] export after content error', e);
-              }
-            }
+          if (kind === 'content') {
+            setActiveBookStep(3);
+          }
           if (kind === 'export') {
             setActiveBookStep(4);
             await loadAssets();
@@ -9962,17 +9970,8 @@ function ContentGeneratorPage() {
         "chapters",
         { bookId: data.id },
       );
-      const latestBook = await loadBook(data.id);
-      if (latestBook.chapters.length > 0) {
-        await startJob(
-          t("books.jobs.content"),
-          `/books/${data.id}/content/generate`,
-          { contentType: "long", style: "professional", language: bookLanguage, sync: true },
-          "content",
-          { bookId: data.id },
-        );
-      }
       await loadBook(data.id);
+      setActiveBookStep(2);
     } catch (error) {
       if (![401, 403].includes(error.response?.status)) throw error;
       const demo = demoChapters();
@@ -9987,7 +9986,7 @@ function ContentGeneratorPage() {
       setEditableChapters(demo.map((chapter) => ({ id: chapter.id, title: chapter.title, description: chapter.description || "" })));
       setContentDrafts(Object.fromEntries(demo.map((chapter) => [chapter.id, stripHtml(`<h2>${chapter.title}</h2><p>${chapter.description}</p>`)])));
       setJob(null);
-      setActiveBookStep(3);
+      setActiveBookStep(2);
     } finally {
       setLoading(false);
     }
@@ -9998,7 +9997,7 @@ function ContentGeneratorPage() {
     if (!targetBookId) return null;
     setLoading(true);
     try {
-      const { data } = await api.post(endpoint, payload, { suppressPermissionToast: true, timeout: 180000 });
+      const { data } = await api.post(endpoint, payload, { suppressPermissionToast: true, timeout: 0 });
       const jobId = data.job_id || data.jobId || data.id;
       setJobTitle(title);
       setJob({ id: jobId, status: data.status || "pending", progress: 0, _kind: jobKind });
@@ -10018,13 +10017,7 @@ function ContentGeneratorPage() {
               Object.entries(prev).forEach(([k, v]) => { cleaned[k] = stripHtml(v); });
               return cleaned;
             });
-              setActiveBookStep(3);
-              // trigger marketing assets generation after content completes (sync path)
-              try {
-                await exportBook();
-              } catch (e) {
-                console.error('[BookConcepts] export after content (sync) error', e);
-              }
+            setActiveBookStep(3);
           }
           if (jobKind === 'export') {
             setActiveBookStep(4);
@@ -10085,13 +10078,18 @@ function ContentGeneratorPage() {
         setLoading(false);
       }
     }
-    return startJob(
+    const result = await startJob(
       t("books.jobs.chapters"),
       `/books/${targetBook.id}/chapters/generate`,
       { chapterCount: Number(form.chapterCount) || 5, language: bookLanguage, sync: true },
       "chapters",
       { bookId: targetBook.id },
     );
+    if (targetBook?.id && !String(targetBook.id).startsWith("demo-")) {
+      try { await loadBook(targetBook.id); } catch (_) {}
+    }
+    setActiveBookStep(2);
+    return result;
   };
 
   const generateContent = () => startJob(
@@ -10165,7 +10163,7 @@ function ContentGeneratorPage() {
           ...(asset.forceRegenerate ? { forceRegenerate: true } : {}),
           variationInstruction: ASSET_REGENERATION_VARIATION_INSTRUCTION,
         },
-        { suppressPermissionToast: true, timeout: 180000 },
+        { suppressPermissionToast: true, timeout: 0 },
       )),
     );
 
@@ -10190,7 +10188,7 @@ function ContentGeneratorPage() {
     }
   };
 
-  const saveChapterChanges = async () => {
+  const saveChapterChanges = async (stayOnStep = true) => {
     if (!book?.id) return;
     setLoading(true);
     try {
@@ -10205,7 +10203,7 @@ function ContentGeneratorPage() {
           };
         });
         applyBookChapters(nextChapters);
-        setActiveBookStep(2);
+        if (stayOnStep) setActiveBookStep(2);
         return;
       }
 
@@ -10267,7 +10265,7 @@ function ContentGeneratorPage() {
       }
 
       await loadBook(book.id);
-      setActiveBookStep(2);
+      if (stayOnStep) setActiveBookStep(2);
     } finally {
       setLoading(false);
     }
@@ -11498,6 +11496,11 @@ function BookConceptsExperience({
               <button type="button" onClick={exportBook} disabled={!book || chapters.length === 0 || loading} title={bt("exportBookHint")} className="flex h-11 items-center justify-center gap-3 rounded-xl border px-4 text-sm font-bold hover:bg-gray-50 disabled:opacity-50" style={{ borderColor: isDark ? '#334155' : '#e5e7eb', background: isDark ? '#0F172A' : '#fff', color: isDark ? '#F1F5F9' : '#334155' }}>
                 <DownloadIcon size={16} /> {bt("exportBook")}
               </button>
+              {chapters.length > 0 && (
+                <button type="button" onClick={() => setActiveBookStep(2)} className="flex h-11 items-center justify-center gap-3 rounded-xl border border-indigo-500/30 bg-indigo-50/50 px-4 text-sm font-bold text-indigo-600 hover:bg-indigo-50">
+                  {bt("defineChapters")} &rarr;
+                </button>
+              )}
             </div>
           </div>
         </div>
@@ -11580,7 +11583,10 @@ function BookConceptsExperience({
                   <button type="button" onClick={addChapter} className="inline-flex h-10 items-center gap-2 rounded-lg px-4 text-sm font-bold" style={{ background: isDark ? '#334155' : '#f1f5f9', color: isDark ? '#F1F5F9' : '#334155' }}>
                     <PlusIcon size={15} /> {bt("add")}
                   </button>
-                  <button type="button" onClick={saveChapterChanges} disabled={!book || chaptersForOutline.length === 0 || loading} className="h-10 rounded-lg bg-indigo-600 px-5 text-sm font-bold text-white hover:bg-indigo-700 disabled:opacity-50">
+                  <button type="button" onClick={async () => {
+                    await saveChapterChanges(true);
+                    showToast(bt("savedMessage") || "Cambios guardados");
+                  }} disabled={!book || chaptersForOutline.length === 0 || loading} className="h-10 rounded-lg bg-indigo-600 px-5 text-sm font-bold text-white hover:bg-indigo-700 disabled:opacity-50">
                     {bt("saveChanges")}
                   </button>
                 </div>
@@ -11628,8 +11634,12 @@ function BookConceptsExperience({
               <div className="flex justify-end pt-1">
                 <button type="button" onClick={async () => {
                   try {
-                    await saveChapterChanges();
-                    await generateContent();
+                    await saveChapterChanges(false);
+                    setActiveBookStep(3);
+                    const hasContent = chapters.some((c) => (contentDrafts[c.id] || c.content)?.trim());
+                    if (!hasContent) {
+                      await generateContent();
+                    }
                   } catch(e) {
                     console.error('[BookConcepts] Error en confirm chapters:', e?.message, e?.response?.status);
                   }
@@ -11648,8 +11658,11 @@ function BookConceptsExperience({
                   <p className="text-sm" style={{ color: bookTextSecondary }}>{bt("generateEditContentHelp")}</p>
                 </div>
                 <div className="flex gap-2">
+                  <button type="button" onClick={generateContent} disabled={!book || chapters.length === 0 || loading} className="inline-flex h-10 items-center gap-2 rounded-lg bg-emerald-500 px-4 text-sm font-bold text-white hover:bg-emerald-600 disabled:opacity-50">
+                    <SparkIcon size={15} /> {bt("generateContent")}
+                  </button>
                   <button type="button" onClick={saveContentChanges} disabled={!book || chapters.length === 0 || loading} className="h-10 rounded-lg bg-indigo-600 px-5 text-sm font-bold text-white disabled:opacity-50">{bt("saveChanges")}</button>
-                  <button type="button" onClick={() => setActiveBookStep(4)} disabled={chapters.length === 0} className="h-10 rounded-lg bg-emerald-500 px-5 text-sm font-bold text-white disabled:opacity-50">{bt("marketingAssetsTitle")}</button>
+                  <button type="button" onClick={() => setActiveBookStep(4)} disabled={chapters.length === 0} className="h-10 rounded-lg border border-indigo-200 bg-indigo-50 px-5 text-sm font-bold text-indigo-700 hover:bg-indigo-100 disabled:opacity-50">{bt("marketingAssetsTitle")} &rarr;</button>
                 </div>
               </div>
               {(loading || (job && job.status !== 'completed' && job.status !== 'failed')) && (

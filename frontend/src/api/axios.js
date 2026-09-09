@@ -8,7 +8,7 @@ export const API_BASE_URL =
 const api = axios.create({
   baseURL: API_BASE_URL,
   headers: { 'Content-Type': 'application/json' },
-  timeout: 30000,
+  timeout: 0,
 })
 
 const emitMarketgenEvent = (name) => {
@@ -148,6 +148,25 @@ function ensureFreshSession() {
 }
 
 api.interceptors.request.use(async (config) => {
+  // Peticiones de generación o LLM: sin timeout para no perder tokens ni cortar peticiones
+  const generativeKeywords = [
+    'generate',
+    'chapters',
+    'content',
+    'assets',
+    'proposals',
+    'campaigns',
+    'books',
+    'assistant',
+    'chat',
+    'whitepaper',
+    'outreach',
+    'jobs'
+  ]
+  if (config.url && generativeKeywords.some((kw) => config.url.toLowerCase().includes(kw))) {
+    config.timeout = 0
+  }
+
   if (!authTokenStore.isAccessTokenValid() && authTokenStore.getRefreshToken()) {
     await ensureFreshSession()
   }
@@ -156,12 +175,20 @@ api.interceptors.request.use(async (config) => {
   if (token) {
     config.headers.Authorization = `Bearer ${token}`
   }
+  console.log(`📡 [API ->] ${config.method?.toUpperCase()} ${config.url}`, config.data || '')
+  config._startTime = Date.now()
   return config
 })
 
 api.interceptors.response.use(
-  (response) => response,
+  (response) => {
+    const duration = response.config._startTime ? `${Date.now() - response.config._startTime}ms` : ''
+    console.log(`✅ [API <-] ${response.status} ${response.config.method?.toUpperCase()} ${response.config.url} (${duration})`, response.data)
+    return response
+  },
   async (error) => {
+    const duration = error.config?._startTime ? `${Date.now() - error.config._startTime}ms` : ''
+    console.error(`❌ [API Error] ${error.config?.method?.toUpperCase()} ${error.config?.url} (${duration}) - Status: ${error.response?.status || 'TIMEOUT/NETWORK_ERR'}:`, error.response?.data || error.message)
     const status = error.response?.status
     const originalRequest = error.config
 
@@ -274,7 +301,7 @@ export const campaignsApi = {
   get: (id) => api.get(`/campaigns/${id}`),
   update: (id, data) => withMarketgenEvent(api.put(`/campaigns/${id}`, data), 'marketgen:campaign-updated'),
   delete: (id) => api.delete(`/campaigns/${id}`),
-  generate: (id) => withMarketgenEvent(api.post(`/campaigns/${id}/generate`, undefined, { timeout: 60000 }), 'marketgen:campaign-updated'),
+  generate: (id) => withMarketgenEvent(api.post(`/campaigns/${id}/generate`, undefined, { timeout: 0 }), 'marketgen:campaign-updated'),
 }
 
 export const opportunitiesApi = {

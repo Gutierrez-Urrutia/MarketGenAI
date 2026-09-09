@@ -37,7 +37,7 @@ Responde con estructura clara, párrafos cortos y bullets cuando sea útil.
 NO uses markdown excesivo.
 """,
         temperature=0.7,
-        timeout=settings.llm_default_timeout_seconds,
+        timeout=None,
     )
 
     return {"reply": reply}

@@ -35,12 +35,15 @@ async def test_generate_text_uses_configured_deepseek_client():
         timeout=12,
     )
     client.chat.completions.create.assert_called_once_with(
-        model="deepseek-chat",
+        model="deepseek-v4-flash",
         messages=[
             {"role": "system", "content": "Marketing system prompt"},
             {"role": "user", "content": "Campaign prompt"},
         ],
         temperature=0.3,
+        stream=False,
+        reasoning_effort="high",
+        extra_body={"thinking": {"type": "enabled"}},
         timeout=12,
     )
 
@@ -68,11 +71,14 @@ async def test_generate_text_can_send_explicit_message_history():
 
     assert result == "Chat reply"
     client.chat.completions.create.assert_called_once_with(
-        model="deepseek-chat",
+        model="deepseek-v4-flash",
         messages=[
             {"role": "system", "content": "Chat system prompt"},
             *messages,
         ],
         temperature=0.7,
+        stream=False,
+        reasoning_effort="high",
+        extra_body={"thinking": {"type": "enabled"}},
         timeout=20,
     )

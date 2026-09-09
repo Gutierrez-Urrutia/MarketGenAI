@@ -51,10 +51,7 @@ async def test_update_proposal_partial(client):
 
 @pytest.mark.asyncio
 async def test_assistant_chat_requires_auth(client):
-    with patch("app.routers.assistant.OpenAI") as mock_openai:
-        mock_openai.return_value.chat.completions.create.return_value.choices = [
-            type("C", (), {"message": type("M", (), {"content": "hola"})()})()
-        ]
+    with patch("app.routers.assistant.deepseek_service.generate_text", new_callable=AsyncMock, return_value="hola"):
         resp = await client.post("/api/v1/assistant/chat", json={"message": "hola"})
     assert resp.status_code == 200
     assert resp.json()["reply"] == "hola"
@@ -66,6 +63,7 @@ async def test_content_library_scoped_by_user(client):
         patch("app.routers.platform.proposals_repo.list", new_callable=AsyncMock, return_value=[]) as mock_proposals,
         patch("app.routers.platform.templates_repo.list", new_callable=AsyncMock, return_value=[]),
         patch("app.routers.platform.assets_repo.list", new_callable=AsyncMock, return_value=[]),
+        patch("app.routers.platform.content_items_repo.list", new_callable=AsyncMock, return_value=[]),
     ):
         resp = await client.get("/api/v1/content-library")
     assert resp.status_code == 200

@@ -209,7 +209,7 @@ RULES:
     content = await deepseek_service.generate_text(
         prompt,
         system_prompt="You generate polished marketing content as semantic HTML.",
-        timeout=settings.llm_long_timeout_seconds,
+        timeout=None,
     )
     return await _persist_content_item(
         user_id=current_user.sub,
@@ -257,7 +257,7 @@ RULES:
     content = await deepseek_service.generate_text(
         prompt,
         system_prompt="You generate polished marketing content as semantic HTML.",
-        timeout=settings.llm_long_timeout_seconds,
+        timeout=None,
     )
     return await _persist_content_item(
         user_id=current_user.sub,
@@ -317,7 +317,7 @@ RULES:
     content = await deepseek_service.generate_text(
         prompt,
         system_prompt="You generate polished marketing content as semantic HTML.",
-        timeout=settings.llm_long_timeout_seconds,
+        timeout=None,
     )
     return await _persist_content_item(
         user_id=current_user.sub,
@@ -358,7 +358,7 @@ RULES:
     content = await deepseek_service.generate_text(
         prompt,
         system_prompt="You generate polished marketing content as semantic HTML.",
-        timeout=settings.llm_default_timeout_seconds,
+        timeout=None,
     )
     return await _persist_content_item(
         user_id=current_user.sub,
@@ -420,7 +420,7 @@ RULES:
     content = await deepseek_service.generate_text(
         prompt,
         system_prompt="You generate polished marketing content as semantic HTML.",
-        timeout=settings.llm_long_timeout_seconds,
+        timeout=None,
     )
     return await _persist_content_item(
         user_id=current_user.sub,

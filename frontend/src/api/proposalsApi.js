@@ -36,11 +36,11 @@ export const updateProposal = (id, data) => withProposalUpdated(api.put(`/propos
 export const deleteProposal = (id) => api.delete(`/proposals/${id}`);
 
 export const generateProposalDraft = async (data) => {
-  const response = await withProposalUpdated(api.post("/proposals/generate-draft", data, { timeout: 90000 }));
+  const response = await withProposalUpdated(api.post("/proposals/generate-draft", data, { timeout: 0 }));
   return response.data;
 };
 export const generateProposalById = async (id, data) => {
-  const response = await withProposalUpdated(api.post(`/proposals/${id}/generate`, data, { timeout: 90000 }));
+  const response = await withProposalUpdated(api.post(`/proposals/${id}/generate`, data, { timeout: 0 }));
   return response.data;
 };
 export const downloadProposalPdf = (id) =>

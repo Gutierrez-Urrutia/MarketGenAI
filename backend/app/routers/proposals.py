@@ -742,7 +742,7 @@ REQUIRED STRUCTURE:
         prompt,
         system_prompt="You are an expert marketing proposal writer.",
         temperature=0.7,
-        timeout=settings.llm_long_timeout_seconds,
+        timeout=None,
     )
 
     output_dir = _output_dir()

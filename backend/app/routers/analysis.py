@@ -32,7 +32,7 @@ async def _generate_analysis_json(prompt: str, *, system_prompt: str) -> Any:
         prompt,
         system_prompt=system_prompt,
         temperature=0.2,
-        timeout=settings.llm_default_timeout_seconds,
+        timeout=None,
     )
     return _safe_json(raw)
 
