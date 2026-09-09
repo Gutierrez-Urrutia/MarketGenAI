@@ -12,3 +12,4 @@ firebase-key.json
 service-account*.json
 .env
 *.env
+FULL_STACK_DEPLOYMENT.md

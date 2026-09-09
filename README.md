@@ -240,6 +240,77 @@ gcloud run deploy nd-marketing-api \
   --allow-unauthenticated
 ```
 
+## Deployment en Vercel (Frontend)
+
+Vercel es la opción correcta para desplegar el frontend de React/Vite. En este proyecto, el backend FastAPI no se despliega en Vercel; debe vivir en otro servicio público como Cloud Run, Render, Railway o similar.
+
+### Paso 1. Asegura un backend público
+
+Antes de desplegar el frontend, necesitas la URL pública de tu API, por ejemplo:
+
+```text
+https://tu-backend.ejemplo.com
+```
+
+El frontend consume la API desde `VITE_API_URL`, así que esa URL debe ser accesible desde internet.
+
+### Paso 2. Revisa las variables de entorno del frontend
+
+Si quieres usar una API remota, define estas variables en Vercel:
+
+```env
+VITE_API_URL=https://tu-backend.ejemplo.com/api/v1
+VITE_ENABLE_DEMO_LOGIN=false
+VITE_SHOW_DEMO_BANNER=false
+```
+
+Si no defines `VITE_API_URL`, el frontend en producción intentará usar `/api/v1` como base. Eso solo funciona si tu frontend y backend comparten el mismo dominio con un proxy o rewrites configurados.
+
+### Paso 3. Crea el proyecto en Vercel
+
+1. Entra a Vercel y pulsa New Project.
+2. Importa el repositorio de GitHub.
+3. Selecciona la carpeta `frontend` como root directory.
+4. Configura el build command como `npm run build`.
+5. Configura el output directory como `dist`.
+6. Añade las variables de entorno del paso anterior.
+
+### Paso 4. Configura el dominio SPA
+
+Como la app usa `BrowserRouter`, Vercel debe devolver `index.html` en rutas internas como `/books`, `/proposals` o `/settings`.
+
+Añade un archivo `vercel.json` dentro de `frontend/` con esta configuración:
+
+```json
+{
+  "rewrites": [
+    { "source": "/(.*)", "destination": "/index.html" }
+  ]
+}
+```
+
+### Paso 5. Despliega
+
+1. Haz push de tus cambios a GitHub.
+2. Vercel detectará el proyecto y ejecutará el build.
+3. Abre la URL generada y comprueba que el login, el dashboard y las rutas internas cargan bien.
+
+### Paso 6. Verifica la API
+
+Si la interfaz carga pero las peticiones fallan, revisa:
+
+1. Que `VITE_API_URL` apunte a la URL correcta del backend.
+2. Que el backend tenga CORS permitido para el dominio de Vercel.
+3. Que Keycloak, Firestore, Supabase y DeepSeek estén configurados en el backend público.
+
+### Resumen rápido
+
+1. Despliega el backend en un servicio público.
+2. Sube `frontend/` a Vercel.
+3. Define `VITE_API_URL`.
+4. Agrega rewrites para SPA.
+5. Publica y prueba las rutas.
+
 ---
 
 ## Development Notes
