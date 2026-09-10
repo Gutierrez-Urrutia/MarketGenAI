@@ -22,9 +22,18 @@ async def health_check():
 
 @router.get("/health/db")
 async def database_health_check():
-    await check_firestore_connection()
-    return {
-        "status": "ok",
-        "database": "firestore",
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-    }
+    try:
+        await check_firestore_connection()
+        return {
+            "status": "ok",
+            "database": "firestore",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+    except Exception as exc:
+        return {
+            "status": "error",
+            "database": "firestore",
+            "error": str(exc),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+

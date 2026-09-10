@@ -19,6 +19,7 @@ Collections used by this project:
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -30,6 +31,8 @@ from google.cloud.firestore_v1 import AsyncDocumentReference
 
 from app.config import settings
 
+logger = logging.getLogger("marketgen.firestore")
+
 # ── Singleton client ──────────────────────────────────────────────────────────
 _client: Optional[AsyncClient] = None
 
@@ -39,30 +42,67 @@ def get_db() -> AsyncClient:
     global _client
     if _client is None:
         credentials = None
-        if settings.firebase_service_account_json:
-            credentials = service_account.Credentials.from_service_account_info(
-                json.loads(settings.firebase_service_account_json)
-            )
+        source = "ADC (Default)"
+        if settings.firebase_service_account_json and settings.firebase_service_account_json.strip():
+            source = "FIREBASE_SERVICE_ACCOUNT_JSON"
+            try:
+                raw_json = settings.firebase_service_account_json.strip()
+                sa_info = json.loads(raw_json)
+                credentials = service_account.Credentials.from_service_account_info(sa_info)
+                logger.info(
+                    "✅ [Firestore] Credenciales cargadas exitosamente desde FIREBASE_SERVICE_ACCOUNT_JSON (project='%s', email='%s')",
+                    sa_info.get("project_id"),
+                    sa_info.get("client_email"),
+                )
+            except Exception as exc:
+                logger.error("❌ [Firestore] Fallo al parsear FIREBASE_SERVICE_ACCOUNT_JSON: %s", exc)
         elif settings.firebase_credentials_path:
-            credentials = service_account.Credentials.from_service_account_file(
-                settings.firebase_credentials_path
-            )
+            source = f"FIREBASE_CREDENTIALS_PATH ({settings.firebase_credentials_path})"
+            try:
+                credentials = service_account.Credentials.from_service_account_file(
+                    settings.firebase_credentials_path
+                )
+                logger.info("✅ [Firestore] Credenciales cargadas desde archivo: %s", settings.firebase_credentials_path)
+            except Exception as exc:
+                logger.error("❌ [Firestore] Fallo al cargar credenciales desde %s: %s", settings.firebase_credentials_path, exc)
         elif settings.google_application_credentials:
-            credentials = service_account.Credentials.from_service_account_file(
-                settings.google_application_credentials
+            source = f"GOOGLE_APPLICATION_CREDENTIALS ({settings.google_application_credentials})"
+            try:
+                credentials = service_account.Credentials.from_service_account_file(
+                    settings.google_application_credentials
+                )
+                logger.info("✅ [Firestore] Credenciales cargadas desde archivo: %s", settings.google_application_credentials)
+            except Exception as exc:
+                logger.error("❌ [Firestore] Fallo al cargar credenciales desde %s: %s", settings.google_application_credentials, exc)
+        else:
+            logger.warning(
+                "⚠️ [Firestore] No se especificaron credenciales explícitas. Usando Application Default Credentials (ADC)..."
             )
+
         _client = firestore.AsyncClient(
             project=settings.google_cloud_project or None,
             database=settings.firestore_database,
             credentials=credentials,
+        )
+        logger.info(
+            "🚀 [Firestore] Cliente AsyncClient inicializado con éxito (project='%s', db='%s', origen='%s')",
+            settings.google_cloud_project,
+            settings.firestore_database,
+            source,
         )
     return _client
 
 
 async def check_firestore_connection() -> bool:
     """Run a tiny read to verify Firestore credentials and network access."""
-    await get_db().collection("_health").limit(1).get()
-    return True
+    try:
+        logger.info("🔍 [Firestore] Probando conexión a Firestore con ping a '_health'...")
+        await get_db().collection("_health").limit(1).get()
+        logger.info("✅ [Firestore] Conexión a Firestore verificada exitosamente.")
+        return True
+    except Exception as exc:
+        logger.error("❌ [Firestore] Error en ping a Firestore: %s", exc)
+        raise
 
 
 # ── Timestamp helpers ─────────────────────────────────────────────────────────
