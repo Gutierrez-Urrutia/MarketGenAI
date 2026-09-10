@@ -5,13 +5,16 @@ Supabase Storage service.
 from __future__ import annotations
 
 import asyncio
+import logging
 import mimetypes
+from pathlib import Path
 from typing import Optional
 
 from supabase import create_client, Client
 
 from app.config import settings
 
+logger = logging.getLogger("marketgen.storage")
 
 _supabase: Optional[Client] = None
 
@@ -19,6 +22,10 @@ _supabase: Optional[Client] = None
 def get_supabase() -> Client:
     global _supabase
     if _supabase is None:
+        if not (settings.supabase_url and settings.supabase_service_key):
+            raise RuntimeError(
+                "Supabase Storage no está configurado (falta SUPABASE_URL o SUPABASE_SERVICE_KEY)"
+            )
         _supabase = create_client(
             settings.supabase_url,
             settings.supabase_service_key,
@@ -34,19 +41,29 @@ def _upload_bytes_sync(
     storage_path: str,
     content_type: Optional[str] = None,
 ) -> str:
-    sb = get_supabase()
+    try:
+        sb = get_supabase()
+        if content_type is None:
+            mime, _ = mimetypes.guess_type(storage_path)
+            content_type = mime or "application/octet-stream"
 
-    if content_type is None:
-        mime, _ = mimetypes.guess_type(storage_path)
-        content_type = mime or "application/octet-stream"
+        sb.storage.from_(BUCKET).upload(
+            path=storage_path,
+            file=data,
+            file_options={"content-type": content_type, "upsert": "true"},
+        )
 
-    sb.storage.from_(BUCKET).upload(
-        path=storage_path,
-        file=data,
-        file_options={"content-type": content_type, "upsert": "true"},
-    )
-
-    return sb.storage.from_(BUCKET).get_public_url(storage_path)
+        return sb.storage.from_(BUCKET).get_public_url(storage_path)
+    except RuntimeError as exc:
+        logger.warning(
+            "⚠️ [Storage] %s. Guardando archivo localmente en 'generated_files/%s'",
+            exc,
+            storage_path,
+        )
+        local_dest = Path("generated_files") / storage_path
+        local_dest.parent.mkdir(parents=True, exist_ok=True)
+        local_dest.write_bytes(data)
+        return f"/api/v1/assets/local/{storage_path}"
 
 
 def _upload_file_sync(local_path: str, storage_path: str) -> str:
@@ -58,17 +75,26 @@ def _upload_file_sync(local_path: str, storage_path: str) -> str:
 
 
 def _get_signed_url_sync(storage_path: str, expires_in_seconds: int = 3600) -> str:
-    sb = get_supabase()
-    response = sb.storage.from_(BUCKET).create_signed_url(
-        storage_path,
-        expires_in_seconds,
-    )
-    return response["signedURL"]
+    try:
+        sb = get_supabase()
+        response = sb.storage.from_(BUCKET).create_signed_url(
+            storage_path,
+            expires_in_seconds,
+        )
+        return response["signedURL"]
+    except RuntimeError:
+        return f"/api/v1/assets/local/{storage_path}"
 
 
 def _delete_file_sync(storage_path: str) -> None:
-    sb = get_supabase()
-    sb.storage.from_(BUCKET).remove([storage_path])
+    try:
+        sb = get_supabase()
+        sb.storage.from_(BUCKET).remove([storage_path])
+    except RuntimeError:
+        local_dest = Path("generated_files") / storage_path
+        if local_dest.exists():
+            local_dest.unlink()
+
 
 
 def book_export_path(book_id: str, filename: str) -> str:
