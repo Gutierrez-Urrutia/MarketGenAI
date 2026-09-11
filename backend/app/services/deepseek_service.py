@@ -38,7 +38,7 @@ def _generate_text_sync(
         api_key=settings.deepseek_api_key,
         timeout=timeout,
     )
-    model = settings.deepseek_model or "deepseek-v4-flash"
+    model = settings.deepseek_model or "deepseek-flash"
 
     t0 = time.time()
     timeout_desc = f"{timeout}s" if timeout else "sin timeout (ilimitado)"
@@ -55,7 +55,8 @@ def _generate_text_sync(
             timeout=timeout,
         )
         elapsed = time.time() - t0
-        content = response.choices[0].message.content or ""
+        msg = response.choices[0].message
+        content = msg.content or getattr(msg, "reasoning_content", "") or ""
         logger.info(f"✅ [DeepSeek API] Respuesta recibida con éxito en {elapsed:.2f}s ({len(content)} caracteres).")
         return content
     except APITimeoutError as exc:

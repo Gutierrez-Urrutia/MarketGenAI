@@ -49,7 +49,7 @@ class Settings(BaseSettings):
 
     deepseek_api_key: str = ""
     deepseek_base_url: str = "https://api.deepseek.com"
-    deepseek_model: str = "deepseek-v4-pro"
+    deepseek_model: str = "deepseek-flash"
     gemini_api_key: str = ""
     gemini_default_model: str = "gemini-3.6-flash"
     llm_short_timeout_seconds: int | None = None
