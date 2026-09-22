@@ -15,6 +15,11 @@ Collections used by this project:
   - assets/{assetId}
   - jobs/{jobId}
   - settings/{orgId}
+  - pipeline_configs/{userId}    (one doc per user, doc_id = userId)
+  - leads/{leadId}
+  - contacts/{contactId}
+  - outreach_emails/{emailId}
+  - pipeline_runs/{runId}
 """
 from __future__ import annotations
 
@@ -45,15 +50,27 @@ def get_db() -> AsyncClient:
         source = "ADC (Default)"
         if settings.firebase_service_account_json and settings.firebase_service_account_json.strip():
             source = "FIREBASE_SERVICE_ACCOUNT_JSON"
+            raw_json = settings.firebase_service_account_json.strip()
+            logger.info(
+                "🔍 [Firestore] FIREBASE_SERVICE_ACCOUNT_JSON detectado (len=%d, inicio='%s', fin='%s')",
+                len(raw_json),
+                raw_json[:40],
+                raw_json[-20:],
+            )
             try:
-                raw_json = settings.firebase_service_account_json.strip()
                 sa_info = json.loads(raw_json)
+                logger.info(
+                    "🔍 [Firestore] JSON parseado correctamente. Claves presentes: %s",
+                    sorted(sa_info.keys()) if isinstance(sa_info, dict) else type(sa_info),
+                )
                 credentials = service_account.Credentials.from_service_account_info(sa_info)
                 logger.info(
                     "✅ [Firestore] Credenciales cargadas exitosamente desde FIREBASE_SERVICE_ACCOUNT_JSON (project='%s', email='%s')",
                     sa_info.get("project_id"),
                     sa_info.get("client_email"),
                 )
+            except json.JSONDecodeError as exc:
+                logger.error("❌ [Firestore] FIREBASE_SERVICE_ACCOUNT_JSON no es JSON válido: %s", exc)
             except Exception as exc:
                 logger.error("❌ [Firestore] Fallo al parsear FIREBASE_SERVICE_ACCOUNT_JSON: %s", exc)
         elif settings.firebase_credentials_path:
@@ -409,6 +426,37 @@ class SettingsRepo(FirestoreRepo):
         return doc or {"userId": user_id, "crm": {}, "llm": {}, "socialConnections": [], "dateFormat": "DD/MM/YYYY"}
 
 
+class PipelineConfigsRepo(FirestoreRepo):
+    """One document per user (doc_id = user_id), like SettingsRepo."""
+
+    collection = "pipeline_configs"
+
+    async def get_by_user(self, user_id: str) -> Optional[Dict[str, Any]]:
+        return await self.get(user_id)
+
+    async def upsert_for_user(self, user_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
+        existing = await self.get(user_id)
+        if existing:
+            return await self.update(user_id, data)
+        return await self.create({**data, "userId": user_id}, doc_id=user_id)
+
+
+class LeadsRepo(FirestoreRepo):
+    collection = "leads"
+
+
+class ContactsRepo(FirestoreRepo):
+    collection = "contacts"
+
+
+class OutreachEmailsRepo(FirestoreRepo):
+    collection = "outreach_emails"
+
+
+class PipelineRunsRepo(FirestoreRepo):
+    collection = "pipeline_runs"
+
+
 # ── Module-level singletons ───────────────────────────────────────────────────
 books_repo      = BooksRepo()
 jobs_repo       = JobsRepo()
@@ -422,3 +470,8 @@ customers_repo  = CustomersRepo()
 templates_repo  = TemplatesRepo()
 assets_repo     = AssetsRepo()
 settings_repo   = SettingsRepo()
+pipeline_configs_repo = PipelineConfigsRepo()
+leads_repo            = LeadsRepo()
+contacts_repo         = ContactsRepo()
+outreach_emails_repo  = OutreachEmailsRepo()
+pipeline_runs_repo    = PipelineRunsRepo()

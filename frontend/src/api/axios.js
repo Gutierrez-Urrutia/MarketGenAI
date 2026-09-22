@@ -379,6 +379,16 @@ export const analysisApi = {
   aiDetection: (data) => api.post('/analysis/ai-detection', data),
 }
 
+export const pipelineApi = {
+  getConfig: () => api.get('/pipeline/config'),
+  updateConfig: (data) => api.put('/pipeline/config', data),
+  updateKeywords: (data) => api.put('/pipeline/config/keywords', data),
+  createSource: (data) => api.post('/pipeline/config/sources', data),
+  updateSource: (id, data) => api.put(`/pipeline/config/sources/${id}`, data),
+  deleteSource: (id) => api.delete(`/pipeline/config/sources/${id}`),
+  testSource: (id) => api.post(`/pipeline/config/sources/${id}/test`),
+}
+
 export const publishingApi = {
   publish: (bookId, data) => api.post(`/books/${bookId}/publish`, data),
   status: (bookId) => api.get(`/books/${bookId}/publish/status`),

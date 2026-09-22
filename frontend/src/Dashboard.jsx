@@ -33,6 +33,7 @@ import {
 
 import Chat from "./pages/chat/Chat";
 import Modal from "./components/ui/Modal";
+import PipelineSettingsTab from "./pages/settings/PipelineSettingsTab";
 
 import ReactMarkdown from "react-markdown";
 
@@ -8877,7 +8878,6 @@ function SettingsPage({ navigationState = {} }) {
   const { theme, changeTheme } = useTheme();
   const isDark = theme === "dark" || (theme === "system" && window.matchMedia?.("(prefers-color-scheme: dark)").matches);
   const [tab, setTab] = useState(navigationState.tab || "general");
-  const [pipelineOn, setPipelineOn] = useState(true);
   const [socialModal, setSocialModal] = useState(null); // null or channel object
   const [socialConnectionForm, setSocialConnectionForm] = useState({ email: "", handle: "", accessToken: "" });
   const [model, setModel] = useState(getStoredPreference(PREF_KEYS.model, "deepseek"));
@@ -9569,50 +9569,7 @@ function SettingsPage({ navigationState = {} }) {
         </div>
       )}
 
-      {tab === "pipeline" && (<>
-        <div className={`flex items-center justify-between p-3.5 rounded-2xl border ${pipelineOn ? "border-green-200 bg-green-50" : "border-gray-200 bg-gray-50"}`}>
-          <div className="flex items-center gap-1.5">
-            <RadarIcon size={18} className={pipelineOn ? "text-green-600" : "text-gray-400"} />
-            <div><p className="text-xs font-semibold text-gray-900">Prospecting Pipeline</p><p className="text-xs text-gray-500">{pipelineOn ? "Active — scanning every 24 hours" : "Inactive — enable to start"}</p></div>
-          </div>
-          <button onClick={() => setPipelineOn(!pipelineOn)} className="relative w-11 h-6 rounded-full transition-colors" style={{backgroundColor: pipelineOn ? "#16a34a" : "#d1d5db"}}>
-            <span className="absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform" style={{transform: pipelineOn ? "translateX(20px)" : "translateX(0)"}} />
-          </button>
-        </div>
-
-        <SettingsSection isDark={isDark} title="Specializations & Keywords" IconComp={SearchIcon} desc="Define NoonDalton's services and target industries">
-          <Field label="Service keywords" hint="Press Enter or comma to add"><TagInput tags={["BPO","outsourcing","data entry","back office","customer support","accounting"]} /></Field>
-          <Field label="Target industries" hint="Leave empty for all industries"><TagInput tags={["finance","healthcare","retail"]} /></Field>
-          <Field label="Excluded companies" hint="Competitors or orgs to skip"><TagInput tags={["Acme BPO","CompetitorCorp"]} /></Field>
-        </SettingsSection>
-
-        <SettingsSection isDark={isDark} title="Job Sources" IconComp={GlobeIcon} desc="Where job postings are fetched from" badge={<Btn small icon={<PlusIcon size={12} />}>Add Source</Btn>}>
-          <div className="space-y-1">
-            {[
-              {name:"LinkedIn via JSearch", type:"API", url:"jsearch.p.rapidapi.com", c:"text-violet-600 bg-violet-50", ic:CodeIcon},
-              {name:"Indeed RSS Feed", type:"RSS", url:"indeed.com/rss/q=outsourcing", c:"text-orange-600 bg-orange-50", ic:RssIcon},
-              {name:"Remote.co Careers", type:"SCRAPER", url:"remote.co/remote-jobs", c:"text-cyan-600 bg-cyan-50", ic:GlobeIcon},
-            ].map(s => (
-              <div key={s.name} className="flex items-center justify-between p-2 rounded-xl border border-gray-100 bg-gray-50 group hover:border-indigo-200">
-                <div className="flex items-center gap-1.5">
-                  <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${s.c}`}><s.ic size={14} /></div>
-                  <div><p className="text-xs font-medium text-gray-800">{s.name}</p><p className="text-xs text-gray-400">{s.type} · {s.url}</p></div>
-                </div>
-                <div className="flex gap-0.5 opacity-0 group-hover:opacity-100"><button className="p-1.5 rounded hover:bg-gray-100"><PenIcon size={11} className="text-gray-400" /></button><button className="p-1.5 rounded hover:bg-red-50"><TrashIcon size={11} className="text-gray-400" /></button></div>
-              </div>
-            ))}
-          </div>
-        </SettingsSection>
-
-        <SettingsSection isDark={isDark} title="SMTP Configuration" IconComp={MailIcon} desc="Mail server for sending outreach emails">
-          <div className="grid grid-cols-2 gap-1.5"><Field label="SMTP Server"><Input defaultValue="smtp.gmail.com" /></Field><Field label="Port"><Input defaultValue="587" /></Field></div>
-          <div className="grid grid-cols-2 gap-1.5"><Field label="Username"><Input defaultValue="sales@noondalton.com" /></Field><Field label="Password"><Input type="password" defaultValue="secret" /></Field></div>
-          <div className="grid grid-cols-2 gap-1.5"><Field label="Sender Email"><Input defaultValue="sales@noondalton.com" /></Field><Field label="Sender Name"><Input defaultValue="NoonDalton Sales" /></Field></div>
-          <div className="flex justify-end"><Btn variant="secondary" small>Test Connection</Btn></div>
-        </SettingsSection>
-
-        <div className="flex justify-end pb-2"><Btn icon={<SaveIcon size={13} />}>Save Pipeline</Btn></div>
-      </>)}
+      {tab === "pipeline" && <PipelineSettingsTab isDark={isDark} />}
 
       {tab === "content" && (<>
         <SettingsSection isDark={isDark} title="Auto-Tagging Rules" IconComp={TagIcon} desc="Define how content is tagged so agents can match it to opportunities">
@@ -11613,12 +11570,18 @@ function BookConceptsExperience({
                           style={bookInputStyle}
                         />
                         <textarea
+                          ref={(el) => { if (el) { el.style.height = 'auto'; el.style.height = `${el.scrollHeight}px`; } }}
                           rows={2}
                           value={chapter.description || ""}
-                          onChange={(event) => setEditableChapters((current) => current.map((item) => (
-                            item.id === chapter.id ? { ...item, description: event.target.value } : item
-                          )))}
-                          className="w-full rounded-lg border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                          onChange={(event) => {
+                            const el = event.target;
+                            el.style.height = 'auto';
+                            el.style.height = `${el.scrollHeight}px`;
+                            setEditableChapters((current) => current.map((item) => (
+                              item.id === chapter.id ? { ...item, description: event.target.value } : item
+                            )));
+                          }}
+                          className="w-full resize-none overflow-hidden rounded-lg border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
                           style={bookInputStyle}
                         />
                       </div>
