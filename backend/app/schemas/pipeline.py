@@ -11,7 +11,8 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field
+from email_validator import EmailNotValidError, validate_email
+from pydantic import BaseModel, Field, field_validator
 
 
 class SourceType(str, Enum):
@@ -102,6 +103,29 @@ class PipelineConfigUpdate(BaseModel):
     max_emails_per_day: Optional[int] = Field(None, ge=1)
     scan_frequency_hours: Optional[int] = Field(None, ge=1)
     is_active: Optional[bool] = None
+
+    # smtp_user/sender_name are free text: only strip incidental leading/
+    # trailing whitespace. smtp_password is intentionally NOT stripped here —
+    # a password's own spaces can be meaningful; see routers/pipeline.py for
+    # how a whitespace-only password is treated as "unchanged".
+    @field_validator("smtp_user", "sender_name", mode="after")
+    @classmethod
+    def _strip_free_text(cls, value: Optional[str]) -> Optional[str]:
+        return value.strip() if value is not None else value
+
+    @field_validator("sender_email", mode="after")
+    @classmethod
+    def _strip_and_validate_sender_email(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return value
+        value = value.strip()
+        if not value:
+            return value
+        try:
+            validate_email(value, check_deliverability=False)
+        except EmailNotValidError as exc:
+            raise ValueError(f"sender_email must be a valid email address: {exc}") from exc
+        return value
 
 
 class PipelineKeywordsUpdate(BaseModel):

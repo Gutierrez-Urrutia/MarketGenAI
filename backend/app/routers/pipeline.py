@@ -92,6 +92,10 @@ async def update_config(
     payload = body.model_dump(exclude_unset=True, exclude={"smtp_password"})
 
     if body.smtp_password is not None:
+        # smtp_password is never stripped (its own spaces can be meaningful),
+        # but a whitespace-only value is not a real password: treat it as
+        # "not provided" and keep whatever is already stored. Only a true
+        # empty string ("") is an explicit request to clear it.
         if body.smtp_password.strip():
             try:
                 payload["smtp_password_encrypted"] = encryption_service.encrypt(body.smtp_password)
@@ -100,7 +104,7 @@ async def update_config(
                     status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                     detail=str(exc),
                 ) from exc
-        else:
+        elif body.smtp_password == "":
             # Explicit empty string clears a previously configured password.
             payload["smtp_password_encrypted"] = ""
 

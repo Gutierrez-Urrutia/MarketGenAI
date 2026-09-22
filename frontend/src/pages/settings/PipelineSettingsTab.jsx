@@ -30,6 +30,8 @@ const SOURCE_TYPE_FIELDS = {
 
 const SOURCE_TYPE_ICON = { api: Code, rss: Rss, scraper: Globe, webhook: Plug };
 
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
 function getApiErrorMessage(error, fallback) {
   const detail = error?.response?.data?.detail;
   if (typeof detail === "string" && detail.trim()) return detail;
@@ -194,20 +196,45 @@ export default function PipelineSettingsTab({ isDark = false }) {
   }, []);
 
   const saveConfig = async () => {
+    // Trim incidental leading/trailing whitespace on free-text fields.
+    // smtp_password is intentionally left untouched below — a password's
+    // own spaces can be meaningful.
+    const trimmedUser = smtp.smtp_user.trim();
+    const trimmedSenderEmail = smtp.sender_email.trim();
+    const trimmedSenderName = smtp.sender_name.trim();
+
+    if (trimmedSenderEmail && !EMAIL_REGEX.test(trimmedSenderEmail)) {
+      toast.error("Sender Email must be a valid email address.");
+      return;
+    }
+
     setSaving(true);
     try {
       const payload = {
         keywords,
         industries,
         excluded_companies: excludedCompanies,
-        ...smtp,
+        smtp_host: smtp.smtp_host,
+        smtp_port: smtp.smtp_port,
+        smtp_user: trimmedUser,
+        sender_email: trimmedSenderEmail,
+        sender_name: trimmedSenderName,
         ...thresholds,
         is_active: active,
       };
+      // A whitespace-only password is treated as "not provided" (keeps the
+      // saved password) — only a non-blank value is sent.
       if (smtpPasswordInput.trim()) {
         payload.smtp_password = smtpPasswordInput;
       }
       const { data } = await pipelineApi.updateConfig(payload);
+      setSmtp({
+        smtp_host: data?.smtp_host || "",
+        smtp_port: data?.smtp_port || 587,
+        smtp_user: data?.smtp_user || "",
+        sender_email: data?.sender_email || "",
+        sender_name: data?.sender_name || "",
+      });
       setSmtpPasswordConfigured(Boolean(data?.smtp_password_configured));
       setSmtpPasswordInput("");
       toast.success("Pipeline settings saved.");
