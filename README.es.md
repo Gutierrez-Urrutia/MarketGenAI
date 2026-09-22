@@ -15,8 +15,8 @@ Plataforma full-stack de contenido de marketing impulsada por IA. Genera libros,
 | Almacenamiento de archivos | Supabase Storage |
 | Trabajos asíncronos | Celery + Redis |
 | Frontend | React 18 + Vite + Tailwind CSS + Zustand |
-| Despliegue | Google Cloud Run (API) + Docker (Frontend) |
-| CI/CD | GitHub Actions |
+| Despliegue | Vercel (frontend + backend serverless) — ver [Despliegue](#despliegue-vercel) |
+| CI/CD | No hay workflow versionado en el repo (no existe `.github/workflows/`) — el despliegue a Vercel probablemente ocurre vía su integración nativa con Git |
 
 ---
 
@@ -79,10 +79,13 @@ ND-Marketing-Suite/
 │   ├── tailwind.config.js
 │   └── Dockerfile.dev
 ├── docker-compose.yml             # Local dev stack (API + worker + Flower + Redis + Keycloak + Frontend)
-└── .github/workflows/
-    ├── ci.yml                     # Lint + test on PR
-    └── deploy.yml                 # Auto-deploy to Cloud Run on develop push
+├── api/
+│   └── index.py                   # Vercel serverless entrypoint — importa app.main.app
+├── requirements.txt                # -r backend/requirements.txt (Vercel detecta el runtime Python desde acá)
+└── .vercelignore                   # Config de Vercel — excluye node_modules, dist, credenciales, etc.
 ```
+
+No existe `.github/workflows/` en el repo — no hay ningún workflow de CI/CD versionado.
 
 ---
 
