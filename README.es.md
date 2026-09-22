@@ -234,24 +234,17 @@ GET /api/v1/jobs/abc123
 
 ---
 
-## Despliegue (Google Cloud Run)
+## Despliegue (Vercel)
 
-El workflow de GitHub Actions en `.github/workflows/deploy.yml` despliega automáticamente a Cloud Run cuando se hace push a la rama `develop`.
+La plataforma de despliegue es **Vercel** (confirmado en la documentación del proyecto — criterios de aceptación y Contexto y Alcance — y consistente con la evidencia en el repo). El backend corre como función serverless, no como contenedor de larga duración:
 
-### Despliegue manual
+- `api/index.py`: entrypoint serverless de Vercel — agrega `backend/` al `sys.path` e importa `app.main.app`. Su docstring lo dice explícitamente: `"""Vercel serverless entrypoint for the FastAPI backend."""`.
+- `requirements.txt` en la raíz del repo (no solo en `backend/requirements.txt`): contiene `-r backend/requirements.txt` — es la convención que usa Vercel para detectar el runtime de Python del proyecto.
+- `.vercelignore` en la raíz: archivo de configuración exclusivo de Vercel (excluye `node_modules`, `frontend/dist`, credenciales, etc. del despliegue).
+- `backend/app/main.py`: el CORS habilita explícitamente `allow_origin_regex=r"https://.*\.vercel\.app"`, es decir, cualquier preview o producción de Vercel.
+- Base de datos: Firestore, región `southamerica-west1` (según Contexto y Alcance del proyecto).
 
-```bash
-# Build and push
-docker build -t europe-west1-docker.pkg.dev/PROJECT_ID/nd-marketing/nd-marketing-api:latest ./backend
-docker push europe-west1-docker.pkg.dev/PROJECT_ID/nd-marketing/nd-marketing-api:latest
-
-# Deploy
-gcloud run deploy nd-marketing-api \
-  --image europe-west1-docker.pkg.dev/PROJECT_ID/nd-marketing/nd-marketing-api:latest \
-  --region europe-west1 \
-  --platform managed \
-  --allow-unauthenticated
-```
+No hay un `vercel.json` versionado en el repo, así que la configuración del proyecto en Vercel probablemente vive en su dashboard (conectado directamente al repositorio de Git), no en un archivo de configuración versionado. Tampoco hay ningún workflow de CI/CD en el repo — no existe `.github/workflows/` — por lo que el despliegue a Vercel ocurre automáticamente vía la integración nativa de Vercel con Git al hacer push, no mediante un pipeline propio.
 
 ---
 
