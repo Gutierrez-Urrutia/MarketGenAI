@@ -12,18 +12,19 @@ import {
 } from "lucide-react";
 
 import { pipelineApi } from "@/api/axios";
+import { useI18n } from "@/hooks/useI18n";
 
-const SOURCE_TYPE_FIELDS = {
+const SOURCE_TYPE_FIELD_KEYS = {
   api: [
-    { key: "base_url", label: "Base URL", placeholder: "https://jsearch.p.rapidapi.com" },
-    { key: "api_key", label: "API Key", type: "password" },
+    { key: "base_url", labelKey: "sourceFieldBaseUrl", placeholder: "https://jsearch.p.rapidapi.com" },
+    { key: "api_key", labelKey: "sourceFieldApiKey", type: "password" },
   ],
   rss: [
-    { key: "feed_url", label: "Feed URL", placeholder: "https://indeed.com/rss?q=outsourcing" },
+    { key: "feed_url", labelKey: "sourceFieldFeedUrl", placeholder: "https://indeed.com/rss?q=outsourcing" },
   ],
   scraper: [
-    { key: "url", label: "URL", placeholder: "https://remote.co/remote-jobs" },
-    { key: "selectors", label: "CSS Selectors", placeholder: ".job-title, .company-name" },
+    { key: "url", labelKey: "sourceFieldUrl", placeholder: "https://remote.co/remote-jobs" },
+    { key: "selectors", labelKey: "sourceFieldCssSelectors", placeholder: ".job-title, .company-name" },
   ],
   webhook: [],
 };
@@ -145,6 +146,7 @@ const DEFAULT_SMTP = { smtp_host: "", smtp_port: 587, smtp_user: "", sender_emai
 const DEFAULT_THRESHOLDS = { auto_send_threshold: 0.8, max_emails_per_day: 50, scan_frequency_hours: 24 };
 
 export default function PipelineSettingsTab({ isDark = false }) {
+  const { t } = useI18n();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [active, setActive] = useState(true);
@@ -185,7 +187,7 @@ export default function PipelineSettingsTab({ isDark = false }) {
       setActive(data?.is_active ?? true);
     } catch (error) {
       console.error(error);
-      toast.error("Could not load pipeline settings.");
+      toast.error(t("settings.pipelineTab.toastLoadError"));
     } finally {
       setLoading(false);
     }
@@ -204,7 +206,7 @@ export default function PipelineSettingsTab({ isDark = false }) {
     const trimmedSenderName = smtp.sender_name.trim();
 
     if (trimmedSenderEmail && !EMAIL_REGEX.test(trimmedSenderEmail)) {
-      toast.error("Sender Email must be a valid email address.");
+      toast.error(t("settings.pipelineTab.toastInvalidEmail"));
       return;
     }
 
@@ -237,10 +239,10 @@ export default function PipelineSettingsTab({ isDark = false }) {
       });
       setSmtpPasswordConfigured(Boolean(data?.smtp_password_configured));
       setSmtpPasswordInput("");
-      toast.success("Pipeline settings saved.");
+      toast.success(t("settings.pipelineTab.toastSaved"));
     } catch (error) {
       console.error(error);
-      toast.error(getApiErrorMessage(error, "Could not save pipeline settings."));
+      toast.error(getApiErrorMessage(error, t("settings.pipelineTab.toastSaveError")));
     } finally {
       setSaving(false);
     }
@@ -258,7 +260,7 @@ export default function PipelineSettingsTab({ isDark = false }) {
 
   const saveSourceForm = async () => {
     if (!sourceForm.name.trim()) {
-      toast.error("Source name is required.");
+      toast.error(t("settings.pipelineTab.toastSourceNameRequired"));
       return;
     }
     try {
@@ -268,10 +270,10 @@ export default function PipelineSettingsTab({ isDark = false }) {
         : await pipelineApi.createSource(payload);
       setSources(data?.sources || []);
       setSourceFormOpen(false);
-      toast.success("Source saved.");
+      toast.success(t("settings.pipelineTab.toastSourceSaved"));
     } catch (error) {
       console.error(error);
-      toast.error(getApiErrorMessage(error, "Could not save source."));
+      toast.error(getApiErrorMessage(error, t("settings.pipelineTab.toastSourceSaveError")));
     }
   };
 
@@ -279,10 +281,10 @@ export default function PipelineSettingsTab({ isDark = false }) {
     try {
       await pipelineApi.deleteSource(sourceId);
       setSources((current) => current.filter((source) => source.id !== sourceId));
-      toast.success("Source removed.");
+      toast.success(t("settings.pipelineTab.toastSourceRemoved"));
     } catch (error) {
       console.error(error);
-      toast.error(getApiErrorMessage(error, "Could not remove source."));
+      toast.error(getApiErrorMessage(error, t("settings.pipelineTab.toastSourceRemoveError")));
     }
   };
 
@@ -290,12 +292,12 @@ export default function PipelineSettingsTab({ isDark = false }) {
     setSourceTesting(sourceId);
     try {
       const { data } = await pipelineApi.testSource(sourceId);
-      toast.success(data?.message || "Source is ready.");
+      toast.success(data?.message || t("settings.pipelineTab.toastSourceReady"));
     } catch (error) {
       const missingFields = error?.response?.data?.detail?.missing_fields;
       const message = Array.isArray(missingFields) && missingFields.length
-        ? `Missing required fields: ${missingFields.join(", ")}`
-        : getApiErrorMessage(error, "Source test failed.");
+        ? t("settings.pipelineTab.toastMissingFields").replace("{fields}", missingFields.join(", "))
+        : getApiErrorMessage(error, t("settings.pipelineTab.toastSourceTestFailed"));
       toast.error(message);
     } finally {
       setSourceTesting(null);
@@ -308,8 +310,8 @@ export default function PipelineSettingsTab({ isDark = false }) {
         <div className="flex items-center gap-1.5">
           <Radar size={18} className={active ? "text-green-600" : "text-gray-400"} />
           <div>
-            <p className="text-xs font-semibold text-gray-900">Prospecting Pipeline</p>
-            <p className="text-xs text-gray-500">{active ? `Active — scanning every ${thresholds.scan_frequency_hours}h` : "Inactive — enable to start"}</p>
+            <p className="text-xs font-semibold text-gray-900">{t("settings.pipelineTab.statusTitle")}</p>
+            <p className="text-xs text-gray-500">{active ? t("settings.pipelineTab.statusActive").replace("{hours}", thresholds.scan_frequency_hours) : t("settings.pipelineTab.statusInactive")}</p>
           </div>
         </div>
         <button onClick={() => setActive(!active)} className="relative w-11 h-6 rounded-full transition-colors" style={{ backgroundColor: active ? "#16a34a" : "#d1d5db" }}>
@@ -321,21 +323,21 @@ export default function PipelineSettingsTab({ isDark = false }) {
         <div className="flex justify-center py-10"><Loader2 size={20} className="animate-spin text-indigo-600" /></div>
       ) : (
         <>
-          <SettingsSection isDark={isDark} title="Specializations & Keywords" IconComp={Search} desc="Define NoonDalton's services and target industries">
-            <Field label="Service keywords" hint="Press Enter or comma to add">
-              <TagInput value={keywords} onChange={setKeywords} placeholder="Add keyword..." />
+          <SettingsSection isDark={isDark} title={t("settings.pipelineTab.keywordsTitle")} IconComp={Search} desc={t("settings.pipelineTab.keywordsDesc")}>
+            <Field label={t("settings.pipelineTab.serviceKeywordsLabel")} hint={t("settings.pipelineTab.pressEnterHint")}>
+              <TagInput value={keywords} onChange={setKeywords} placeholder={t("settings.pipelineTab.addKeywordPlaceholder")} />
             </Field>
-            <Field label="Target industries" hint="Leave empty for all industries">
-              <TagInput value={industries} onChange={setIndustries} placeholder="Add industry..." />
+            <Field label={t("settings.pipelineTab.targetIndustriesLabel")} hint={t("settings.pipelineTab.targetIndustriesHint")}>
+              <TagInput value={industries} onChange={setIndustries} placeholder={t("settings.pipelineTab.addIndustryPlaceholder")} />
             </Field>
-            <Field label="Excluded companies" hint="Competitors or orgs to skip">
-              <TagInput value={excludedCompanies} onChange={setExcludedCompanies} placeholder="Add company..." />
+            <Field label={t("settings.pipelineTab.excludedCompaniesLabel")} hint={t("settings.pipelineTab.excludedCompaniesHint")}>
+              <TagInput value={excludedCompanies} onChange={setExcludedCompanies} placeholder={t("settings.pipelineTab.addCompanyPlaceholder")} />
             </Field>
           </SettingsSection>
 
-          <SettingsSection isDark={isDark} title="Job Sources" IconComp={Globe} desc="Where job postings are fetched from" badge={<Btn small icon={<Plus size={12} />} onClick={openNewSourceForm}>Add Source</Btn>}>
+          <SettingsSection isDark={isDark} title={t("settings.pipelineTab.sourcesTitle")} IconComp={Globe} desc={t("settings.pipelineTab.sourcesDesc")} badge={<Btn small icon={<Plus size={12} />} onClick={openNewSourceForm}>{t("settings.pipelineTab.addSourceButton")}</Btn>}>
             {sources.length === 0 && !sourceFormOpen && (
-              <p className="text-xs text-gray-400 py-2">No sources configured yet.</p>
+              <p className="text-xs text-gray-400 py-2">{t("settings.pipelineTab.noSourcesYet")}</p>
             )}
             <div className="space-y-1">
               {sources.map((source) => {
@@ -348,16 +350,16 @@ export default function PipelineSettingsTab({ isDark = false }) {
                       <div className="min-w-0">
                         <p className="text-xs font-medium text-gray-800 truncate">{source.name}</p>
                         <p className="text-xs text-gray-400 truncate">
-                          {source.source_type.toUpperCase()}{summaryUrl ? ` · ${summaryUrl}` : ""}{source.enabled === false ? " · disabled" : ""}
+                          {source.source_type.toUpperCase()}{summaryUrl ? ` · ${summaryUrl}` : ""}{source.enabled === false ? ` · ${t("settings.pipelineTab.disabledSuffix")}` : ""}
                         </p>
                       </div>
                     </div>
                     <div className="flex gap-0.5 opacity-0 group-hover:opacity-100 shrink-0">
-                      <button className="p-1.5 rounded hover:bg-gray-100" onClick={() => testSource(source.id)} disabled={sourceTesting === source.id} title="Test connection">
+                      <button className="p-1.5 rounded hover:bg-gray-100" onClick={() => testSource(source.id)} disabled={sourceTesting === source.id} title={t("settings.pipelineTab.testConnectionTitle")}>
                         {sourceTesting === source.id ? <Loader2 size={11} className="animate-spin text-gray-400" /> : <Plug size={11} className="text-gray-400" />}
                       </button>
-                      <button className="p-1.5 rounded hover:bg-gray-100" onClick={() => openEditSourceForm(source)} title="Edit"><Pencil size={11} className="text-gray-400" /></button>
-                      <button className="p-1.5 rounded hover:bg-red-50" onClick={() => deleteSource(source.id)} title="Delete"><Trash2 size={11} className="text-gray-400" /></button>
+                      <button className="p-1.5 rounded hover:bg-gray-100" onClick={() => openEditSourceForm(source)} title={t("settings.pipelineTab.editTitle")}><Pencil size={11} className="text-gray-400" /></button>
+                      <button className="p-1.5 rounded hover:bg-red-50" onClick={() => deleteSource(source.id)} title={t("settings.pipelineTab.deleteTitle")}><Trash2 size={11} className="text-gray-400" /></button>
                     </div>
                   </div>
                 );
@@ -367,8 +369,8 @@ export default function PipelineSettingsTab({ isDark = false }) {
             {sourceFormOpen && (
               <div className="mt-2 p-2.5 rounded-xl border border-indigo-200 bg-indigo-50/40 space-y-1.5">
                 <div className="grid grid-cols-2 gap-1.5">
-                  <Field label="Name"><Input value={sourceForm.name} onChange={(event) => setSourceForm((form) => ({ ...form, name: event.target.value }))} placeholder="Indeed RSS Feed" /></Field>
-                  <Field label="Type">
+                  <Field label={t("settings.pipelineTab.sourceNameLabel")}><Input value={sourceForm.name} onChange={(event) => setSourceForm((form) => ({ ...form, name: event.target.value }))} placeholder="Indeed RSS Feed" /></Field>
+                  <Field label={t("settings.pipelineTab.sourceTypeLabel")}>
                     <Select value={sourceForm.source_type} onChange={(event) => setSourceForm((form) => ({ ...form, source_type: event.target.value, config: {} }))}>
                       <option value="api">API</option>
                       <option value="rss">RSS</option>
@@ -377,8 +379,8 @@ export default function PipelineSettingsTab({ isDark = false }) {
                     </Select>
                   </Field>
                 </div>
-                {SOURCE_TYPE_FIELDS[sourceForm.source_type].map((field) => (
-                  <Field key={field.key} label={field.label}>
+                {SOURCE_TYPE_FIELD_KEYS[sourceForm.source_type].map((field) => (
+                  <Field key={field.key} label={t(`settings.pipelineTab.${field.labelKey}`)}>
                     <Input
                       type={field.type || "text"}
                       placeholder={field.placeholder}
@@ -388,52 +390,52 @@ export default function PipelineSettingsTab({ isDark = false }) {
                   </Field>
                 ))}
                 <div className="flex justify-end gap-1.5 pt-1">
-                  <Btn variant="secondary" small onClick={() => setSourceFormOpen(false)}>Cancel</Btn>
-                  <Btn small icon={<Save size={12} />} onClick={saveSourceForm}>{sourceForm.id ? "Update Source" : "Add Source"}</Btn>
+                  <Btn variant="secondary" small onClick={() => setSourceFormOpen(false)}>{t("settings.pipelineTab.cancelButton")}</Btn>
+                  <Btn small icon={<Save size={12} />} onClick={saveSourceForm}>{sourceForm.id ? t("settings.pipelineTab.updateSourceButton") : t("settings.pipelineTab.addSourceButton")}</Btn>
                 </div>
               </div>
             )}
           </SettingsSection>
 
-          <SettingsSection isDark={isDark} title="SMTP Configuration" IconComp={Mail} desc="Mail server for sending outreach emails">
+          <SettingsSection isDark={isDark} title={t("settings.pipelineTab.smtpTitle")} IconComp={Mail} desc={t("settings.pipelineTab.smtpDesc")}>
             <div className="grid grid-cols-2 gap-1.5">
-              <Field label="SMTP Server"><Input value={smtp.smtp_host} onChange={(event) => setSmtp((s) => ({ ...s, smtp_host: event.target.value }))} placeholder="smtp.gmail.com" /></Field>
-              <Field label="Port"><Input type="number" value={smtp.smtp_port} onChange={(event) => setSmtp((s) => ({ ...s, smtp_port: Number(event.target.value) || 587 }))} /></Field>
+              <Field label={t("settings.pipelineTab.smtpServerLabel")}><Input value={smtp.smtp_host} onChange={(event) => setSmtp((s) => ({ ...s, smtp_host: event.target.value }))} placeholder="smtp.gmail.com" /></Field>
+              <Field label={t("settings.pipelineTab.portLabel")}><Input type="number" value={smtp.smtp_port} onChange={(event) => setSmtp((s) => ({ ...s, smtp_port: Number(event.target.value) || 587 }))} /></Field>
             </div>
             <div className="grid grid-cols-2 gap-1.5">
-              <Field label="Username"><Input value={smtp.smtp_user} onChange={(event) => setSmtp((s) => ({ ...s, smtp_user: event.target.value }))} placeholder="sales@noondalton.com" /></Field>
-              <Field label="Password" hint={smtpPasswordConfigured ? "Configured — leave blank to keep it" : "Not configured yet"}>
+              <Field label={t("settings.pipelineTab.usernameLabel")}><Input value={smtp.smtp_user} onChange={(event) => setSmtp((s) => ({ ...s, smtp_user: event.target.value }))} placeholder="sales@noondalton.com" /></Field>
+              <Field label={t("settings.pipelineTab.passwordLabel")} hint={smtpPasswordConfigured ? t("settings.pipelineTab.passwordConfiguredHint") : t("settings.pipelineTab.passwordNotConfiguredHint")}>
                 <Input
                   type="password"
                   value={smtpPasswordInput}
                   onChange={(event) => setSmtpPasswordInput(event.target.value)}
-                  placeholder={smtpPasswordConfigured ? "••••••••" : "Enter SMTP password"}
+                  placeholder={smtpPasswordConfigured ? "••••••••" : t("settings.pipelineTab.enterPasswordPlaceholder")}
                   autoComplete="new-password"
                 />
               </Field>
             </div>
             <div className="grid grid-cols-2 gap-1.5">
-              <Field label="Sender Email"><Input value={smtp.sender_email} onChange={(event) => setSmtp((s) => ({ ...s, sender_email: event.target.value }))} placeholder="sales@noondalton.com" /></Field>
-              <Field label="Sender Name"><Input value={smtp.sender_name} onChange={(event) => setSmtp((s) => ({ ...s, sender_name: event.target.value }))} placeholder="NoonDalton Sales" /></Field>
+              <Field label={t("settings.pipelineTab.senderEmailLabel")}><Input value={smtp.sender_email} onChange={(event) => setSmtp((s) => ({ ...s, sender_email: event.target.value }))} placeholder="sales@noondalton.com" /></Field>
+              <Field label={t("settings.pipelineTab.senderNameLabel")}><Input value={smtp.sender_name} onChange={(event) => setSmtp((s) => ({ ...s, sender_name: event.target.value }))} placeholder="NoonDalton Sales" /></Field>
             </div>
           </SettingsSection>
 
-          <SettingsSection isDark={isDark} title="Automation Thresholds" IconComp={Zap} desc="How aggressively the pipeline auto-approves and paces itself">
+          <SettingsSection isDark={isDark} title={t("settings.pipelineTab.thresholdsTitle")} IconComp={Zap} desc={t("settings.pipelineTab.thresholdsDesc")}>
             <div className="grid grid-cols-3 gap-1.5">
-              <Field label="Auto-send threshold" hint="0.0 – 1.0">
-                <Input type="number" step="0.05" min="0" max="1" value={thresholds.auto_send_threshold} onChange={(event) => setThresholds((t) => ({ ...t, auto_send_threshold: Number(event.target.value) }))} />
+              <Field label={t("settings.pipelineTab.autoSendThresholdLabel")} hint={t("settings.pipelineTab.autoSendThresholdHint")}>
+                <Input type="number" step="0.05" min="0" max="1" value={thresholds.auto_send_threshold} onChange={(event) => setThresholds((th) => ({ ...th, auto_send_threshold: Number(event.target.value) }))} />
               </Field>
-              <Field label="Max emails/day">
-                <Input type="number" min="1" value={thresholds.max_emails_per_day} onChange={(event) => setThresholds((t) => ({ ...t, max_emails_per_day: Number(event.target.value) }))} />
+              <Field label={t("settings.pipelineTab.maxEmailsLabel")}>
+                <Input type="number" min="1" value={thresholds.max_emails_per_day} onChange={(event) => setThresholds((th) => ({ ...th, max_emails_per_day: Number(event.target.value) }))} />
               </Field>
-              <Field label="Scan frequency (hours)">
-                <Input type="number" min="1" value={thresholds.scan_frequency_hours} onChange={(event) => setThresholds((t) => ({ ...t, scan_frequency_hours: Number(event.target.value) }))} />
+              <Field label={t("settings.pipelineTab.scanFrequencyLabel")}>
+                <Input type="number" min="1" value={thresholds.scan_frequency_hours} onChange={(event) => setThresholds((th) => ({ ...th, scan_frequency_hours: Number(event.target.value) }))} />
               </Field>
             </div>
           </SettingsSection>
 
           <div className="flex justify-end pb-2">
-            <Btn icon={<Save size={13} />} onClick={saveConfig} disabled={saving}>{saving ? "Saving..." : "Save Pipeline"}</Btn>
+            <Btn icon={<Save size={13} />} onClick={saveConfig} disabled={saving}>{saving ? t("settings.pipelineTab.savingButton") : t("settings.pipelineTab.saveButton")}</Btn>
           </div>
         </>
       )}
