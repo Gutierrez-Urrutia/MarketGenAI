@@ -9182,6 +9182,7 @@ function SettingsPage({ navigationState = {} }) {
         <button onClick={() => setTab("general")} className={settingsTabClass(tab === "general")}><BotIcon size={13} />{t("settings.general")}</button>
         <button onClick={() => setTab("templates")} className={settingsTabClass(tab === "templates")}><FileIcon size={13} />{t("settings.templates")}</button>
         <button onClick={() => setTab("integrations")} className={settingsTabClass(tab === "integrations")}><PlugIcon size={13} />{t("settings.integrations")}</button>
+        <button onClick={() => setTab("pipeline")} className={settingsTabClass(tab === "pipeline")}><LayersIcon size={13} />{t("settings.pipeline")}</button>
       </div>
 
       {tab === "general" && (<>
