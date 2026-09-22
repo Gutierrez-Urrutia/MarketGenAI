@@ -143,7 +143,7 @@ PIPELINE_ENCRYPTION_KEY=replace-with-a-generated-fernet-key
 > ```bash
 > python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 > ```
-> En producción, configúrala como variable de entorno en la plataforma de despliegue (no la subas al repo). Si se pierde la clave, las contraseñas SMTP cifradas con ella quedan irrecuperables y hay que volver a ingresarlas desde la pestaña Pipeline. Sin esta variable configurada, `PUT /api/v1/pipeline/config` responde `503` al intentar guardar credenciales SMTP.
+> En producción, configúrala en las variables de entorno del proyecto en Vercel (no la subas al repo). Si se pierde la clave, las contraseñas SMTP cifradas con ella quedan irrecuperables y hay que volver a ingresarlas desde la pestaña Pipeline. Sin esta variable configurada, `PUT /api/v1/pipeline/config` responde `503` al intentar guardar credenciales SMTP.
 
 ### 2. Iniciar con Docker Compose
 
