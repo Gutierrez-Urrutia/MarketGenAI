@@ -18,9 +18,10 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
 from app.core import url_safety
+from app.core.rate_limit import limiter
 from app.dependencies.auth import CurrentUser, get_current_user
 from app.schemas.job import JobAccepted
 from app.schemas.pipeline import (
@@ -318,7 +319,8 @@ async def _run_job_scout_now(run_id: str, config: Dict[str, Any]) -> None:
 
 
 @router.post("/runs", status_code=status.HTTP_202_ACCEPTED, response_model=JobAccepted)
-async def create_run(user: CurrentUser = Depends(get_current_user)):
+@limiter.limit("10/minute")
+async def create_run(request: Request, user: CurrentUser = Depends(get_current_user)):
     """Trigger a manual scan (Agente 1 only) for the caller's PipelineConfig.
 
     Always explicit — there is no scheduled/automatic trigger in this

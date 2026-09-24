@@ -144,3 +144,29 @@ async def test_get_run_returns_run(client):
         resp = await client.get(f"{API}/run-001")
     assert resp.status_code == 200
     assert resp.json()["id"] == "run-001"
+
+
+@pytest.mark.asyncio
+async def test_create_run_is_rate_limited(client):
+    from app.core.rate_limit import limiter
+
+    limiter.reset()
+    doc = fake_config({"sources": [fake_source({"enabled": True})]})
+    try:
+        with (
+            patch(
+                "app.routers.pipeline.pipeline_configs_repo.get_by_user",
+                new_callable=AsyncMock, return_value=doc,
+            ),
+            patch(
+                "app.routers.pipeline.pipeline_runs_repo.create",
+                new_callable=AsyncMock, return_value=fake_run(),
+            ),
+            patch("app.routers.pipeline.task_run_job_scout"),
+        ):
+            codes = [(await client.post(API)).status_code for _ in range(11)]
+    finally:
+        limiter.reset()
+
+    assert codes[:10] == [202] * 10
+    assert codes[10] == 429
