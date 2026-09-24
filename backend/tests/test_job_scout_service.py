@@ -24,6 +24,41 @@ def _fake_getaddrinfo(ip: str):
     return _impl
 
 
+class _FakeStreamCtx:
+    """Stand-in for what `httpx.AsyncClient.stream(...)` returns — an async
+    context manager yielding a response. url_safety.safe_get_bytes reads
+    the body via `response.aiter_bytes()`, which works on a manually
+    constructed `httpx.Response(..., content=...)`."""
+
+    def __init__(self, response: httpx.Response):
+        self._response = response
+
+    async def __aenter__(self) -> httpx.Response:
+        return self._response
+
+    async def __aexit__(self, *exc_info):
+        return False
+
+
+class _FailingStreamCtx:
+    """Simulates a connection error raised on entering the stream (this is
+    when httpx actually attempts the connection)."""
+
+    def __init__(self, exc: Exception):
+        self._exc = exc
+
+    async def __aenter__(self):
+        raise self._exc
+
+    async def __aexit__(self, *exc_info):
+        return False
+
+
+def _stream_response(status_code: int, content: bytes = b"", headers: dict | None = None, url: str = "https://x/") -> httpx.Response:
+    request = httpx.Request("GET", url)
+    return httpx.Response(status_code, content=content, headers=headers or {}, request=request)
+
+
 @pytest.fixture(autouse=True)
 def _fake_dns_resolves_to_public_ip():
     """Tests in this file use placeholder .example.com hosts. Runs the real
@@ -93,14 +128,14 @@ def test_sanitize_job_url_drops_empty_and_relative():
 async def test_scan_api_sanitizes_unsafe_job_url():
     source = fake_source()
 
-    async def fake_get(self, url, headers=None, params=None, **kwargs):
-        request = httpx.Request("GET", url)
-        return httpx.Response(200, json={"data": [
+    def fake_stream(self, method, url, headers=None, params=None, **kwargs):
+        body = json.dumps({"data": [
             {"title": "Ops Manager", "company": "Acme",
              "url": "javascript:alert(document.cookie)"},
-        ]}, request=request)
+        ]}).encode()
+        return _FakeStreamCtx(_stream_response(200, content=body, url=url))
 
-    with patch.object(httpx.AsyncClient, "get", fake_get):
+    with patch.object(httpx.AsyncClient, "stream", fake_stream):
         postings = await svc._scan_api(source, [])
 
     assert len(postings) == 1
@@ -119,12 +154,11 @@ async def test_scan_rss_sanitizes_unsafe_job_url():
     fake_parsed = MagicMock()
     fake_parsed.entries = [fake_entry]
 
-    async def fake_get(self, url, headers=None, params=None, **kwargs):
-        request = httpx.Request("GET", url)
-        return httpx.Response(200, content=b"<rss></rss>", request=request)
+    def fake_stream(self, method, url, headers=None, params=None, **kwargs):
+        return _FakeStreamCtx(_stream_response(200, content=b"<rss></rss>", url=url))
 
     with (
-        patch.object(httpx.AsyncClient, "get", fake_get),
+        patch.object(httpx.AsyncClient, "stream", fake_stream),
         patch.object(svc.feedparser, "parse", return_value=fake_parsed),
     ):
         postings = await svc._scan_rss(source, [])
@@ -149,13 +183,12 @@ async def test_scan_scraper_sanitizes_unsafe_job_url():
     </body></html>
     """
 
-    async def fake_get(self, url, **kwargs):
-        request = httpx.Request("GET", url)
-        return httpx.Response(200, text=html, request=request)
+    def fake_stream(self, method, url, headers=None, params=None, **kwargs):
+        return _FakeStreamCtx(_stream_response(200, content=html.encode(), url=url))
 
     with (
         patch.object(svc, "_robots_txt_allows", new_callable=AsyncMock, return_value=True),
-        patch.object(httpx.AsyncClient, "get", fake_get),
+        patch.object(httpx.AsyncClient, "stream", fake_stream),
         patch.object(svc.asyncio, "sleep", new_callable=AsyncMock),
     ):
         postings = await svc._scan_scraper(source, [])
@@ -180,13 +213,12 @@ async def test_scan_scraper_resolves_relative_link_against_page_url():
     </body></html>
     """
 
-    async def fake_get(self, url, **kwargs):
-        request = httpx.Request("GET", url)
-        return httpx.Response(200, text=html, request=request)
+    def fake_stream(self, method, url, headers=None, params=None, **kwargs):
+        return _FakeStreamCtx(_stream_response(200, content=html.encode(), url=url))
 
     with (
         patch.object(svc, "_robots_txt_allows", new_callable=AsyncMock, return_value=True),
-        patch.object(httpx.AsyncClient, "get", fake_get),
+        patch.object(httpx.AsyncClient, "stream", fake_stream),
         patch.object(svc.asyncio, "sleep", new_callable=AsyncMock),
     ):
         postings = await svc._scan_scraper(source, [])
@@ -232,12 +264,11 @@ async def test_scan_api_decrypts_api_key_and_sends_bearer_header():
 
         captured_headers = {}
 
-        async def fake_get(self, url, headers=None, params=None, **kwargs):
+        def fake_stream(self, method, url, headers=None, params=None, **kwargs):
             captured_headers.update(headers or {})
-            request = httpx.Request("GET", url)
-            return httpx.Response(200, json={"data": []}, request=request)
+            return _FakeStreamCtx(_stream_response(200, content=b'{"data": []}', url=url))
 
-        with patch.object(httpx.AsyncClient, "get", fake_get):
+        with patch.object(httpx.AsyncClient, "stream", fake_stream):
             postings = await svc._scan_api(source, ["BPO"])
 
         assert postings == []
@@ -257,12 +288,11 @@ async def test_scan_api_falls_back_to_legacy_plaintext_api_key():
 
     captured_headers = {}
 
-    async def fake_get(self, url, headers=None, params=None, **kwargs):
+    def fake_stream(self, method, url, headers=None, params=None, **kwargs):
         captured_headers.update(headers or {})
-        request = httpx.Request("GET", url)
-        return httpx.Response(200, json={"data": []}, request=request)
+        return _FakeStreamCtx(_stream_response(200, content=b'{"data": []}', url=url))
 
-    with patch.object(httpx.AsyncClient, "get", fake_get):
+    with patch.object(httpx.AsyncClient, "stream", fake_stream):
         postings = await svc._scan_api(source, [])
 
     assert postings == []
@@ -288,13 +318,13 @@ def test_resolve_source_secrets_prefers_encrypted_over_legacy_plaintext():
 async def test_scan_api_parses_common_response_shapes():
     source = fake_source()
 
-    async def fake_get(self, url, headers=None, params=None, **kwargs):
-        request = httpx.Request("GET", url)
-        return httpx.Response(200, json={"data": [
+    def fake_stream(self, method, url, headers=None, params=None, **kwargs):
+        body = json.dumps({"data": [
             {"title": "Ops Manager", "company": "Acme", "description": "x", "url": "https://x"},
-        ]}, request=request)
+        ]}).encode()
+        return _FakeStreamCtx(_stream_response(200, content=body, url=url))
 
-    with patch.object(httpx.AsyncClient, "get", fake_get):
+    with patch.object(httpx.AsyncClient, "stream", fake_stream):
         postings = await svc._scan_api(source, [])
 
     assert len(postings) == 1
@@ -306,13 +336,66 @@ async def test_scan_api_parses_common_response_shapes():
 async def test_scan_api_returns_empty_on_http_error_without_raising():
     source = fake_source()
 
-    async def fake_get(self, url, headers=None, params=None, **kwargs):
-        raise httpx.ConnectError("boom", request=httpx.Request("GET", url))
+    def fake_stream(self, method, url, headers=None, params=None, **kwargs):
+        return _FailingStreamCtx(httpx.ConnectError("boom", request=httpx.Request("GET", url)))
 
-    with patch.object(httpx.AsyncClient, "get", fake_get):
+    with patch.object(httpx.AsyncClient, "stream", fake_stream):
         postings = await svc._scan_api(source, [])
 
     assert postings == []
+
+
+# ── Response-size cap wiring (mechanism itself is tested in
+# test_url_safety.py — these just confirm each call site actually passes
+# MAX_SOURCE_RESPONSE_BYTES through) ─────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_scan_api_passes_max_bytes_cap():
+    source = fake_source()
+    with patch.object(
+        svc.url_safety, "safe_get_bytes", new_callable=AsyncMock, return_value=(200, b'{"data": []}'),
+    ) as mock_fetch:
+        await svc._scan_api(source, [])
+    assert mock_fetch.call_args.kwargs["max_bytes"] == svc.MAX_SOURCE_RESPONSE_BYTES
+
+
+@pytest.mark.asyncio
+async def test_scan_rss_passes_max_bytes_cap():
+    source = fake_source({"source_type": "rss", "config": {"feed_url": "https://feed.example.com/rss"}})
+    with (
+        patch.object(
+            svc.url_safety, "safe_get_bytes", new_callable=AsyncMock, return_value=(200, b"<rss></rss>"),
+        ) as mock_fetch,
+        patch.object(svc.feedparser, "parse", return_value=MagicMock(entries=[])),
+    ):
+        await svc._scan_rss(source, [])
+    assert mock_fetch.call_args.kwargs["max_bytes"] == svc.MAX_SOURCE_RESPONSE_BYTES
+
+
+@pytest.mark.asyncio
+async def test_scan_scraper_passes_max_bytes_cap():
+    source = fake_source({
+        "source_type": "scraper",
+        "config": {"url": "https://jobs.example.com/list", "selectors": {"item": ".job"}},
+    })
+    with (
+        patch.object(svc, "_robots_txt_allows", new_callable=AsyncMock, return_value=True),
+        patch.object(
+            svc.url_safety, "safe_get_bytes", new_callable=AsyncMock, return_value=(200, b"<html></html>"),
+        ) as mock_fetch,
+        patch.object(svc.asyncio, "sleep", new_callable=AsyncMock),
+    ):
+        await svc._scan_scraper(source, [])
+    assert mock_fetch.call_args.kwargs["max_bytes"] == svc.MAX_SOURCE_RESPONSE_BYTES
+
+
+@pytest.mark.asyncio
+async def test_robots_txt_allows_passes_max_bytes_cap():
+    with patch.object(
+        svc.url_safety, "safe_get_bytes", new_callable=AsyncMock, return_value=(200, b""),
+    ) as mock_fetch:
+        await svc._robots_txt_allows("https://jobs.example.com/list")
+    assert mock_fetch.call_args.kwargs["max_bytes"] == svc.MAX_SOURCE_RESPONSE_BYTES
 
 
 def test_split_rss_title_handles_common_separators():
@@ -333,12 +416,11 @@ async def test_scan_rss_parses_entries():
     fake_parsed = MagicMock()
     fake_parsed.entries = [fake_entry]
 
-    async def fake_get(self, url, headers=None, params=None, **kwargs):
-        request = httpx.Request("GET", url)
-        return httpx.Response(200, content=b"<rss>fake feed bytes</rss>", request=request)
+    def fake_stream(self, method, url, headers=None, params=None, **kwargs):
+        return _FakeStreamCtx(_stream_response(200, content=b"<rss>fake feed bytes</rss>", url=url))
 
     with (
-        patch.object(httpx.AsyncClient, "get", fake_get),
+        patch.object(httpx.AsyncClient, "stream", fake_stream),
         patch.object(svc.feedparser, "parse", return_value=fake_parsed) as mock_parse,
     ):
         postings = await svc._scan_rss(source, [])
@@ -382,13 +464,12 @@ async def test_scan_scraper_extracts_items_via_selectors():
     </body></html>
     """
 
-    async def fake_get(self, url, **kwargs):
-        request = httpx.Request("GET", url)
-        return httpx.Response(200, text=html, request=request)
+    def fake_stream(self, method, url, headers=None, params=None, **kwargs):
+        return _FakeStreamCtx(_stream_response(200, content=html.encode(), url=url))
 
     with (
         patch.object(svc, "_robots_txt_allows", new_callable=AsyncMock, return_value=True),
-        patch.object(httpx.AsyncClient, "get", fake_get),
+        patch.object(httpx.AsyncClient, "stream", fake_stream),
         patch.object(svc.asyncio, "sleep", new_callable=AsyncMock),
     ):
         postings = await svc._scan_scraper(source, [])
@@ -409,12 +490,12 @@ async def test_scan_scraper_extracts_items_via_selectors():
 async def test_scan_api_blocks_unsafe_target():
     source = fake_source({"config": {"base_url": "http://internal.example.com/jobs"}})
 
-    async def fake_get(self, url, headers=None, params=None, **kwargs):
+    def fake_stream(self, method, url, headers=None, params=None, **kwargs):
         pytest.fail("must not reach the network for a blocked target")
 
     with (
         patch.object(url_safety.socket, "getaddrinfo", side_effect=_fake_getaddrinfo(METADATA_IP)),
-        patch.object(httpx.AsyncClient, "get", fake_get),
+        patch.object(httpx.AsyncClient, "stream", fake_stream),
     ):
         postings = await svc._scan_api(source, [])
 
@@ -425,12 +506,12 @@ async def test_scan_api_blocks_unsafe_target():
 async def test_scan_rss_blocks_unsafe_target():
     source = fake_source({"source_type": "rss", "config": {"feed_url": "http://internal.example.com/rss"}})
 
-    async def fake_get(self, url, headers=None, params=None, **kwargs):
+    def fake_stream(self, method, url, headers=None, params=None, **kwargs):
         pytest.fail("must not reach the network for a blocked target")
 
     with (
         patch.object(url_safety.socket, "getaddrinfo", side_effect=_fake_getaddrinfo(PRIVATE_IP)),
-        patch.object(httpx.AsyncClient, "get", fake_get),
+        patch.object(httpx.AsyncClient, "stream", fake_stream),
         patch.object(svc.feedparser, "parse") as mock_parse,
     ):
         postings = await svc._scan_rss(source, [])
@@ -446,12 +527,12 @@ async def test_scan_scraper_blocks_unsafe_target():
         "config": {"url": "http://internal.example.com/list", "selectors": {"item": ".job"}},
     })
 
-    async def fake_get(self, url, **kwargs):
+    def fake_stream(self, method, url, headers=None, params=None, **kwargs):
         pytest.fail("must not reach the network for a blocked target")
 
     with (
         patch.object(url_safety.socket, "getaddrinfo", side_effect=_fake_getaddrinfo(PRIVATE_IP)),
-        patch.object(httpx.AsyncClient, "get", fake_get),
+        patch.object(httpx.AsyncClient, "stream", fake_stream),
     ):
         postings = await svc._scan_scraper(source, [])
 
@@ -470,18 +551,17 @@ async def test_scan_api_blocks_redirect_to_unsafe_target():
 
     call_count = {"n": 0}
 
-    async def fake_get(self, url, headers=None, params=None, **kwargs):
+    def fake_stream(self, method, url, headers=None, params=None, **kwargs):
         call_count["n"] += 1
-        request = httpx.Request("GET", url)
         if "public.example.com" in url:
-            return httpx.Response(
-                302, headers={"location": "http://internal.example.com/jobs"}, request=request,
-            )
+            return _FakeStreamCtx(_stream_response(
+                302, headers={"location": "http://internal.example.com/jobs"}, url=url,
+            ))
         pytest.fail("redirect target must be blocked before it is ever requested")
 
     with (
         patch.object(url_safety.socket, "getaddrinfo", side_effect=fake_getaddrinfo),
-        patch.object(httpx.AsyncClient, "get", fake_get),
+        patch.object(httpx.AsyncClient, "stream", fake_stream),
     ):
         postings = await svc._scan_api(source, [])
 

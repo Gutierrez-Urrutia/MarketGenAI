@@ -32,6 +32,7 @@ from app.core import url_safety
 from app.core.pipeline_constants import (
     MAX_RESULTS_PER_RUN,
     MAX_RESULTS_PER_SOURCE,
+    MAX_SOURCE_RESPONSE_BYTES,
     POSTING_DESCRIPTION_MAX_CHARS,
     RELEVANCE_SCORE_THRESHOLD,
     RELEVANCE_SCORING_BATCH_SIZE,
@@ -152,9 +153,13 @@ async def _scan_api(source: Dict[str, Any], keywords: List[str]) -> List[RawJobP
 
     try:
         async with httpx.AsyncClient(timeout=SOURCE_FETCH_TIMEOUT_SECONDS) as client:
-            resp = await url_safety.safe_get(client, base_url, headers=headers, params=params)
-            resp.raise_for_status()
-            payload = resp.json()
+            status_code, body = await url_safety.safe_get_bytes(
+                client, base_url, headers=headers, params=params,
+                max_bytes=MAX_SOURCE_RESPONSE_BYTES,
+            )
+            if status_code >= 400:
+                raise ValueError(f"HTTP {status_code}")
+            payload = json.loads(body)
     except Exception as exc:
         logger.warning("job_scout: API source %s failed: %s", source.get("id"), exc)
         return []
@@ -207,9 +212,11 @@ async def _scan_rss(source: Dict[str, Any], keywords: List[str]) -> List[RawJobP
     # local-file fallback.
     try:
         async with httpx.AsyncClient(timeout=SOURCE_FETCH_TIMEOUT_SECONDS) as client:
-            resp = await url_safety.safe_get(client, feed_url)
-            resp.raise_for_status()
-            feed_content = resp.content
+            status_code, feed_content = await url_safety.safe_get_bytes(
+                client, feed_url, max_bytes=MAX_SOURCE_RESPONSE_BYTES,
+            )
+            if status_code >= 400:
+                raise ValueError(f"HTTP {status_code}")
     except Exception as exc:
         logger.warning("job_scout: RSS source %s failed to fetch: %s", source.get("id"), exc)
         return []
@@ -250,11 +257,14 @@ async def _robots_txt_allows(url: str) -> bool:
     robots_url = f"{parsed_url.scheme}://{parsed_url.netloc}/robots.txt"
     try:
         async with httpx.AsyncClient(timeout=SCRAPER_ROBOTS_TXT_TIMEOUT_SECONDS) as client:
-            resp = await url_safety.safe_get(client, robots_url, headers={"User-Agent": SCRAPER_USER_AGENT})
-        if resp.status_code >= 400:
+            status_code, body = await url_safety.safe_get_bytes(
+                client, robots_url, headers={"User-Agent": SCRAPER_USER_AGENT},
+                max_bytes=MAX_SOURCE_RESPONSE_BYTES,
+            )
+        if status_code >= 400:
             return True
         parser = urllib.robotparser.RobotFileParser()
-        parser.parse(resp.text.splitlines())
+        parser.parse(body.decode("utf-8", errors="replace").splitlines())
         return parser.can_fetch(SCRAPER_USER_AGENT, url)
     except url_safety.UnsafeUrlError:
         # Unlike an unreachable/erroring robots.txt (fail open, below),
@@ -283,15 +293,17 @@ async def _scan_scraper(source: Dict[str, Any], keywords: List[str]) -> List[Raw
         logger.warning("job_scout: scraper source %s blocked by robots.txt", source.get("id"))
         return []
 
-    html = ""
+    html: bytes = b""
     try:
         async with httpx.AsyncClient(
             timeout=SOURCE_FETCH_TIMEOUT_SECONDS,
             headers={"User-Agent": SCRAPER_USER_AGENT},
         ) as client:
-            resp = await url_safety.safe_get(client, url)
-            resp.raise_for_status()
-            html = resp.text
+            status_code, html = await url_safety.safe_get_bytes(
+                client, url, max_bytes=MAX_SOURCE_RESPONSE_BYTES,
+            )
+            if status_code >= 400:
+                raise ValueError(f"HTTP {status_code}")
     except Exception as exc:
         logger.warning("job_scout: scraper source %s failed: %s", source.get("id"), exc)
         return []

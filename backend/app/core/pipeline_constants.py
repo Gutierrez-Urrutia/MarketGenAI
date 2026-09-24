@@ -19,6 +19,14 @@ RELEVANCE_SCORE_THRESHOLD = 0.6
 # consume the whole run's time budget below.
 SOURCE_FETCH_TIMEOUT_SECONDS = 20
 
+# Hard cap on how many bytes of a single source response (API JSON, scraped
+# HTML, RSS feed, robots.txt) are ever held in memory. Enforced by streaming
+# the response and cutting off the read as soon as this is exceeded
+# (app.core.url_safety.safe_get_bytes) — not by loading the full body first
+# and measuring it afterwards, which would already have paid the memory
+# cost a misbehaving/malicious source could use to exhaust the worker.
+MAX_SOURCE_RESPONSE_BYTES = 5 * 1024 * 1024  # 5 MB
+
 # Caps to keep one run bounded regardless of how a source is configured.
 MAX_RESULTS_PER_SOURCE = 30
 MAX_RESULTS_PER_RUN = 100

@@ -85,30 +85,56 @@ async def validate_url_target(url: str) -> None:
             raise UnsafeUrlError(f"URL host '{host}' resolves to a blocked address ({raw_ip}).")
 
 
-async def safe_get(
+async def safe_get_bytes(
     client: httpx.AsyncClient,
     url: str,
     *,
     headers: Optional[Dict[str, Any]] = None,
     params: Optional[Dict[str, Any]] = None,
-) -> httpx.Response:
-    """GET a URL with SSRF protection. Validates the URL — and every
-    redirect hop, individually, right before it is requested. Redirects
-    are followed here one hop at a time instead of via httpx's own
-    `follow_redirects`, specifically so a malicious redirect target can
-    never bypass `validate_url_target`.
+    max_bytes: int,
+) -> "tuple[int, bytes]":
+    """GET a URL with SSRF protection, returning (status_code, body).
+
+    Validates the URL — and every redirect hop, individually, right before
+    it is requested. Redirects are followed here one hop at a time instead
+    of via httpx's own `follow_redirects`, specifically so a malicious
+    redirect target can never bypass `validate_url_target`.
+
+    The body is read in chunks and reading stops as soon as more than
+    `max_bytes` have arrived, instead of buffering the whole response and
+    only checking its size afterwards — a misbehaving or malicious source
+    can't use an unbounded response to exhaust the caller's memory, since
+    the memory is never allocated for the part beyond the cap in the first
+    place. The returned body is truncated to `max_bytes`.
+
+    Does not raise on a 4xx/5xx status — callers decide what that means
+    for them (e.g. job_scout_service's adapters treat it as "this source
+    failed"; a robots.txt fetch treats a 404 as "no restrictions").
     """
     current_url = url
     current_params = params
     for _ in range(MAX_REDIRECTS + 1):
         await validate_url_target(current_url)
-        response = await client.get(
-            current_url, headers=headers, params=current_params, follow_redirects=False,
-        )
-        if response.status_code in _REDIRECT_STATUS_CODES and response.headers.get("location"):
-            current_url = urljoin(current_url, response.headers["location"])
-            current_params = None  # query params applied to the original request only
-            continue
-        return response
+        async with client.stream(
+            "GET", current_url, headers=headers, params=current_params, follow_redirects=False,
+        ) as response:
+            if response.status_code in _REDIRECT_STATUS_CODES and response.headers.get("location"):
+                current_url = urljoin(current_url, response.headers["location"])
+                current_params = None  # query params applied to the original request only
+                continue
+
+            chunks = bytearray()
+            byte_iter = response.aiter_bytes()
+            try:
+                async for chunk in byte_iter:
+                    chunks.extend(chunk)
+                    if len(chunks) >= max_bytes:
+                        break  # stop pulling further chunks once over the cap
+            finally:
+                # Breaking out of `async for` early does not close the
+                # underlying async generator on its own -- do it explicitly
+                # so a truncated read doesn't leave anything dangling.
+                await byte_iter.aclose()
+            return response.status_code, bytes(chunks[:max_bytes])
 
     raise UnsafeUrlError(f"Too many redirects (> {MAX_REDIRECTS}) fetching '{url}'.")
