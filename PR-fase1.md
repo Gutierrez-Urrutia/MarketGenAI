@@ -30,6 +30,7 @@ Ya está documentada en `backend/.env.example` y ahora también en `README.es.md
 ## Deuda técnica (fuera de alcance de este PR)
 
 - `pages/settings/Settings.jsx`, `components/layout/Layout.jsx` y `components/layout/Sidebar.jsx`: código sin uso de un intento anterior con react-router — no están importados por ningún punto de entrada real de la app.
+- `backend/main.py` (raíz de `backend/`, no `backend/app/main.py`): entrypoint antiguo sin uso, confirmado. `api/index.py` importa `app.main.app`; Dockerfile y `docker-compose.yml` arrancan `uvicorn app.main:app`; ningún archivo del repo importa ni ejecuta `main` a secas. Solo lo toca su commit inicial. Es candidato a borrarse en un PR aparte (tiene CORS con `allow_credentials=True`, así que conviene que no quede como trampa).
 - `Dashboard.jsx` concentra toda la app en más de 12.000 líneas (single-file component con routing, todas las páginas y toda la lógica de negocio inline).
 - Acción explícita para borrar la contraseña SMTP (el backend ya lo soporta con `""`; falta en la interfaz).
 - El frontend no tiene ningún ejecutor de pruebas configurado (ni Vitest ni Jest en `package.json`), así que no existen tests de interfaz en todo el proyecto; la cobertura es solo de backend.
@@ -53,7 +54,7 @@ Ya está documentada en `backend/.env.example` y ahora también en `README.es.md
 
 **Propuesta:** poner `allow_credentials=False`. Como la autenticación es por cabecera Bearer, no se necesita, y el navegador deja de exponer respuestas autenticadas por cookies a orígenes arbitrarios. Las vistas previas Vercel del equipo siguen funcionando porque el regex no cambia. Opcionalmente, acotar el regex al prefijo del proyecto (p. ej. `https://marketgen-.*\.vercel\.app`).
 
-**No aplicado:** vive en `main.py` (código compartido) y la decisión es del equipo. Nota: existe además un `backend/main.py` versionado en la raíz de `backend/` con `allow_credentials=True` y `CORS_ORIGINS` (parece un entrypoint antiguo; confirmar si está en uso).
+**No aplicado:** vive en `main.py` (código compartido) y la decisión es del equipo. Nota: el `backend/main.py` de la raíz de `backend/` también tiene `allow_credentials=True`, pero está sin uso (ver deuda técnica), por lo que no afecta al comportamiento real.
 
 ### Tarea aparte: dependencias vulnerables (preexistentes, no introducidas por la Fase 2)
 
