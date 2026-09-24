@@ -22,6 +22,21 @@ class LeadStatus(str, Enum):
     ERROR = "error"
 
 
+class RawJobPosting(BaseModel):
+    """Intermediate shape returned by a source adapter, before dedup/scoring.
+    Never persisted as-is — job_scout_service turns the ones that survive
+    dedup + relevance scoring into a Lead."""
+
+    job_title: str
+    company_name: str
+    job_description: str = ""
+    job_url: str = ""
+    location: Optional[str] = None
+    salary_range: Optional[str] = None
+    posted_date: Optional[datetime] = None
+    source_id: str
+
+
 class Lead(BaseModel):
     id: str
     pipeline_config_id: str
@@ -41,3 +56,8 @@ class Lead(BaseModel):
     fingerprint: str
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+
+
+class LeadListResponse(BaseModel):
+    items: List[Lead]
+    total: int

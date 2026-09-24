@@ -1,0 +1,397 @@
+"""Unit tests for JobScoutService (Agente 1 — Fase 2). All external calls
+(httpx, feedparser, DeepSeek, Firestore) are mocked."""
+from __future__ import annotations
+
+import json
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import httpx
+import pytest
+
+from app.schemas.lead import RawJobPosting
+from app.services import encryption_service, job_scout_service as svc
+
+
+def fake_source(overrides: dict | None = None) -> dict:
+    base = {
+        "id": "source-001",
+        "name": "JSearch",
+        "source_type": "api",
+        "enabled": True,
+        "config": {"base_url": "https://jsearch.example.com/jobs"},
+        "config_encrypted": {},
+        "rate_limit": None,
+    }
+    if overrides:
+        base.update(overrides)
+    return base
+
+
+def fake_posting(**overrides) -> RawJobPosting:
+    base = dict(
+        job_title="Data Entry Specialist",
+        company_name="Acme Corp",
+        job_description="We need help with back-office data entry.",
+        job_url="https://acme.example.com/jobs/1",
+        source_id="source-001",
+    )
+    base.update(overrides)
+    return RawJobPosting(**base)
+
+
+# ── compute_fingerprint / dedup scoping ─────────────────────────────────────
+
+def test_compute_fingerprint_is_stable_and_case_insensitive():
+    a = svc.compute_fingerprint("Acme Corp", "Data Entry Specialist")
+    b = svc.compute_fingerprint("acme corp", "data entry specialist")
+    assert a == b
+    assert a != svc.compute_fingerprint("Other Corp", "Data Entry Specialist")
+
+
+@pytest.mark.asyncio
+async def test_is_duplicate_scopes_query_by_pipeline_config_id():
+    """Two different pipeline configs must be checked independently — the
+    same fingerprint existing for config A must not block config B."""
+    with patch.object(svc.leads_repo, "list", new_callable=AsyncMock) as mock_list:
+        mock_list.return_value = []
+        result = await svc._is_duplicate("config-B", "fp-123")
+
+    assert result is False
+    filters = mock_list.call_args.kwargs["filters"]
+    assert ("pipeline_config_id", "==", "config-B") in filters
+    assert ("fingerprint", "==", "fp-123") in filters
+
+
+# ── Source adapters ──────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_scan_api_decrypts_api_key_and_sends_bearer_header():
+    encryption_service._fernet.cache_clear()
+    from cryptography.fernet import Fernet
+    key = Fernet.generate_key().decode()
+    with patch("app.services.encryption_service.settings.pipeline_encryption_key", key):
+        encryption_service._fernet.cache_clear()
+        token = encryption_service.encrypt("secret-api-key")
+
+        source = fake_source({"config_encrypted": {"api_key": token}})
+
+        captured_headers = {}
+
+        async def fake_get(self, url, headers=None, params=None):
+            captured_headers.update(headers or {})
+            request = httpx.Request("GET", url)
+            return httpx.Response(200, json={"data": []}, request=request)
+
+        with patch.object(httpx.AsyncClient, "get", fake_get):
+            postings = await svc._scan_api(source, ["BPO"])
+
+        assert postings == []
+        assert captured_headers.get("Authorization") == "Bearer secret-api-key"
+    encryption_service._fernet.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_scan_api_parses_common_response_shapes():
+    source = fake_source()
+
+    async def fake_get(self, url, headers=None, params=None):
+        request = httpx.Request("GET", url)
+        return httpx.Response(200, json={"data": [
+            {"title": "Ops Manager", "company": "Acme", "description": "x", "url": "https://x"},
+        ]}, request=request)
+
+    with patch.object(httpx.AsyncClient, "get", fake_get):
+        postings = await svc._scan_api(source, [])
+
+    assert len(postings) == 1
+    assert postings[0].job_title == "Ops Manager"
+    assert postings[0].company_name == "Acme"
+
+
+@pytest.mark.asyncio
+async def test_scan_api_returns_empty_on_http_error_without_raising():
+    source = fake_source()
+
+    async def fake_get(self, url, headers=None, params=None):
+        raise httpx.ConnectError("boom", request=httpx.Request("GET", url))
+
+    with patch.object(httpx.AsyncClient, "get", fake_get):
+        postings = await svc._scan_api(source, [])
+
+    assert postings == []
+
+
+def test_split_rss_title_handles_common_separators():
+    assert svc._split_rss_title("Data Entry Clerk at Acme Corp") == ("Data Entry Clerk", "Acme Corp")
+    assert svc._split_rss_title("Ops Manager - Beta Inc") == ("Ops Manager", "Beta Inc")
+    assert svc._split_rss_title("No separator here") == ("No separator here", "")
+
+
+@pytest.mark.asyncio
+async def test_scan_rss_parses_entries():
+    source = fake_source({"source_type": "rss", "config": {"feed_url": "https://feed.example.com/rss"}})
+
+    fake_entry = MagicMock()
+    fake_entry.title = "Data Entry Clerk at Acme Corp"
+    fake_entry.summary = "Some summary"
+    fake_entry.link = "https://acme.example.com/jobs/1"
+
+    fake_parsed = MagicMock()
+    fake_parsed.entries = [fake_entry]
+
+    with patch.object(svc.feedparser, "parse", return_value=fake_parsed):
+        postings = await svc._scan_rss(source, [])
+
+    assert len(postings) == 1
+    assert postings[0].job_title == "Data Entry Clerk"
+    assert postings[0].company_name == "Acme Corp"
+
+
+@pytest.mark.asyncio
+async def test_scan_scraper_respects_robots_txt_disallow():
+    source = fake_source({
+        "source_type": "scraper",
+        "config": {"url": "https://jobs.example.com/list", "selectors": {"item": ".job"}},
+    })
+
+    with patch.object(svc, "_robots_txt_allows", new_callable=AsyncMock) as mock_robots:
+        mock_robots.return_value = False
+        postings = await svc._scan_scraper(source, [])
+
+    assert postings == []
+
+
+@pytest.mark.asyncio
+async def test_scan_scraper_extracts_items_via_selectors():
+    source = fake_source({
+        "source_type": "scraper",
+        "config": {
+            "url": "https://jobs.example.com/list",
+            "selectors": {"item": ".job", "title": ".title", "company": ".company", "link": "a"},
+        },
+    })
+    html = """
+    <html><body>
+      <div class="job"><span class="title">Ops Manager</span><span class="company">Acme</span>
+        <a href="https://jobs.example.com/1">link</a></div>
+    </body></html>
+    """
+
+    async def fake_get(self, url, **kwargs):
+        request = httpx.Request("GET", url)
+        return httpx.Response(200, text=html, request=request)
+
+    with (
+        patch.object(svc, "_robots_txt_allows", new_callable=AsyncMock, return_value=True),
+        patch.object(httpx.AsyncClient, "get", fake_get),
+        patch.object(svc.asyncio, "sleep", new_callable=AsyncMock),
+    ):
+        postings = await svc._scan_scraper(source, [])
+
+    assert len(postings) == 1
+    assert postings[0].job_title == "Ops Manager"
+    assert postings[0].company_name == "Acme"
+    assert postings[0].job_url == "https://jobs.example.com/1"
+
+
+# ── Relevance scoring ────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_score_relevance_batch_happy_path():
+    postings = [fake_posting(job_title="A"), fake_posting(job_title="B")]
+
+    async def fake_generate_text(prompt, **kwargs):
+        return json.dumps([
+            {"id": 0, "relevance_score": 0.9, "matched_keywords": ["BPO"], "reasoning": "x", "suggested_value_prop": "y"},
+            {"id": 1, "relevance_score": 0.1, "matched_keywords": [], "reasoning": "x", "suggested_value_prop": "y"},
+        ])
+
+    with patch.object(svc.deepseek_service, "generate_text", fake_generate_text):
+        results = await svc.score_relevance_batch(postings, ["BPO"])
+
+    assert results[0]["relevance_score"] == 0.9
+    assert results[1]["relevance_score"] == 0.1
+
+
+@pytest.mark.asyncio
+async def test_score_relevance_batch_falls_back_to_per_item_on_malformed_response():
+    postings = [fake_posting(job_title="A"), fake_posting(job_title="B")]
+
+    calls = {"count": 0}
+
+    async def fake_generate_text(prompt, **kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            # Malformed batch response: text prefix before the JSON array.
+            return "not json at all"
+        return json.dumps([{"id": 0, "relevance_score": 0.5, "matched_keywords": [], "reasoning": "x"}])
+
+    with patch.object(svc.deepseek_service, "generate_text", fake_generate_text):
+        results = await svc.score_relevance_batch(postings, [])
+
+    assert len(results) == 2
+    assert calls["count"] == 3  # 1 batch attempt + 2 per-item fallback calls
+
+
+@pytest.mark.asyncio
+async def test_score_relevance_batch_empty_input_returns_empty_without_calling_llm():
+    with patch.object(svc.deepseek_service, "generate_text", new_callable=AsyncMock) as mock_llm:
+        results = await svc.score_relevance_batch([], [])
+    assert results == {}
+    mock_llm.assert_not_called()
+
+
+def test_clean_json_response_strips_markdown_fence():
+    raw = "```json\n[{\"id\": 0}]\n```"
+    assert svc._clean_json_response(raw) == '[{"id": 0}]'
+
+
+# ── scan_all_sources orchestration ──────────────────────────────────────────
+
+def fake_pipeline_config(overrides: dict | None = None) -> dict:
+    base = {
+        "id": "config-1",
+        "userId": "user-1",
+        "keywords": ["BPO"],
+        "excluded_companies": [],
+        "sources": [fake_source()],
+    }
+    if overrides:
+        base.update(overrides)
+    return base
+
+
+@pytest.mark.asyncio
+async def test_scan_all_sources_persists_leads_above_threshold_only():
+    pipeline_config = fake_pipeline_config()
+
+    async def fake_generate_text(prompt, **kwargs):
+        return json.dumps([{"id": 0, "relevance_score": 0.9, "matched_keywords": ["BPO"], "reasoning": "x"}])
+
+    with (
+        patch.object(svc, "_scan_source", new_callable=AsyncMock, return_value=[fake_posting()]),
+        patch.object(svc, "_is_duplicate", new_callable=AsyncMock, return_value=False),
+        patch.object(svc.deepseek_service, "generate_text", fake_generate_text),
+        patch.object(svc.leads_repo, "create", new_callable=AsyncMock) as mock_create,
+    ):
+        result = await svc.scan_all_sources(pipeline_config, "run-1")
+
+    assert result["leads_new"] == 1
+    assert result["leads_found"] == 1
+    assert result["partial"] is False
+    mock_create.assert_awaited_once()
+    persisted = mock_create.call_args.args[0]
+    assert persisted["pipeline_config_id"] == "config-1"
+    assert persisted["user_id"] == "user-1"
+    assert persisted["pipeline_run_id"] == "run-1"
+
+
+@pytest.mark.asyncio
+async def test_scan_all_sources_skips_leads_below_threshold():
+    pipeline_config = fake_pipeline_config()
+
+    async def fake_generate_text(prompt, **kwargs):
+        return json.dumps([{"id": 0, "relevance_score": 0.2, "matched_keywords": [], "reasoning": "x"}])
+
+    with (
+        patch.object(svc, "_scan_source", new_callable=AsyncMock, return_value=[fake_posting()]),
+        patch.object(svc, "_is_duplicate", new_callable=AsyncMock, return_value=False),
+        patch.object(svc.deepseek_service, "generate_text", fake_generate_text),
+        patch.object(svc.leads_repo, "create", new_callable=AsyncMock) as mock_create,
+    ):
+        result = await svc.scan_all_sources(pipeline_config, "run-1")
+
+    assert result["leads_new"] == 0
+    assert result["leads_found"] == 1
+    mock_create.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_scan_all_sources_skips_duplicates_without_scoring():
+    pipeline_config = fake_pipeline_config()
+
+    with (
+        patch.object(svc, "_scan_source", new_callable=AsyncMock, return_value=[fake_posting()]),
+        patch.object(svc, "_is_duplicate", new_callable=AsyncMock, return_value=True),
+        patch.object(svc, "score_relevance_batch", new_callable=AsyncMock) as mock_score,
+        patch.object(svc.leads_repo, "create", new_callable=AsyncMock) as mock_create,
+    ):
+        result = await svc.scan_all_sources(pipeline_config, "run-1")
+
+    assert result["leads_found"] == 0
+    assert result["leads_new"] == 0
+    mock_score.assert_not_called()
+    mock_create.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_scan_all_sources_excludes_companies_before_scoring():
+    pipeline_config = fake_pipeline_config({"excluded_companies": ["Acme Corp"]})
+
+    with (
+        patch.object(svc, "_scan_source", new_callable=AsyncMock, return_value=[fake_posting(company_name="Acme Corp")]),
+        patch.object(svc, "score_relevance_batch", new_callable=AsyncMock) as mock_score,
+        patch.object(svc.leads_repo, "create", new_callable=AsyncMock) as mock_create,
+    ):
+        result = await svc.scan_all_sources(pipeline_config, "run-1")
+
+    assert result["leads_found"] == 0
+    mock_score.assert_not_called()
+    mock_create.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_scan_all_sources_one_failing_source_does_not_abort_run():
+    """A source that raises must be recorded as an error and marked
+    partial, but the run must still process the remaining sources."""
+    source_a = fake_source({"id": "source-a"})
+    source_b = fake_source({"id": "source-b"})
+    pipeline_config = fake_pipeline_config({"sources": [source_a, source_b]})
+
+    async def fake_scan_source(source, keywords):
+        if source["id"] == "source-a":
+            raise RuntimeError("source-a is down")
+        return [fake_posting(source_id="source-b")]
+
+    async def fake_generate_text(prompt, **kwargs):
+        return json.dumps([{"id": 0, "relevance_score": 0.9, "matched_keywords": [], "reasoning": "x"}])
+
+    with (
+        patch.object(svc, "_scan_source", side_effect=fake_scan_source),
+        patch.object(svc, "_is_duplicate", new_callable=AsyncMock, return_value=False),
+        patch.object(svc.deepseek_service, "generate_text", fake_generate_text),
+        patch.object(svc.leads_repo, "create", new_callable=AsyncMock) as mock_create,
+    ):
+        result = await svc.scan_all_sources(pipeline_config, "run-1")
+
+    assert result["partial"] is True
+    assert len(result["errors"]) == 1
+    assert result["errors"][0]["source_id"] == "source-a"
+    assert result["leads_new"] == 1
+    mock_create.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_scan_all_sources_stops_when_time_budget_exhausted():
+    source_a = fake_source({"id": "source-a"})
+    source_b = fake_source({"id": "source-b"})
+    pipeline_config = fake_pipeline_config({"sources": [source_a, source_b]})
+
+    call_order = []
+
+    async def fake_scan_source(source, keywords):
+        call_order.append(source["id"])
+        return []
+
+    # First time.monotonic() call is `started_at`; force the loop's very
+    # next check to already exceed RUN_TIME_BUDGET_SECONDS.
+    times = iter([0.0, svc.RUN_TIME_BUDGET_SECONDS + 1, svc.RUN_TIME_BUDGET_SECONDS + 1])
+
+    with (
+        patch.object(svc.time, "monotonic", side_effect=lambda: next(times)),
+        patch.object(svc, "_scan_source", side_effect=fake_scan_source),
+    ):
+        result = await svc.scan_all_sources(pipeline_config, "run-1")
+
+    assert call_order == []  # budget exhausted before the first source runs
+    assert result["partial"] is True
