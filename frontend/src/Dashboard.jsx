@@ -32,6 +32,7 @@ import {
 } from "./api/proposalsApi";
 
 import Chat from "./pages/chat/Chat";
+import LeadList from "./pages/pipeline/LeadList";
 import Modal from "./components/ui/Modal";
 import PipelineSettingsTab from "./pages/settings/PipelineSettingsTab";
 
@@ -12023,7 +12024,7 @@ function AuditLogsPage() {
   );
 }
 
-const MAIN_NAV = ["dashboard", "books", "opportunities", "content", "outreach", "assistant", "reports", "auditLogs"];
+const MAIN_NAV = ["dashboard", "books", "opportunities", "content", "outreach", "leads", "assistant", "reports", "auditLogs"];
 const BOTTOM_NAV = ["settings"];
 
 const PATH_TO_PAGE = {
@@ -12034,6 +12035,7 @@ const PATH_TO_PAGE = {
   "/content": "content",
   "/campaign_brief": "campaign_brief",
   "/outreach": "outreach",
+  "/leads": "leads",
   "/assistant": "assistant",
   "/reports": "reports",
   "/auditLogs": "auditLogs",
@@ -12058,6 +12060,7 @@ export default function App() {
     campaign_brief: { label: "Campaign Brief", icon: TargetIcon, component: CampaignBriefPage },
     content:    { label: t("sidebar.contentLibrary"),   icon: FolderIcon,  component: ContentLibraryPage },
     outreach:   { label: t("sidebar.outreach"),          icon: SendIcon,    component: OutreachPage, badge: outreachBadge },
+    leads:      { label: t("sidebar.leads"),             icon: RadarIcon,   component: LeadList },
     assistant: { label: t("sidebar.chat"), icon: SparkIcon, component: AssistantPage },
     reports:    { label: t("sidebar.reports"),           icon: ChartIcon,   component: ReportsPage },
     auditLogs: { label: "Audit Logs", icon: ShieldIcon, component: AuditLogsPage, visible: showAuditLogs },

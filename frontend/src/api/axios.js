@@ -387,6 +387,15 @@ export const pipelineApi = {
   updateSource: (id, data) => api.put(`/pipeline/config/sources/${id}`, data),
   deleteSource: (id) => api.delete(`/pipeline/config/sources/${id}`),
   testSource: (id) => api.post(`/pipeline/config/sources/${id}/test`),
+  // Fase 2 — Agente 1, siempre disparado a mano (ver job_scout_service.py)
+  runScan: () => api.post('/pipeline/runs'),
+  listRuns: (params) => api.get('/pipeline/runs', { params }),
+  getRun: (id) => api.get(`/pipeline/runs/${id}`),
+}
+
+export const leadsApi = {
+  list: (params) => api.get('/leads', { params }),
+  get: (id) => api.get(`/leads/${id}`),
 }
 
 export const publishingApi = {
