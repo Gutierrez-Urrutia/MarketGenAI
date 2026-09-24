@@ -333,6 +333,138 @@ async def test_create_source(client):
 
 
 @pytest.mark.asyncio
+async def test_create_source_encrypts_api_key(client):
+    """A source's secret config fields (api_key for source_type=api) must be
+    encrypted before persisting and never returned in plaintext."""
+    with (
+        patch(
+            "app.routers.pipeline.pipeline_configs_repo.get_by_user",
+            new_callable=AsyncMock, return_value=fake_config(),
+        ),
+        patch(
+            "app.routers.pipeline.pipeline_configs_repo.upsert_for_user",
+            new_callable=AsyncMock,
+        ) as mock_upsert,
+    ):
+        mock_upsert.return_value = fake_config({"sources": [fake_source({
+            "source_type": "api",
+            "config": {"base_url": "https://jsearch.p.rapidapi.com"},
+            "config_encrypted": {"api_key": encryption_service.encrypt("rapid-key-123")},
+        })]})
+        resp = await client.post(f"{API}/sources", json={
+            "name": "JSearch",
+            "source_type": "api",
+            "config": {"base_url": "https://jsearch.p.rapidapi.com", "api_key": "rapid-key-123"},
+        })
+
+    assert resp.status_code == 201
+    assert "rapid-key-123" not in resp.text
+
+    persisted_sources = mock_upsert.call_args.args[1]["sources"]
+    persisted_source = persisted_sources[0]
+    assert "api_key" not in persisted_source["config"]
+    assert persisted_source["config"]["base_url"] == "https://jsearch.p.rapidapi.com"
+    assert encryption_service.decrypt(persisted_source["config_encrypted"]["api_key"]) == "rapid-key-123"
+
+    body_source = resp.json()["sources"][0]
+    assert "config_encrypted" not in body_source
+    assert "api_key" not in body_source["config"]
+    assert body_source["configured_secret_fields"] == ["api_key"]
+
+
+@pytest.mark.asyncio
+async def test_get_config_never_returns_source_api_key(client):
+    doc = fake_config({"sources": [fake_source({
+        "source_type": "api",
+        "config": {"base_url": "https://jsearch.p.rapidapi.com"},
+        "config_encrypted": {"api_key": encryption_service.encrypt("rapid-key-123")},
+    })]})
+    with patch(
+        "app.routers.pipeline.pipeline_configs_repo.get_by_user",
+        new_callable=AsyncMock, return_value=doc,
+    ):
+        resp = await client.get(API)
+
+    assert resp.status_code == 200
+    assert "rapid-key-123" not in resp.text
+    source = resp.json()["sources"][0]
+    assert source["configured_secret_fields"] == ["api_key"]
+
+
+@pytest.mark.asyncio
+async def test_update_source_re_encrypts_new_api_key(client):
+    existing_source = fake_source({
+        "source_type": "api",
+        "config": {"base_url": "https://jsearch.p.rapidapi.com"},
+        "config_encrypted": {"api_key": encryption_service.encrypt("old-key")},
+    })
+    doc = fake_config({"sources": [existing_source]})
+    with (
+        patch(
+            "app.routers.pipeline.pipeline_configs_repo.get_by_user",
+            new_callable=AsyncMock, return_value=doc,
+        ),
+        patch(
+            "app.routers.pipeline.pipeline_configs_repo.upsert_for_user",
+            new_callable=AsyncMock,
+        ) as mock_upsert,
+    ):
+        mock_upsert.return_value = doc
+        resp = await client.put(f"{API}/sources/source-001", json={
+            "config": {"base_url": "https://jsearch.p.rapidapi.com", "api_key": "new-key"},
+        })
+
+    assert resp.status_code == 200
+    persisted_sources = mock_upsert.call_args.args[1]["sources"]
+    persisted_source = persisted_sources[0]
+    assert encryption_service.decrypt(persisted_source["config_encrypted"]["api_key"]) == "new-key"
+
+
+@pytest.mark.asyncio
+async def test_create_source_returns_503_when_encryption_key_missing(client, monkeypatch):
+    monkeypatch.setattr(
+        "app.services.encryption_service.settings.pipeline_encryption_key", ""
+    )
+    encryption_service._fernet.cache_clear()
+    try:
+        with patch(
+            "app.routers.pipeline.pipeline_configs_repo.get_by_user",
+            new_callable=AsyncMock, return_value=fake_config(),
+        ):
+            resp = await client.post(f"{API}/sources", json={
+                "name": "JSearch",
+                "source_type": "api",
+                "config": {"base_url": "https://jsearch.p.rapidapi.com", "api_key": "rapid-key-123"},
+            })
+    finally:
+        encryption_service._fernet.cache_clear()
+
+    assert resp.status_code == 503
+    assert "PIPELINE_ENCRYPTION_KEY" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_test_source_accepts_api_key_only_in_encrypted_config(client):
+    """A source whose api_key already lives in config_encrypted (from a
+    previous save) must still pass the required-fields check."""
+    source = fake_source({
+        "id": "source-002",
+        "name": "JSearch",
+        "source_type": "api",
+        "config": {"base_url": "https://jsearch.p.rapidapi.com"},
+        "config_encrypted": {"api_key": encryption_service.encrypt("rapid-key-123")},
+    })
+    doc = fake_config({"sources": [source]})
+    with patch(
+        "app.routers.pipeline.pipeline_configs_repo.get_by_user",
+        new_callable=AsyncMock, return_value=doc,
+    ):
+        resp = await client.post(f"{API}/sources/source-002/test")
+    assert resp.status_code == 200
+    assert resp.json()["ok"] is True
+
+
+@pytest.mark.asyncio
 async def test_delete_source_not_found(client):
     with patch(
         "app.routers.pipeline.pipeline_configs_repo.get_by_user",

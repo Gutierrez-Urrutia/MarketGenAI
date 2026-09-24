@@ -32,6 +32,17 @@ SOURCE_TYPE_REQUIRED_CONFIG_FIELDS: Dict[SourceType, List[str]] = {
     SourceType.WEBHOOK: [],
 }
 
+# Config fields that hold secrets (API keys, tokens) and must be encrypted at
+# rest with app.services.encryption_service before being persisted, same
+# treatment as PipelineConfig.smtp_password. Never returned in plaintext by
+# the API — see routers/pipeline.py `_split_source_config` / `_public_source`.
+SOURCE_TYPE_SECRET_CONFIG_FIELDS: Dict[SourceType, List[str]] = {
+    SourceType.API: ["api_key"],
+    SourceType.RSS: [],
+    SourceType.SCRAPER: [],
+    SourceType.WEBHOOK: [],
+}
+
 
 class JobSource(BaseModel):
     id: str

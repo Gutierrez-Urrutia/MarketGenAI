@@ -20,6 +20,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from app.dependencies.auth import CurrentUser, get_current_user
 from app.schemas.pipeline import (
     SOURCE_TYPE_REQUIRED_CONFIG_FIELDS,
+    SOURCE_TYPE_SECRET_CONFIG_FIELDS,
     JobSourceCreate,
     JobSourceUpdate,
     PipelineConfigUpdate,
@@ -50,6 +51,43 @@ def _default_config() -> Dict[str, Any]:
     }
 
 
+def _split_source_config(
+    source_type: SourceType, config: Dict[str, Any]
+) -> tuple[Dict[str, Any], Dict[str, str]]:
+    """Split a source's config into (plaintext, encrypted) halves.
+
+    Fields listed in SOURCE_TYPE_SECRET_CONFIG_FIELDS for this source_type
+    (e.g. `api_key` for source_type=api) are encrypted with Fernet and moved
+    out of the plaintext config — same treatment as
+    PipelineConfig.smtp_password. Everything else stays in plaintext (e.g.
+    `base_url`, `feed_url`, scraper selectors — not secrets).
+    """
+    secret_fields = set(SOURCE_TYPE_SECRET_CONFIG_FIELDS.get(source_type, []))
+    plaintext: Dict[str, Any] = {}
+    encrypted: Dict[str, str] = {}
+    for key, value in (config or {}).items():
+        if key in secret_fields:
+            if value:
+                try:
+                    encrypted[key] = encryption_service.encrypt(str(value))
+                except encryption_service.EncryptionNotConfiguredError as exc:
+                    raise HTTPException(
+                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                        detail=str(exc),
+                    ) from exc
+        else:
+            plaintext[key] = value
+    return plaintext, encrypted
+
+
+def _public_source(source: Dict[str, Any]) -> Dict[str, Any]:
+    """Strip encrypted secret values; expose only which secret fields are set."""
+    public = {k: v for k, v in source.items() if k != "config_encrypted"}
+    encrypted = source.get("config_encrypted") or {}
+    public["configured_secret_fields"] = sorted(encrypted.keys())
+    return public
+
+
 def _to_public(doc: Dict[str, Any], user_id: str) -> Dict[str, Any]:
     """Strip secrets, add a userId, and never leak smtp_password_encrypted."""
     base = _default_config()
@@ -58,6 +96,7 @@ def _to_public(doc: Dict[str, Any], user_id: str) -> Dict[str, Any]:
     public["smtp_password_configured"] = bool(public.get("smtp_password_encrypted"))
     public.pop("smtp_password_encrypted", None)
     public.pop("smtp_password", None)
+    public["sources"] = [_public_source(s) for s in public.get("sources") or []]
     return public
 
 
@@ -130,12 +169,14 @@ async def create_source(
 ):
     doc = await _get_or_create_doc(user.sub)
     sources = list(doc.get("sources") or [])
+    plaintext_config, encrypted_config = _split_source_config(body.source_type, body.config)
     new_source = {
         "id": new_id(),
         "name": body.name,
         "source_type": body.source_type.value,
         "enabled": body.enabled,
-        "config": body.config,
+        "config": plaintext_config,
+        "config_encrypted": encrypted_config,
         "rate_limit": body.rate_limit,
         "last_fetched_at": None,
     }
@@ -157,6 +198,11 @@ async def update_source(
     updates = body.model_dump(exclude_unset=True)
     if "source_type" in updates and updates["source_type"] is not None:
         updates["source_type"] = updates["source_type"].value
+    if "config" in updates and updates["config"] is not None:
+        effective_type = SourceType(updates.get("source_type", source["source_type"]))
+        plaintext_config, encrypted_config = _split_source_config(effective_type, updates["config"])
+        updates["config"] = plaintext_config
+        updates["config_encrypted"] = encrypted_config
     source.update(updates)
 
     doc = await pipeline_configs_repo.upsert_for_user(user.sub, {"sources": sources})
@@ -193,9 +239,10 @@ async def test_source(
     source_type = SourceType(source["source_type"])
     required_fields = SOURCE_TYPE_REQUIRED_CONFIG_FIELDS.get(source_type, [])
     config = source.get("config") or {}
+    encrypted_config = source.get("config_encrypted") or {}
     missing_fields = [
         field for field in required_fields
-        if not str(config.get(field, "")).strip()
+        if not str(config.get(field, "")).strip() and not encrypted_config.get(field)
     ]
 
     if missing_fields:
