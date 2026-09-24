@@ -19,6 +19,7 @@ from app.routers import (
     customers,
     health,
     jobs,
+    leads,
     oauth,
     outreach,
     opportunities,
@@ -67,6 +68,7 @@ app.include_router(campaigns.router, prefix="/api/v1")
 app.include_router(content_types.router, prefix="/api/v1/content", tags=["content"])
 app.include_router(opportunities.router, prefix="/api/v1")
 app.include_router(pipeline.router, prefix="/api/v1")
+app.include_router(leads.router, prefix="/api/v1")
 app.include_router(customers.router, prefix="/api/v1")
 app.include_router(templates.router, prefix="/api/v1")
 app.include_router(assets.router, prefix="/api/v1")
