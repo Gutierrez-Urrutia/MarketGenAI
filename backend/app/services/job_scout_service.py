@@ -42,7 +42,7 @@ from app.core.pipeline_constants import (
     SOURCE_FETCH_TIMEOUT_SECONDS,
 )
 from app.schemas.lead import LeadStatus, RawJobPosting
-from app.schemas.pipeline import PipelineRunStatus, SourceType
+from app.schemas.pipeline import SOURCE_TYPE_SECRET_CONFIG_FIELDS, PipelineRunStatus, SourceType
 from app.services import deepseek_service, encryption_service
 from app.services.firestore_service import leads_repo, now_utc, pipeline_runs_repo
 
@@ -57,17 +57,45 @@ _SCORE_SYSTEM_PROMPT = (
 # ── Secrets ──────────────────────────────────────────────────────────────────
 def _resolve_source_secrets(source: Dict[str, Any]) -> Dict[str, str]:
     """Decrypt a source's secret config fields for in-memory use only.
-    Never persisted, never returned in any API response."""
+    Never persisted, never returned in any API response.
+
+    Legacy fallback: sources created before the fix in commit 92a01c4 may
+    still have a secret field sitting in plaintext `config` instead of
+    `config_encrypted` (encryption only started with that commit). Detected
+    here and used as-is, with a warning — a scan must not silently fail (or
+    crash) just because an older source hasn't been re-saved yet. The value
+    gets encrypted automatically the next time the user edits that source in
+    Settings > Pipeline (routers/pipeline.py `_split_source_config`), so no
+    manual data migration or re-entry is required, but the warning is the
+    signal to go do that resave."""
+    source_type = SourceType(source["source_type"])
+    secret_fields = set(SOURCE_TYPE_SECRET_CONFIG_FIELDS.get(source_type, []))
     encrypted = source.get("config_encrypted") or {}
+    plaintext_config = source.get("config") or {}
+
     resolved: Dict[str, str] = {}
-    for key, token in encrypted.items():
-        try:
-            resolved[key] = encryption_service.decrypt(token)
-        except Exception:
+    for field in secret_fields:
+        token = encrypted.get(field)
+        if token:
+            try:
+                resolved[field] = encryption_service.decrypt(token)
+                continue
+            except Exception:
+                logger.warning(
+                    "job_scout: failed to decrypt secret field '%s' for source %s",
+                    field, source.get("id"),
+                )
+
+        legacy_value = plaintext_config.get(field)
+        if legacy_value:
             logger.warning(
-                "job_scout: failed to decrypt secret field '%s' for source %s",
-                key, source.get("id"),
+                "job_scout: source %s has field '%s' stored in plaintext "
+                "(created before encryption was added) — using it as-is; "
+                "re-save this source in Settings > Pipeline to encrypt it.",
+                source.get("id"), field,
             )
+            resolved[field] = str(legacy_value)
+
     return resolved
 
 

@@ -465,6 +465,29 @@ async def test_test_source_accepts_api_key_only_in_encrypted_config(client):
 
 
 @pytest.mark.asyncio
+async def test_get_config_never_returns_legacy_plaintext_api_key(client):
+    """A source created before commit 92a01c4 (the fix that started
+    encrypting api_key) may still have it sitting in plaintext `config` —
+    that must not leak through GET /pipeline/config either."""
+    doc = fake_config({"sources": [fake_source({
+        "source_type": "api",
+        "config": {"base_url": "https://jsearch.p.rapidapi.com", "api_key": "legacy-plaintext-key"},
+        "config_encrypted": {},
+    })]})
+    with patch(
+        "app.routers.pipeline.pipeline_configs_repo.get_by_user",
+        new_callable=AsyncMock, return_value=doc,
+    ):
+        resp = await client.get(API)
+
+    assert resp.status_code == 200
+    assert "legacy-plaintext-key" not in resp.text
+    source = resp.json()["sources"][0]
+    assert "api_key" not in source["config"]
+    assert source["configured_secret_fields"] == ["api_key"]
+
+
+@pytest.mark.asyncio
 async def test_delete_source_not_found(client):
     with patch(
         "app.routers.pipeline.pipeline_configs_repo.get_by_user",

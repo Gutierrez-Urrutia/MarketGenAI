@@ -87,10 +87,26 @@ def _split_source_config(
 
 
 def _public_source(source: Dict[str, Any]) -> Dict[str, Any]:
-    """Strip encrypted secret values; expose only which secret fields are set."""
-    public = {k: v for k, v in source.items() if k != "config_encrypted"}
+    """Strip secret values — encrypted or plaintext — from a source before
+    it's returned by the API; expose only which secret fields are set.
+
+    A source created before commit 92a01c4 (the fix that started encrypting
+    these fields) may still have a secret value sitting in plaintext
+    `config` instead of `config_encrypted`. Without this, that legacy
+    plaintext value would leak straight through GET /pipeline/config —
+    stripping only `config_encrypted` is not enough.
+    """
+    source_type = SourceType(source["source_type"])
+    secret_fields = set(SOURCE_TYPE_SECRET_CONFIG_FIELDS.get(source_type, []))
     encrypted = source.get("config_encrypted") or {}
-    public["configured_secret_fields"] = sorted(encrypted.keys())
+    plaintext_config = source.get("config") or {}
+
+    public = {k: v for k, v in source.items() if k != "config_encrypted"}
+    public["config"] = {k: v for k, v in plaintext_config.items() if k not in secret_fields}
+    public["configured_secret_fields"] = sorted(
+        field for field in secret_fields
+        if encrypted.get(field) or plaintext_config.get(field)
+    )
     return public
 
 

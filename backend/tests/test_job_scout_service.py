@@ -91,6 +91,45 @@ async def test_scan_api_decrypts_api_key_and_sends_bearer_header():
 
 
 @pytest.mark.asyncio
+async def test_scan_api_falls_back_to_legacy_plaintext_api_key():
+    """A source created before commit 92a01c4 may still have api_key in
+    plaintext config (config_encrypted empty). The scan must still work —
+    not crash, not silently drop the key — using it as-is with a warning."""
+    source = fake_source({
+        "config": {"base_url": "https://jsearch.example.com/jobs", "api_key": "legacy-plaintext-key"},
+        "config_encrypted": {},
+    })
+
+    captured_headers = {}
+
+    async def fake_get(self, url, headers=None, params=None):
+        captured_headers.update(headers or {})
+        request = httpx.Request("GET", url)
+        return httpx.Response(200, json={"data": []}, request=request)
+
+    with patch.object(httpx.AsyncClient, "get", fake_get):
+        postings = await svc._scan_api(source, [])
+
+    assert postings == []
+    assert captured_headers.get("Authorization") == "Bearer legacy-plaintext-key"
+
+
+def test_resolve_source_secrets_prefers_encrypted_over_legacy_plaintext():
+    from cryptography.fernet import Fernet
+    key = Fernet.generate_key().decode()
+    with patch("app.services.encryption_service.settings.pipeline_encryption_key", key):
+        encryption_service._fernet.cache_clear()
+        token = encryption_service.encrypt("current-key")
+        source = fake_source({
+            "config": {"base_url": "https://x", "api_key": "stale-plaintext-key"},
+            "config_encrypted": {"api_key": token},
+        })
+        resolved = svc._resolve_source_secrets(source)
+    encryption_service._fernet.cache_clear()
+    assert resolved["api_key"] == "current-key"
+
+
+@pytest.mark.asyncio
 async def test_scan_api_parses_common_response_shapes():
     source = fake_source()
 
