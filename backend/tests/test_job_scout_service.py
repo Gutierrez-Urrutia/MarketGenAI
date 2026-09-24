@@ -3,13 +3,37 @@
 from __future__ import annotations
 
 import json
+import socket
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
 
+from app.core import url_safety
 from app.schemas.lead import RawJobPosting
 from app.services import encryption_service, job_scout_service as svc
+
+PUBLIC_IP = "93.184.216.34"  # example.com's real IP — a stand-in "safe" address
+PRIVATE_IP = "10.0.0.5"
+METADATA_IP = "169.254.169.254"  # cloud metadata endpoint
+
+
+def _fake_getaddrinfo(ip: str):
+    def _impl(host, port, *args, **kwargs):
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, 0))]
+    return _impl
+
+
+@pytest.fixture(autouse=True)
+def _fake_dns_resolves_to_public_ip():
+    """Tests in this file use placeholder .example.com hosts. Runs the real
+    url_safety.validate_url_target logic (scheme check + IP-range block)
+    but with DNS resolution mocked to a public IP by default, so tests
+    don't depend on network access or real domains resolving. Dedicated
+    SSRF tests below override `socket.getaddrinfo` within their own `with`
+    block to point at a blocked address instead."""
+    with patch.object(url_safety.socket, "getaddrinfo", side_effect=_fake_getaddrinfo(PUBLIC_IP)):
+        yield
 
 
 def fake_source(overrides: dict | None = None) -> dict:
@@ -77,7 +101,7 @@ async def test_scan_api_decrypts_api_key_and_sends_bearer_header():
 
         captured_headers = {}
 
-        async def fake_get(self, url, headers=None, params=None):
+        async def fake_get(self, url, headers=None, params=None, **kwargs):
             captured_headers.update(headers or {})
             request = httpx.Request("GET", url)
             return httpx.Response(200, json={"data": []}, request=request)
@@ -102,7 +126,7 @@ async def test_scan_api_falls_back_to_legacy_plaintext_api_key():
 
     captured_headers = {}
 
-    async def fake_get(self, url, headers=None, params=None):
+    async def fake_get(self, url, headers=None, params=None, **kwargs):
         captured_headers.update(headers or {})
         request = httpx.Request("GET", url)
         return httpx.Response(200, json={"data": []}, request=request)
@@ -133,7 +157,7 @@ def test_resolve_source_secrets_prefers_encrypted_over_legacy_plaintext():
 async def test_scan_api_parses_common_response_shapes():
     source = fake_source()
 
-    async def fake_get(self, url, headers=None, params=None):
+    async def fake_get(self, url, headers=None, params=None, **kwargs):
         request = httpx.Request("GET", url)
         return httpx.Response(200, json={"data": [
             {"title": "Ops Manager", "company": "Acme", "description": "x", "url": "https://x"},
@@ -151,7 +175,7 @@ async def test_scan_api_parses_common_response_shapes():
 async def test_scan_api_returns_empty_on_http_error_without_raising():
     source = fake_source()
 
-    async def fake_get(self, url, headers=None, params=None):
+    async def fake_get(self, url, headers=None, params=None, **kwargs):
         raise httpx.ConnectError("boom", request=httpx.Request("GET", url))
 
     with patch.object(httpx.AsyncClient, "get", fake_get):
@@ -178,12 +202,23 @@ async def test_scan_rss_parses_entries():
     fake_parsed = MagicMock()
     fake_parsed.entries = [fake_entry]
 
-    with patch.object(svc.feedparser, "parse", return_value=fake_parsed):
+    async def fake_get(self, url, headers=None, params=None, **kwargs):
+        request = httpx.Request("GET", url)
+        return httpx.Response(200, content=b"<rss>fake feed bytes</rss>", request=request)
+
+    with (
+        patch.object(httpx.AsyncClient, "get", fake_get),
+        patch.object(svc.feedparser, "parse", return_value=fake_parsed) as mock_parse,
+    ):
         postings = await svc._scan_rss(source, [])
 
     assert len(postings) == 1
     assert postings[0].job_title == "Data Entry Clerk"
     assert postings[0].company_name == "Acme Corp"
+    # feedparser must receive bytes fetched by us, never the raw URL — a
+    # string argument that isn't a recognized URL makes feedparser treat it
+    # as a local file path (see job_scout_service._scan_rss docstring/comment).
+    mock_parse.assert_called_once_with(b"<rss>fake feed bytes</rss>")
 
 
 @pytest.mark.asyncio
@@ -231,6 +266,96 @@ async def test_scan_scraper_extracts_items_via_selectors():
     assert postings[0].job_title == "Ops Manager"
     assert postings[0].company_name == "Acme"
     assert postings[0].job_url == "https://jobs.example.com/1"
+
+
+# ── SSRF protection (app.core.url_safety) ───────────────────────────────────
+# These override the module's DNS-mocks-to-public-IP fixture to point the
+# source's host at a blocked address instead, and assert the adapter comes
+# back empty (its normal "this source failed" outcome) rather than making
+# the request — never a crash, never a silent bypass.
+
+@pytest.mark.asyncio
+async def test_scan_api_blocks_unsafe_target():
+    source = fake_source({"config": {"base_url": "http://internal.example.com/jobs"}})
+
+    async def fake_get(self, url, headers=None, params=None, **kwargs):
+        pytest.fail("must not reach the network for a blocked target")
+
+    with (
+        patch.object(url_safety.socket, "getaddrinfo", side_effect=_fake_getaddrinfo(METADATA_IP)),
+        patch.object(httpx.AsyncClient, "get", fake_get),
+    ):
+        postings = await svc._scan_api(source, [])
+
+    assert postings == []
+
+
+@pytest.mark.asyncio
+async def test_scan_rss_blocks_unsafe_target():
+    source = fake_source({"source_type": "rss", "config": {"feed_url": "http://internal.example.com/rss"}})
+
+    async def fake_get(self, url, headers=None, params=None, **kwargs):
+        pytest.fail("must not reach the network for a blocked target")
+
+    with (
+        patch.object(url_safety.socket, "getaddrinfo", side_effect=_fake_getaddrinfo(PRIVATE_IP)),
+        patch.object(httpx.AsyncClient, "get", fake_get),
+        patch.object(svc.feedparser, "parse") as mock_parse,
+    ):
+        postings = await svc._scan_rss(source, [])
+
+    assert postings == []
+    mock_parse.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_scan_scraper_blocks_unsafe_target():
+    source = fake_source({
+        "source_type": "scraper",
+        "config": {"url": "http://internal.example.com/list", "selectors": {"item": ".job"}},
+    })
+
+    async def fake_get(self, url, **kwargs):
+        pytest.fail("must not reach the network for a blocked target")
+
+    with (
+        patch.object(url_safety.socket, "getaddrinfo", side_effect=_fake_getaddrinfo(PRIVATE_IP)),
+        patch.object(httpx.AsyncClient, "get", fake_get),
+    ):
+        postings = await svc._scan_scraper(source, [])
+
+    assert postings == []
+
+
+@pytest.mark.asyncio
+async def test_scan_api_blocks_redirect_to_unsafe_target():
+    """The initial host resolves safely, but it 302s to an internal host —
+    the redirect target must be validated too, not just the original URL."""
+    source = fake_source({"config": {"base_url": "https://public.example.com/jobs"}})
+
+    def fake_getaddrinfo(host, port, *args, **kwargs):
+        ip = PUBLIC_IP if host == "public.example.com" else PRIVATE_IP
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, 0))]
+
+    call_count = {"n": 0}
+
+    async def fake_get(self, url, headers=None, params=None, **kwargs):
+        call_count["n"] += 1
+        request = httpx.Request("GET", url)
+        if "public.example.com" in url:
+            return httpx.Response(
+                302, headers={"location": "http://internal.example.com/jobs"}, request=request,
+            )
+        pytest.fail("redirect target must be blocked before it is ever requested")
+
+    with (
+        patch.object(url_safety.socket, "getaddrinfo", side_effect=fake_getaddrinfo),
+        patch.object(httpx.AsyncClient, "get", fake_get),
+    ):
+        postings = await svc._scan_api(source, [])
+
+    assert postings == []
+    assert call_count["n"] == 1  # only the (safe) first hop was ever requested
 
 
 # ── Relevance scoring ────────────────────────────────────────────────────────

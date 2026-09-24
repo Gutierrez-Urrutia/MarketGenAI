@@ -28,6 +28,7 @@ import feedparser
 import httpx
 from bs4 import BeautifulSoup
 
+from app.core import url_safety
 from app.core.pipeline_constants import (
     MAX_RESULTS_PER_RUN,
     MAX_RESULTS_PER_SOURCE,
@@ -135,7 +136,7 @@ async def _scan_api(source: Dict[str, Any], keywords: List[str]) -> List[RawJobP
 
     try:
         async with httpx.AsyncClient(timeout=SOURCE_FETCH_TIMEOUT_SECONDS) as client:
-            resp = await client.get(base_url, headers=headers, params=params)
+            resp = await url_safety.safe_get(client, base_url, headers=headers, params=params)
             resp.raise_for_status()
             payload = resp.json()
     except Exception as exc:
@@ -182,13 +183,28 @@ async def _scan_rss(source: Dict[str, Any], keywords: List[str]) -> List[RawJobP
     if not feed_url:
         return []
 
+    # Fetch the feed ourselves (SSRF-checked) and hand feedparser raw bytes,
+    # never the URL. feedparser.parse() treats a string argument that isn't
+    # a recognized URL as a local file path — passing it feed_url directly
+    # would let a source's feed_url (e.g. "/etc/passwd" or "file:///etc/passwd")
+    # make the backend read an arbitrary local file. Bytes input has no such
+    # local-file fallback.
+    try:
+        async with httpx.AsyncClient(timeout=SOURCE_FETCH_TIMEOUT_SECONDS) as client:
+            resp = await url_safety.safe_get(client, feed_url)
+            resp.raise_for_status()
+            feed_content = resp.content
+    except Exception as exc:
+        logger.warning("job_scout: RSS source %s failed to fetch: %s", source.get("id"), exc)
+        return []
+
     try:
         parsed = await asyncio.wait_for(
-            asyncio.to_thread(feedparser.parse, feed_url),
+            asyncio.to_thread(feedparser.parse, feed_content),
             timeout=SOURCE_FETCH_TIMEOUT_SECONDS,
         )
     except Exception as exc:
-        logger.warning("job_scout: RSS source %s failed: %s", source.get("id"), exc)
+        logger.warning("job_scout: RSS source %s failed to parse: %s", source.get("id"), exc)
         return []
 
     postings: List[RawJobPosting] = []
@@ -218,12 +234,17 @@ async def _robots_txt_allows(url: str) -> bool:
     robots_url = f"{parsed_url.scheme}://{parsed_url.netloc}/robots.txt"
     try:
         async with httpx.AsyncClient(timeout=SCRAPER_ROBOTS_TXT_TIMEOUT_SECONDS) as client:
-            resp = await client.get(robots_url, headers={"User-Agent": SCRAPER_USER_AGENT})
+            resp = await url_safety.safe_get(client, robots_url, headers={"User-Agent": SCRAPER_USER_AGENT})
         if resp.status_code >= 400:
             return True
         parser = urllib.robotparser.RobotFileParser()
         parser.parse(resp.text.splitlines())
         return parser.can_fetch(SCRAPER_USER_AGENT, url)
+    except url_safety.UnsafeUrlError:
+        # Unlike an unreachable/erroring robots.txt (fail open, below),
+        # an unsafe target is a real block — the main content fetch would
+        # be blocked the same way anyway, this just fails a step earlier.
+        return False
     except Exception:
         return True
 
@@ -252,7 +273,7 @@ async def _scan_scraper(source: Dict[str, Any], keywords: List[str]) -> List[Raw
             timeout=SOURCE_FETCH_TIMEOUT_SECONDS,
             headers={"User-Agent": SCRAPER_USER_AGENT},
         ) as client:
-            resp = await client.get(url)
+            resp = await url_safety.safe_get(client, url)
             resp.raise_for_status()
             html = resp.text
     except Exception as exc:

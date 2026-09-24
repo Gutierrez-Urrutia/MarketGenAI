@@ -43,6 +43,17 @@ SOURCE_TYPE_SECRET_CONFIG_FIELDS: Dict[SourceType, List[str]] = {
     SourceType.WEBHOOK: [],
 }
 
+# The `config` field that holds the URL a source fetches from, per
+# source_type. Validated for SSRF safety (app.core.url_safety) both at
+# save time (routers/pipeline.py) and at fetch time (job_scout_service.py).
+# WEBHOOK has none — it's push, this system never initiates a request to it.
+SOURCE_TYPE_URL_FIELDS: Dict[SourceType, Optional[str]] = {
+    SourceType.API: "base_url",
+    SourceType.RSS: "feed_url",
+    SourceType.SCRAPER: "url",
+    SourceType.WEBHOOK: None,
+}
+
 
 class JobSource(BaseModel):
     id: str

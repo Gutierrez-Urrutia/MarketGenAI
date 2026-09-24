@@ -1,15 +1,30 @@
 """Tests for the /api/v1/pipeline/config router (Fase 1 — infra only)."""
 from __future__ import annotations
 
+import socket
 from unittest.mock import AsyncMock, patch
 
 import pytest
 from cryptography.fernet import Fernet
 
+from app.core import url_safety
 from app.services import encryption_service
 from tests.conftest import FAKE_USER_SUB
 
 API = "/api/v1/pipeline/config"
+
+
+@pytest.fixture(autouse=True)
+def _fake_dns_resolves_to_public_ip():
+    """create_source/update_source now validate a source's URL (SSRF check,
+    app.core.url_safety) on save. Most tests here use real-looking but
+    arbitrary domains and shouldn't depend on real DNS/network access —
+    resolve everything to a public IP by default. The one test that
+    exercises the actual rejection overrides this within its own block."""
+    def fake_getaddrinfo(host, port, *args, **kwargs):
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
+    with patch.object(url_safety.socket, "getaddrinfo", side_effect=fake_getaddrinfo):
+        yield
 
 
 def fake_config(overrides: dict | None = None) -> dict:
@@ -330,6 +345,62 @@ async def test_create_source(client):
 
     assert resp.status_code == 201
     assert len(resp.json()["sources"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_create_source_rejects_url_resolving_to_internal_address(client):
+    """A source whose URL resolves to a private/loopback/link-local address
+    (e.g. cloud metadata) must be rejected immediately on save, before it's
+    ever persisted or scanned."""
+    def fake_getaddrinfo(host, port, *args, **kwargs):
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("169.254.169.254", 0))]
+
+    with (
+        patch.object(url_safety.socket, "getaddrinfo", side_effect=fake_getaddrinfo),
+        patch(
+            "app.routers.pipeline.pipeline_configs_repo.get_by_user",
+            new_callable=AsyncMock, return_value=fake_config(),
+        ),
+        patch(
+            "app.routers.pipeline.pipeline_configs_repo.upsert_for_user",
+            new_callable=AsyncMock,
+        ) as mock_upsert,
+    ):
+        resp = await client.post(f"{API}/sources", json={
+            "name": "Suspicious RSS",
+            "source_type": "rss",
+            "config": {"feed_url": "https://internal.example.com/rss"},
+        })
+
+    assert resp.status_code == 422
+    assert "Unsafe source URL" in resp.json()["detail"]
+    mock_upsert.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_update_source_rejects_url_resolving_to_internal_address(client):
+    def fake_getaddrinfo(host, port, *args, **kwargs):
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 0))]
+
+    doc = fake_config({"sources": [fake_source()]})
+    with (
+        patch.object(url_safety.socket, "getaddrinfo", side_effect=fake_getaddrinfo),
+        patch(
+            "app.routers.pipeline.pipeline_configs_repo.get_by_user",
+            new_callable=AsyncMock, return_value=doc,
+        ),
+        patch(
+            "app.routers.pipeline.pipeline_configs_repo.upsert_for_user",
+            new_callable=AsyncMock,
+        ) as mock_upsert,
+    ):
+        resp = await client.put(f"{API}/sources/source-001", json={
+            "config": {"feed_url": "https://internal.example.com/rss"},
+        })
+
+    assert resp.status_code == 422
+    assert "Unsafe source URL" in resp.json()["detail"]
+    mock_upsert.assert_not_awaited()
 
 
 @pytest.mark.asyncio

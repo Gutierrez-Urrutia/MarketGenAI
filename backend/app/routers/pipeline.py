@@ -20,11 +20,13 @@ from typing import Any, Dict, List
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
+from app.core import url_safety
 from app.dependencies.auth import CurrentUser, get_current_user
 from app.schemas.job import JobAccepted
 from app.schemas.pipeline import (
     SOURCE_TYPE_REQUIRED_CONFIG_FIELDS,
     SOURCE_TYPE_SECRET_CONFIG_FIELDS,
+    SOURCE_TYPE_URL_FIELDS,
     JobSourceCreate,
     JobSourceUpdate,
     PipelineConfigUpdate,
@@ -55,6 +57,30 @@ def _default_config() -> Dict[str, Any]:
         "scan_frequency_hours": 24,
         "is_active": True,
     }
+
+
+async def _validate_source_url(source_type: SourceType, config: Dict[str, Any]) -> None:
+    """Reject a source whose URL (base_url/feed_url/url, per source_type)
+    resolves to an internal/blocked address, right when the user saves it.
+
+    This is a courtesy check for fast feedback — the control that actually
+    matters is app.core.url_safety.validate_url_target called again at
+    fetch time in job_scout_service.py, since DNS can change between a
+    source being saved and a scan actually running it.
+    """
+    field = SOURCE_TYPE_URL_FIELDS.get(source_type)
+    if not field:
+        return
+    url = config.get(field)
+    if not url:
+        return  # missing-field validation is /sources/{id}/test's job, not this
+    try:
+        await url_safety.validate_url_target(url)
+    except url_safety.UnsafeUrlError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Unsafe source URL: {exc}",
+        ) from exc
 
 
 def _split_source_config(
@@ -191,6 +217,7 @@ async def create_source(
 ):
     doc = await _get_or_create_doc(user.sub)
     sources = list(doc.get("sources") or [])
+    await _validate_source_url(body.source_type, body.config)
     plaintext_config, encrypted_config = _split_source_config(body.source_type, body.config)
     new_source = {
         "id": new_id(),
@@ -222,6 +249,7 @@ async def update_source(
         updates["source_type"] = updates["source_type"].value
     if "config" in updates and updates["config"] is not None:
         effective_type = SourceType(updates.get("source_type", source["source_type"]))
+        await _validate_source_url(effective_type, updates["config"])
         plaintext_config, encrypted_config = _split_source_config(effective_type, updates["config"])
         updates["config"] = plaintext_config
         updates["config_encrypted"] = encrypted_config
