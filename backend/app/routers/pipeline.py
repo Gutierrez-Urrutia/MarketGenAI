@@ -1,8 +1,11 @@
-"""Pipeline router — Fase 1 (infraestructura): CRUD de PipelineConfig only.
+"""Pipeline router — Fase 1 (PipelineConfig CRUD) + Fase 2 (manual Agente 1 trigger).
 
-Agentes 1/2/3, orquestador, leads/contacts/outreach_emails endpoints and the
-scheduled scan task are out of scope here (Fases 2-6 of
-plan-pipeline-3-agentes.md).
+Agentes 2/3, el orquestador, y los endpoints de contacts/outreach_emails
+siguen fuera de alcance (Fases 3-6 de plan-pipeline-3-agentes.md). El
+escaneo programado (Celery Beat / Vercel Cron) tampoco está — Fase 5-6,
+condicionada al plan de Vercel que confirme el cliente (ver
+analisis-worker-serverless.md). `POST /pipeline/runs` es la única forma de
+disparar un escaneo: siempre manual, a pedido de quien lo llame.
 
 One PipelineConfig document per user (doc_id == user.sub), same pattern as
 SettingsRepo. smtp_password is write-only: it is encrypted with
@@ -15,9 +18,10 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.dependencies.auth import CurrentUser, get_current_user
+from app.schemas.job import JobAccepted
 from app.schemas.pipeline import (
     SOURCE_TYPE_REQUIRED_CONFIG_FIELDS,
     SOURCE_TYPE_SECRET_CONFIG_FIELDS,
@@ -25,10 +29,12 @@ from app.schemas.pipeline import (
     JobSourceUpdate,
     PipelineConfigUpdate,
     PipelineKeywordsUpdate,
+    PipelineRunStatus,
     SourceType,
 )
-from app.services import encryption_service
-from app.services.firestore_service import new_id, pipeline_configs_repo
+from app.services import encryption_service, job_scout_service
+from app.services.firestore_service import new_id, now_utc, pipeline_configs_repo, pipeline_runs_repo
+from app.workers.tasks.pipeline_tasks import task_run_job_scout
 
 router = APIRouter(prefix="/pipeline", tags=["Pipeline"])
 
@@ -228,9 +234,9 @@ async def test_source(
 ):
     """Validate the source has the config fields its source_type needs.
 
-    This is a static shape check only — no external call is made yet. Real
-    connectivity checks (hit the API/RSS feed/scraper URL) land in Fase 2
-    alongside JobScoutService.
+    This is a static shape check only — no external call is made. A real
+    connectivity check happens when the source is actually scanned, as part
+    of a run (POST /pipeline/runs → JobScoutService).
     """
     doc = await _get_or_create_doc(user.sub)
     sources = list(doc.get("sources") or [])
@@ -255,3 +261,89 @@ async def test_source(
         )
 
     return {"ok": True, "message": f"Source '{source['name']}' has all required fields for {source_type.value}."}
+
+
+# ── Pipeline runs (Fase 2 — Agente 1 only, always manual) ──────────────────
+async def _run_job_scout_now(run_id: str, config: Dict[str, Any]) -> None:
+    try:
+        result = await job_scout_service.scan_all_sources(config, run_id)
+    except Exception as exc:
+        await job_scout_service.fail_run(run_id, str(exc))
+        raise
+    await job_scout_service.finalize_run(run_id, result)
+
+
+@router.post("/runs", status_code=status.HTTP_202_ACCEPTED, response_model=JobAccepted)
+async def create_run(user: CurrentUser = Depends(get_current_user)):
+    """Trigger a manual scan (Agente 1 only) for the caller's PipelineConfig.
+
+    Always explicit — there is no scheduled/automatic trigger in this
+    phase. Tries Celery first; if the broker is unreachable, falls back to
+    running synchronously in this request, same pattern as
+    routers/books.py.
+    """
+    config = await _get_or_create_doc(user.sub)
+    if not any(source.get("enabled") for source in (config.get("sources") or [])):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="No enabled sources configured for this pipeline.",
+        )
+
+    run = await pipeline_runs_repo.create({
+        "pipeline_config_id": config["id"],
+        "user_id": user.sub,
+        "status": PipelineRunStatus.RUNNING.value,
+        "leads_found": 0,
+        "leads_new": 0,
+        "contacts_found": 0,
+        "emails_generated": 0,
+        "emails_auto_approved": 0,
+        "emails_pending_review": 0,
+        "emails_sent": 0,
+        "started_at": now_utc(),
+        "agent1_completed_at": None,
+        "agent2_completed_at": None,
+        "agent3_completed_at": None,
+        "completed_at": None,
+        "errors": [],
+    })
+
+    try:
+        task_run_job_scout.delay(run["id"], config)
+    except Exception:
+        # Redis/Celery no disponible — ejecutar síncronamente
+        await _run_job_scout_now(run["id"], config)
+
+    return JobAccepted(job_id=run["id"])
+
+
+@router.get("/runs")
+async def list_runs(
+    limit: int = Query(20, ge=1, le=100),
+    user: CurrentUser = Depends(get_current_user),
+):
+    runs = await pipeline_runs_repo.list(
+        filters=[("user_id", "==", user.sub)],
+        order_by="createdAt",
+        order_direction="DESCENDING",
+        limit=limit,
+    )
+    return {"items": runs, "total": len(runs)}
+
+
+def _assert_run_owner(run: Dict[str, Any], user_id: str) -> None:
+    if run.get("user_id") != user_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied.")
+
+
+@router.get("/runs/{run_id}")
+async def get_run(run_id: str, user: CurrentUser = Depends(get_current_user)):
+    try:
+        run = await pipeline_runs_repo.get_or_404(run_id)
+    except KeyError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Run '{run_id}' not found.",
+        )
+    _assert_run_owner(run, user.sub)
+    return run

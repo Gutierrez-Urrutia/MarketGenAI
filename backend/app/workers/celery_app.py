@@ -35,6 +35,7 @@ celery_app = Celery(
     include=[
         "app.workers.tasks.content_tasks",
         "app.workers.tasks.asset_tasks",
+        "app.workers.tasks.pipeline_tasks",
     ],
 )
 
@@ -54,6 +55,7 @@ celery_app.conf.update(
     result_backend_transport_options={"socket_connect_timeout": 2, "socket_timeout": 2},
     task_routes={
         "app.workers.tasks.content_tasks.*": {"queue": "llm"},
+        "app.workers.tasks.pipeline_tasks.*": {"queue": "llm"},
     },
     beat_schedule={},                       # add periodic tasks here if needed
 )

@@ -42,9 +42,9 @@ from app.core.pipeline_constants import (
     SOURCE_FETCH_TIMEOUT_SECONDS,
 )
 from app.schemas.lead import LeadStatus, RawJobPosting
-from app.schemas.pipeline import SourceType
+from app.schemas.pipeline import PipelineRunStatus, SourceType
 from app.services import deepseek_service, encryption_service
-from app.services.firestore_service import leads_repo, now_utc
+from app.services.firestore_service import leads_repo, now_utc, pipeline_runs_repo
 
 logger = logging.getLogger("marketgen.pipeline.job_scout")
 
@@ -467,3 +467,37 @@ async def scan_all_sources(pipeline_config: Dict[str, Any], run_id: str) -> Dict
         "errors": errors,
         "partial": partial,
     }
+
+
+# ── PipelineRun bookkeeping ──────────────────────────────────────────────────
+# Shared by the manual-trigger router endpoint (sync fallback path) and the
+# Celery task, so a run's outcome is written to Firestore the same way
+# regardless of who invoked scan_all_sources.
+async def finalize_run(run_id: str, result: Dict[str, Any]) -> None:
+    """Write scan_all_sources' result onto its PipelineRun doc."""
+    status_value = (
+        PipelineRunStatus.PARTIAL.value if result["partial"] else PipelineRunStatus.COMPLETED.value
+    )
+    await pipeline_runs_repo.update(run_id, {
+        "status": status_value,
+        "leads_found": result["leads_found"],
+        "leads_new": result["leads_new"],
+        "errors": result["errors"],
+        "agent1_completed_at": now_utc(),
+        "completed_at": now_utc(),
+    })
+
+
+async def fail_run(run_id: str, message: str) -> None:
+    """Mark a run FAILED when scan_all_sources itself raised (a bug, not a
+    per-source error — those are captured inside `result["errors"]` and
+    still produce a COMPLETED/PARTIAL run, not a FAILED one)."""
+    await pipeline_runs_repo.update(run_id, {
+        "status": PipelineRunStatus.FAILED.value,
+        "errors": [{
+            "agent": "job_scout",
+            "message": message,
+            "timestamp": now_utc().isoformat(),
+        }],
+        "completed_at": now_utc(),
+    })
