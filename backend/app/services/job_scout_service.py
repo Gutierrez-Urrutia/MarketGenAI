@@ -22,7 +22,7 @@ import logging
 import time
 import urllib.robotparser
 from typing import Any, Dict, List
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import feedparser
 import httpx
@@ -100,6 +100,22 @@ def _resolve_source_secrets(source: Dict[str, Any]) -> Dict[str, str]:
     return resolved
 
 
+# ── job_url sanitization ─────────────────────────────────────────────────────
+def _sanitize_job_url(raw_url: str) -> str:
+    """Only allow http/https values for a posting's job_url. A posting's
+    URL is untrusted external data (an API response field, an RSS <link>,
+    a scraped href) — persisting it unchecked and later rendering it as an
+    <a href> lets a `javascript:` (or other non-http scheme) URL execute
+    when a lead reviewer clicks it. Anything else is dropped (empty
+    string), not the whole posting — a bad link shouldn't discard an
+    otherwise-relevant lead. LeadList.jsx re-validates before rendering
+    too, in case a pre-existing record predates this check."""
+    scheme = urlparse((raw_url or "").strip()).scheme.lower()
+    if scheme in ("http", "https"):
+        return raw_url.strip()
+    return ""
+
+
 # ── Fingerprint / dedup (scoped per pipeline_config_id) ────────────────────
 def compute_fingerprint(company: str, job_title: str) -> str:
     normalized = f"{company.strip().lower()}|{job_title.strip().lower()}"
@@ -159,7 +175,7 @@ async def _scan_api(source: Dict[str, Any], keywords: List[str]) -> List[RawJobP
             job_title=title,
             company_name=company,
             job_description=str(item.get("description") or item.get("job_description") or "")[:POSTING_DESCRIPTION_MAX_CHARS],
-            job_url=str(item.get("url") or item.get("job_url") or ""),
+            job_url=_sanitize_job_url(str(item.get("url") or item.get("job_url") or "")),
             location=item.get("location"),
             source_id=source["id"],
         ))
@@ -217,7 +233,7 @@ async def _scan_rss(source: Dict[str, Any], keywords: List[str]) -> List[RawJobP
             job_title=job_title,
             company_name=company,
             job_description=(getattr(entry, "summary", "") or "")[:POSTING_DESCRIPTION_MAX_CHARS],
-            job_url=getattr(entry, "link", "") or "",
+            job_url=_sanitize_job_url(getattr(entry, "link", "") or ""),
             source_id=source["id"],
         ))
     return postings
@@ -306,7 +322,7 @@ async def _scan_scraper(source: Dict[str, Any], keywords: List[str]) -> List[Raw
             job_title=title,
             company_name=company,
             job_description=_text(item, "description")[:POSTING_DESCRIPTION_MAX_CHARS],
-            job_url=link or url,
+            job_url=_sanitize_job_url(urljoin(url, link) if link else url),
             source_id=source["id"],
         ))
     return postings

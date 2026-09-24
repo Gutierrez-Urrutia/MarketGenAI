@@ -63,6 +63,137 @@ def fake_posting(**overrides) -> RawJobPosting:
     return RawJobPosting(**base)
 
 
+# ── job_url sanitization (XSS: only http/https make it into a Lead) ────────
+
+@pytest.mark.parametrize("unsafe_url", [
+    "javascript:alert(document.cookie)",
+    "JavaScript:alert(1)",  # scheme match must be case-insensitive
+    "data:text/html,<script>alert(1)</script>",
+    "vbscript:msgbox(1)",
+    "file:///etc/passwd",
+])
+def test_sanitize_job_url_drops_unsafe_schemes(unsafe_url):
+    assert svc._sanitize_job_url(unsafe_url) == ""
+
+
+@pytest.mark.parametrize("safe_url", [
+    "https://acme.example.com/jobs/1",
+    "http://acme.example.com/jobs/1",
+])
+def test_sanitize_job_url_keeps_http_https(safe_url):
+    assert svc._sanitize_job_url(safe_url) == safe_url
+
+
+def test_sanitize_job_url_drops_empty_and_relative():
+    assert svc._sanitize_job_url("") == ""
+    assert svc._sanitize_job_url("/jobs/1") == ""
+
+
+@pytest.mark.asyncio
+async def test_scan_api_sanitizes_unsafe_job_url():
+    source = fake_source()
+
+    async def fake_get(self, url, headers=None, params=None, **kwargs):
+        request = httpx.Request("GET", url)
+        return httpx.Response(200, json={"data": [
+            {"title": "Ops Manager", "company": "Acme",
+             "url": "javascript:alert(document.cookie)"},
+        ]}, request=request)
+
+    with patch.object(httpx.AsyncClient, "get", fake_get):
+        postings = await svc._scan_api(source, [])
+
+    assert len(postings) == 1
+    assert postings[0].job_url == ""
+
+
+@pytest.mark.asyncio
+async def test_scan_rss_sanitizes_unsafe_job_url():
+    source = fake_source({"source_type": "rss", "config": {"feed_url": "https://feed.example.com/rss"}})
+
+    fake_entry = MagicMock()
+    fake_entry.title = "Data Entry Clerk at Acme Corp"
+    fake_entry.summary = "Some summary"
+    fake_entry.link = "javascript:alert(1)"
+
+    fake_parsed = MagicMock()
+    fake_parsed.entries = [fake_entry]
+
+    async def fake_get(self, url, headers=None, params=None, **kwargs):
+        request = httpx.Request("GET", url)
+        return httpx.Response(200, content=b"<rss></rss>", request=request)
+
+    with (
+        patch.object(httpx.AsyncClient, "get", fake_get),
+        patch.object(svc.feedparser, "parse", return_value=fake_parsed),
+    ):
+        postings = await svc._scan_rss(source, [])
+
+    assert len(postings) == 1
+    assert postings[0].job_url == ""
+
+
+@pytest.mark.asyncio
+async def test_scan_scraper_sanitizes_unsafe_job_url():
+    source = fake_source({
+        "source_type": "scraper",
+        "config": {
+            "url": "https://jobs.example.com/list",
+            "selectors": {"item": ".job", "title": ".title", "company": ".company", "link": "a"},
+        },
+    })
+    html = """
+    <html><body>
+      <div class="job"><span class="title">Ops Manager</span><span class="company">Acme</span>
+        <a href="javascript:alert(1)">link</a></div>
+    </body></html>
+    """
+
+    async def fake_get(self, url, **kwargs):
+        request = httpx.Request("GET", url)
+        return httpx.Response(200, text=html, request=request)
+
+    with (
+        patch.object(svc, "_robots_txt_allows", new_callable=AsyncMock, return_value=True),
+        patch.object(httpx.AsyncClient, "get", fake_get),
+        patch.object(svc.asyncio, "sleep", new_callable=AsyncMock),
+    ):
+        postings = await svc._scan_scraper(source, [])
+
+    assert len(postings) == 1
+    assert postings[0].job_url == ""
+
+
+@pytest.mark.asyncio
+async def test_scan_scraper_resolves_relative_link_against_page_url():
+    source = fake_source({
+        "source_type": "scraper",
+        "config": {
+            "url": "https://jobs.example.com/list",
+            "selectors": {"item": ".job", "title": ".title", "company": ".company", "link": "a"},
+        },
+    })
+    html = """
+    <html><body>
+      <div class="job"><span class="title">Ops Manager</span><span class="company">Acme</span>
+        <a href="/jobs/42">link</a></div>
+    </body></html>
+    """
+
+    async def fake_get(self, url, **kwargs):
+        request = httpx.Request("GET", url)
+        return httpx.Response(200, text=html, request=request)
+
+    with (
+        patch.object(svc, "_robots_txt_allows", new_callable=AsyncMock, return_value=True),
+        patch.object(httpx.AsyncClient, "get", fake_get),
+        patch.object(svc.asyncio, "sleep", new_callable=AsyncMock),
+    ):
+        postings = await svc._scan_scraper(source, [])
+
+    assert postings[0].job_url == "https://jobs.example.com/jobs/42"
+
+
 # ── compute_fingerprint / dedup scoping ─────────────────────────────────────
 
 def test_compute_fingerprint_is_stable_and_case_insensitive():

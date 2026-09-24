@@ -18,6 +18,22 @@ const STATUS_OPTIONS = [
 const POLL_INTERVAL_MS = 2000;
 const POLL_MAX_ATTEMPTS = 150; // ~5 minutes
 
+// Only render a lead's job_url as a clickable link if it's http(s). The
+// backend already drops non-http(s) schemes before persisting a Lead
+// (job_scout_service._sanitize_job_url), but a pre-existing record from
+// before that check shipped could still have an unsafe value (e.g.
+// "javascript:...") sitting in Firestore — React does not sanitize URL
+// schemes in an href, so this guard is the second, independent check.
+function isSafeHttpUrl(url) {
+  if (!url) return false;
+  try {
+    const parsed = new URL(url, window.location.origin);
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
 function getApiErrorMessage(error, fallback) {
   const detail = error?.response?.data?.detail;
   if (typeof detail === "string" && detail.trim()) return detail;
@@ -186,8 +202,8 @@ export default function LeadList() {
               {leads.map((lead) => (
                 <tr key={lead.id} className="border-b border-gray-50 hover:bg-gray-50">
                   <td className="px-4 py-3 font-medium text-gray-900">
-                    {lead.job_url ? (
-                      <a href={lead.job_url} target="_blank" rel="noreferrer" className="hover:underline">
+                    {isSafeHttpUrl(lead.job_url) ? (
+                      <a href={lead.job_url} target="_blank" rel="noopener noreferrer" className="hover:underline">
                         {lead.job_title}
                       </a>
                     ) : lead.job_title}
