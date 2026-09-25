@@ -39,8 +39,9 @@ from app.schemas.proposal import (
     ProposalVersionCreate,
     SendToCrmRequest,
 )
-from app.services.firestore_service import opportunities_repo, proposals_repo
+from app.services.firestore_service import opportunities_repo, proposals_repo, settings_repo
 from app.services import deepseek_service
+from app.services.crm_service import CrmAuthError, CrmProviderError, CrmTimeoutError, HubSpotClient
 from app.services.rag_netprovider import get_rag_context
 from app.rendering.brand_styles import (
     BRAND_BORDER,
@@ -1020,11 +1021,56 @@ async def send_proposal_to_crm(
     user: CurrentUser = Depends(get_current_user),
 ):
     proposal = await _get_proposal_for_user(proposal_id, user.sub)
+
+    provider = (body.provider or "hubspot").lower()
+    if provider != "hubspot":
+        raise HTTPException(status_code=400, detail=f"Proveedor '{provider}' no soportado aún")
+
+    client_email = proposal.get("clientEmail")
+    if not client_email:
+        raise HTTPException(
+            status_code=400,
+            detail="La propuesta no tiene un email de cliente. Edítala para agregarlo antes de enviarla al CRM.",
+        )
+
+    org_settings = await settings_repo.get_by_user(user.sub)
+    api_key = (org_settings.get("crm") or {}).get("apiKey")
+    if not api_key:
+        raise HTTPException(status_code=400, detail="No hay una integración de CRM configurada en Ajustes.")
+
+    hubspot = HubSpotClient(api_key)
+    existing_deal_id = (proposal.get("crmSync") or {}).get("hubspotDealId")
+    try:
+        contact_id = await hubspot.upsert_contact(
+            email=client_email,
+            name=proposal.get("clientName"),
+            company=proposal.get("clientCompany"),
+        )
+        deal_id = await hubspot.upsert_deal(
+            deal_id=existing_deal_id,
+            dealname=proposal.get("title"),
+            amount=proposal.get("totalAmount"),
+            contact_id=contact_id,
+        )
+    except CrmAuthError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    except CrmTimeoutError as exc:
+        raise HTTPException(status_code=504, detail=str(exc)) from exc
+    except CrmProviderError as exc:
+        await proposals_repo.update(proposal_id, {"crmSync": {
+            "provider": "hubspot",
+            "status": "failed",
+            "error": str(exc),
+            "syncedAt": datetime.now(timezone.utc).isoformat(),
+        }})
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
     crm_sync = {
-        "provider": body.provider or "manual",
-        "status": "queued",
-        "queuedAt": datetime.now(timezone.utc).isoformat(),
-        "clientName": proposal.get("clientName"),
+        "provider": "hubspot",
+        "status": "synced",
+        "syncedAt": datetime.now(timezone.utc).isoformat(),
+        "hubspotContactId": contact_id,
+        "hubspotDealId": deal_id,
     }
     return await proposals_repo.update(proposal_id, {"crmSync": crm_sync})
 

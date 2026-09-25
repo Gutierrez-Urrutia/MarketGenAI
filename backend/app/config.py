@@ -82,6 +82,8 @@ class Settings(BaseSettings):
     keycloak_client_id: str = "nd-backend"
     keycloak_client_secret: str = ""
 
+    hubspot_base_url: str = "https://api.hubapi.com"
+
     supabase_url: str = ""
     supabase_service_key: str = ""
     supabase_storage_bucket: str = "nd-assets"

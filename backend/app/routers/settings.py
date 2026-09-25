@@ -6,6 +6,7 @@ from pydantic import BaseModel
 from typing import Any, Dict, List, Optional
 
 from app.dependencies.auth import CurrentUser, get_current_user
+from app.services.crm_service import CrmAuthError, CrmProviderError, CrmTimeoutError, HubSpotClient
 from app.services.firestore_service import settings_repo
 
 router = APIRouter(prefix="/settings", tags=["Settings"])
@@ -35,11 +36,22 @@ def _redact_social_tokens(doc: Dict[str, Any]) -> Dict[str, Any]:
     return {**doc, "socialAccounts": redacted}
 
 
+def _redact_crm_key(doc: Dict[str, Any]) -> Dict[str, Any]:
+    """crm.apiKey holds a raw CRM provider API key — never return it in
+    clear text; expose only whether one is configured plus a display hint."""
+    crm = doc.get("crm")
+    if not isinstance(crm, dict) or not crm.get("apiKey"):
+        return doc
+    api_key = crm["apiKey"]
+    redacted = {**crm, "apiKey": f"••••{api_key[-4:]}", "hasApiKey": True}
+    return {**doc, "crm": redacted}
+
+
 @router.get("")
 async def get_settings(user: CurrentUser = Depends(get_current_user)):
     """Return the current org settings (keyed by user.sub)."""
     doc = await settings_repo.get_by_user(user.sub)
-    return _redact_social_tokens(doc)
+    return _redact_crm_key(_redact_social_tokens(doc))
 
 
 @router.post("/crm/test-connection")
@@ -47,29 +59,21 @@ async def test_crm_connection(
     body: dict,
     user: CurrentUser = Depends(get_current_user),
 ):
-    import httpx
     api_key = body.get("apiKey", "").strip()
     provider = body.get("provider", "hubspot").lower()
     if not api_key:
         raise HTTPException(status_code=400, detail="API key requerida")
-    if provider == "hubspot":
-        try:
-            async with httpx.AsyncClient(timeout=8) as client:
-                resp = await client.get(
-                    "https://api.hubapi.com/crm/v3/objects/contacts",
-                    params={"limit": 1},
-                    headers={"Authorization": f"Bearer {api_key}"},
-                )
-            if resp.status_code == 200:
-                return {"status": "connected", "message": "Conexión exitosa con HubSpot"}
-            elif resp.status_code == 401:
-                raise HTTPException(status_code=401, detail="API key inválida o sin permisos")
-            else:
-                raise HTTPException(status_code=502, detail=f"HubSpot respondió con error {resp.status_code}")
-        except httpx.TimeoutException:
-            raise HTTPException(status_code=504, detail="Timeout al conectar con HubSpot")
-    else:
+    if provider != "hubspot":
         raise HTTPException(status_code=400, detail=f"Proveedor '{provider}' no soportado aún")
+
+    try:
+        return await HubSpotClient(api_key).test_connection()
+    except CrmAuthError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    except CrmTimeoutError as exc:
+        raise HTTPException(status_code=504, detail=str(exc)) from exc
+    except CrmProviderError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @router.put("")
@@ -82,11 +86,18 @@ async def update_settings(
     payload = body.model_dump(exclude_none=True)
     payload["userId"] = user.sub
 
-    # Mask any API keys before storing (basic protection)
-    if "crm" in payload and payload["crm"].get("apiKey"):
-        key = payload["crm"]["apiKey"]
-        if not all(c == "•" for c in key):       # only update if not masked
-            payload["crm"]["apiKey"] = key        # store as-is (encrypt at rest via Firestore rules)
+    # Firestore's update() replaces the whole `crm` map with whatever is
+    # passed here — merge onto the previously stored map so saving just
+    # {provider: ...} (e.g. from the general Preferences save) doesn't wipe
+    # out a separately-saved apiKey, and vice versa. If the client
+    # round-tripped the redacted "••••1234" placeholder from GET /settings
+    # unchanged, keep the real stored key instead of overwriting it.
+    if "crm" in payload:
+        existing_crm = (existing or {}).get("crm") or {}
+        merged_crm = {**existing_crm, **payload["crm"]}
+        if merged_crm.get("apiKey", "").startswith("••••"):
+            merged_crm["apiKey"] = existing_crm.get("apiKey", "")
+        payload["crm"] = merged_crm
 
     if existing:
         return await settings_repo.update(user.sub, payload)

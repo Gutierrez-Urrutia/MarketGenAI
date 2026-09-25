@@ -5,7 +5,7 @@ from datetime import datetime
 from enum import Enum
 from typing import List, Literal, Optional
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, EmailStr, Field
 
 
 class ProposalStatus(str, Enum):
@@ -26,6 +26,8 @@ class ProposalCreate(BaseModel):
 
     title:       str = Field(..., min_length=1, max_length=200)
     clientName:  Optional[str] = Field(None, max_length=200)
+    clientEmail:   Optional[EmailStr] = None
+    clientCompany: Optional[str] = Field(None, max_length=200)
     description: Optional[str] = None
     content:     Optional[str] = None
     bookId:      Optional[str] = None
@@ -38,6 +40,8 @@ class ProposalUpdate(BaseModel):
 
     title:       Optional[str] = Field(None, min_length=1, max_length=200)
     clientName:  Optional[str] = None
+    clientEmail:   Optional[EmailStr] = None
+    clientCompany: Optional[str] = None
     description: Optional[str] = None
     status:      Optional[str] = None
     content:     Optional[str] = None   # HTML/markdown body
@@ -98,6 +102,8 @@ class ProposalOut(BaseModel):
     id:          str
     title:       Optional[str] = None
     clientName:  Optional[str] = None
+    clientEmail:   Optional[str] = None
+    clientCompany: Optional[str] = None
     description: Optional[str] = None
     status:      Optional[str] = None
     proposal_status: Optional[str] = None

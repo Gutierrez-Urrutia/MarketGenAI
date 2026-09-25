@@ -29,6 +29,7 @@ import {
   updateProposal,
   updateProposalStatus,
   generateProposalById,
+  sendProposalToCrm,
 } from "./api/proposalsApi";
 
 import Chat from "./pages/chat/Chat";
@@ -2398,6 +2399,7 @@ function QuickProposalModal({ onClose, onCreated }) {
   const [form, setForm] = useState({
     title: "",
     customer: "",
+    customerEmail: "",
     objective: "",
     context: "",
   });
@@ -2415,6 +2417,7 @@ function QuickProposalModal({ onClose, onCreated }) {
       status,
       customerName: customer,
       clientName: customer,
+      clientEmail: form.customerEmail.trim(),
       objective: form.objective,
       description: form.context,
       date: now.toISOString().slice(0, 10),
@@ -2468,6 +2471,9 @@ function QuickProposalModal({ onClose, onCreated }) {
           </Field>
           <Field label={t("dashboard.quickActionCards.proposalCustomer")}>
             <Input value={form.customer} onChange={(event) => update("customer", event.target.value)} placeholder={t("dashboard.quickActionCards.proposalCustomerPlaceholder")} />
+          </Field>
+          <Field label="Client email">
+            <Input type="email" value={form.customerEmail} onChange={(event) => update("customerEmail", event.target.value)} placeholder="client@company.com" />
           </Field>
           <Field label={t("dashboard.quickActionCards.proposalObjective")}>
             <Input value={form.objective} onChange={(event) => update("objective", event.target.value)} placeholder={t("dashboard.quickActionCards.proposalObjectivePlaceholder")} />
@@ -3654,6 +3660,7 @@ function OpportunityProposalModal({ opportunity, onClose }) {
   const [proposal, setProposal] = useState(null);
   const [draftContent, setDraftContent] = useState("");
   const [editingPreview, setEditingPreview] = useState(false);
+  const [customerEmail, setCustomerEmail] = useState("");
   const { toasts, setToast, removeToast, pauseToast, resumeToast } = useToastQueue();
   const proposalPreviewRef = useRef(null);
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -3662,6 +3669,8 @@ function OpportunityProposalModal({ opportunity, onClose }) {
   const proposalForm = {
     name: `${opportunity?.company || "Opportunity"} Proposal`,
     customer: opportunity?.company || "",
+    customerEmail,
+    customerCompany: opportunity?.company || "",
     template: "NoonDalton Standard Proposal",
     date: new Date().toISOString().slice(0, 10),
     tags: opportunityTags.join(", "),
@@ -3821,6 +3830,8 @@ function OpportunityProposalModal({ opportunity, onClose }) {
     status: "draft",
     customer_name: proposalForm.customer,
     clientName: proposalForm.customer,
+    clientEmail: proposalForm.customerEmail || undefined,
+    clientCompany: proposalForm.customerCompany || undefined,
     template: proposalForm.template,
     tags: opportunityTags,
     pricing_rows: pricingRows,
@@ -4033,6 +4044,9 @@ function OpportunityProposalModal({ opportunity, onClose }) {
           {step === 1 && (
             <div className="grid grid-cols-2 gap-3">
               <Field label={t("opportunitiesPage.proposalModal.customer")}><Input value={proposalForm.customer} readOnly /></Field>
+              <Field label="Client email" hint="Used to send this proposal to your CRM">
+                <Input type="email" value={customerEmail} onChange={(event) => setCustomerEmail(event.target.value)} placeholder="client@company.com" />
+              </Field>
               <Field label={t("opportunitiesPage.proposalModal.proposalName")}><Input value={proposalForm.name} readOnly /></Field>
               <Field label={t("opportunitiesPage.proposalModal.template")}><Input value={proposalForm.template} readOnly /></Field>
               <Field label={t("opportunitiesPage.proposalModal.tags")}><Input value={proposalForm.tags} readOnly /></Field>
@@ -4526,6 +4540,9 @@ function ContentLibraryPage({ navigationState = {}, onNavigate = () => {}, campa
   const [contentLanguage, setContentLanguage] = useState(getStoredPreference(PREF_KEYS.language, "en"));
   const [editingProposal, setEditingProposal] = useState(null);
   const [viewingProposal, setViewingProposal] = useState(null);
+  const [crmSending, setCrmSending] = useState(false);
+  const [crmEmailPrompt, setCrmEmailPrompt] = useState(null); // { proposal, email } while asking for a missing client email
+  const [crmEmailPromptSaving, setCrmEmailPromptSaving] = useState(false);
   const [viewingContentItem, setViewingContentItem] = useState(null);
   const [viewingCampaignContent, setViewingCampaignContent] = useState(null);
   const [socialPublishStatus, setSocialPublishStatus] = useState(null);
@@ -4586,6 +4603,8 @@ function ContentLibraryPage({ navigationState = {}, onNavigate = () => {}, campa
   const [proposalForm, setProposalForm] = useState({
     name: "BPO Proposal for Finance",
     customer: "",
+    customerEmail: "",
+    customerCompany: "",
     template: "NoonDalton Standard Proposal",
     date: new Date().toISOString().slice(0, 10),
     tags: [],
@@ -4666,6 +4685,8 @@ function ContentLibraryPage({ navigationState = {}, onNavigate = () => {}, campa
     setProposalForm({
       name: "BPO Proposal for Finance",
       customer: "",
+      customerEmail: "",
+      customerCompany: "",
       template: "NoonDalton Standard Proposal",
       date: new Date().toISOString().slice(0, 10),
       tags: [],
@@ -5249,6 +5270,8 @@ function ContentLibraryPage({ navigationState = {}, onNavigate = () => {}, campa
     setProposalForm({
       name: proposal.title || structured.title || "",
       customer: proposal.customerName || proposal.clientName || proposal.client_name || structured.client || structured.customer || "",
+      customerEmail: proposal.clientEmail || "",
+      customerCompany: proposal.clientCompany || "",
       template: proposal.template || "NoonDalton Standard Proposal",
       date: proposal.date || new Date().toISOString().slice(0, 10),
       tags: normalizeTags(proposal.tags || structured.tags || []),
@@ -5461,6 +5484,8 @@ function ContentLibraryPage({ navigationState = {}, onNavigate = () => {}, campa
     custom_prompt: proposalCustomPrompt,
     customer_name: proposalForm.customer,
     clientName: proposalForm.customer,
+    clientEmail: proposalForm.customerEmail || undefined,
+    clientCompany: proposalForm.customerCompany || undefined,
     template: proposalForm.template,
     tags: proposalTags,
     pricing_rows: pricingRows,
@@ -5844,6 +5869,9 @@ function ContentLibraryPage({ navigationState = {}, onNavigate = () => {}, campa
         custom_prompt: proposalCustomPrompt,
         status: "draft",
         customer_name: proposalForm.customer,
+        clientName: proposalForm.customer,
+        clientEmail: proposalForm.customerEmail || undefined,
+        clientCompany: proposalForm.customerCompany || undefined,
         template: proposalForm.template,
         tags: proposalTags,
         pricing_rows: pricingRows,
@@ -6211,6 +6239,52 @@ const filtered = allItems.filter((item) => {
       return;
     }
     setToast({ type: "error", message: t("contentLibrary.exportUnsupported") });
+  };
+  const getCrmErrorMessage = (error, fallback) => {
+    const detail = error?.response?.data?.detail;
+    return (typeof detail === "string" && detail.trim()) ? detail : (error?.message || fallback);
+  };
+  const applyCrmSyncResult = (proposalId, crmSync) => {
+    setProposals((current) => current.map((proposal) => proposal.id === proposalId ? { ...proposal, crmSync } : proposal));
+    setViewingProposal((current) => current && current.id === proposalId ? { ...current, crmSync } : current);
+  };
+  const sendProposalToCrmNow = async (proposal) => {
+    setCrmSending(true);
+    try {
+      const { data } = await sendProposalToCrm(proposal.id);
+      applyCrmSyncResult(proposal.id, data.crmSync);
+      setToast({ type: "success", message: "Proposal sent to HubSpot." });
+    } catch (error) {
+      console.error(error);
+      setToast({ type: "error", message: getCrmErrorMessage(error, "Could not send the proposal to the CRM.") });
+    } finally {
+      setCrmSending(false);
+    }
+  };
+  const handleUploadToCrm = (proposal) => {
+    if (!proposal.clientEmail) {
+      setCrmEmailPrompt({ proposal, email: "" });
+      return;
+    }
+    sendProposalToCrmNow(proposal);
+  };
+  const confirmCrmEmailPrompt = async () => {
+    const email = crmEmailPrompt?.email.trim();
+    if (!email) return;
+    setCrmEmailPromptSaving(true);
+    try {
+      const { data } = await updateProposal(crmEmailPrompt.proposal.id, { clientEmail: email });
+      const updatedProposal = { ...crmEmailPrompt.proposal, ...data, clientEmail: email };
+      setProposals((current) => current.map((item) => item.id === updatedProposal.id ? { ...item, ...updatedProposal } : item));
+      setViewingProposal((current) => current && current.id === updatedProposal.id ? { ...current, ...updatedProposal } : current);
+      setCrmEmailPrompt(null);
+      await sendProposalToCrmNow(updatedProposal);
+    } catch (error) {
+      console.error(error);
+      setToast({ type: "error", message: getCrmErrorMessage(error, "Could not save the client email.") });
+    } finally {
+      setCrmEmailPromptSaving(false);
+    }
   };
   const renderAiInput = (field, textarea = false, type = "text") => (
     <Field label={contentAiLabel(field)}>
@@ -6737,6 +6811,14 @@ const filtered = allItems.filter((item) => {
                     <option>BPO Services Proposal</option>
                     <option>AI Automation Proposal</option>
                   </Select>
+                </Field>
+                </div>
+                <div className="grid grid-cols-2 gap-1.5">
+                <Field label="Client email" hint="Used to send this proposal to your CRM">
+                  <Input type="email" value={proposalForm.customerEmail} onChange={(e) => updateProposalForm("customerEmail", e.target.value)} placeholder="client@company.com" />
+                </Field>
+                <Field label="Client company">
+                  <Input value={proposalForm.customerCompany} onChange={(e) => updateProposalForm("customerCompany", e.target.value)} placeholder="Acme Corp" />
                 </Field>
                 </div>
                 <Field label={createT.tags}>
@@ -7354,9 +7436,37 @@ const filtered = allItems.filter((item) => {
             <Btn variant="secondary" icon={<PenIcon size={12} />} onClick={() => openStructuredProposalEditor(viewingProposal)}>{createT.editStructure}</Btn>
             <Btn variant="secondary" onClick={() => downloadItem(viewingProposal, "docx")}>{createT.downloadDocx}</Btn>
             <Btn onClick={() => downloadItem(viewingProposal, "pdf")}>{createT.downloadPdf}</Btn>
-            <Btn variant="teal" icon={<PlugIcon size={12} />} onClick={() => setToast(t("contentLibrary.crmUploadQueued"))}>{createT.uploadCrm}</Btn>
+            <Btn variant="teal" icon={<PlugIcon size={12} />} onClick={() => handleUploadToCrm(viewingProposal)} disabled={crmSending}>{crmSending ? "Sending..." : createT.uploadCrm}</Btn>
           </>
         )}
+      </div>
+    </div>
+  </div>
+)}
+{/* ── Client email prompt (asked before the first CRM send) ── */}
+{crmEmailPrompt && (
+  <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-900/40 p-4">
+    <div className="w-full max-w-sm rounded-2xl bg-white shadow-xl">
+      <div className="border-b border-gray-100 p-5">
+        <p className="text-sm font-semibold text-gray-900">Client email required</p>
+        <p className="text-xs text-gray-500">HubSpot needs an email to create or update this client's contact.</p>
+      </div>
+      <div className="p-5">
+        <Field label="Client email">
+          <Input
+            type="email"
+            autoFocus
+            value={crmEmailPrompt.email}
+            onChange={(event) => setCrmEmailPrompt((current) => ({ ...current, email: event.target.value }))}
+            placeholder="client@company.com"
+          />
+        </Field>
+      </div>
+      <div className="flex justify-end gap-2 border-t border-gray-100 bg-gray-50 p-4">
+        <Btn variant="ghost" onClick={() => setCrmEmailPrompt(null)}>{t("common.cancel")}</Btn>
+        <Btn icon={<PlugIcon size={12} />} onClick={confirmCrmEmailPrompt} disabled={!crmEmailPrompt.email.trim() || crmEmailPromptSaving}>
+          {crmEmailPromptSaving ? "Sending..." : "Save & send"}
+        </Btn>
       </div>
     </div>
   </div>
@@ -8890,6 +9000,7 @@ function SettingsPage({ navigationState = {} }) {
   const [crmProvider, setCrmProvider] = useState("hubspot");
   const [crmTestStatus, setCrmTestStatus] = useState(null);
   const [crmTestMessage, setCrmTestMessage] = useState("");
+  const [crmSaving, setCrmSaving] = useState(false);
   const [settingsTemplates, setSettingsTemplates] = useState([]);
   const [editingTemplateId, setEditingTemplateId] = useState(null);
   const [templateNameDraft, setTemplateNameDraft] = useState("");
@@ -9010,6 +9121,7 @@ function SettingsPage({ navigationState = {} }) {
         localStorage.setItem(PREF_KEYS.timezone, savedTimezone);
         localStorage.setItem(PREF_KEYS.dateFormat, savedDateFormat);
         if (data?.crm?.provider) setCrmProvider(data.crm.provider);
+        if (data?.crm?.apiKey) setCrmApiKey(data.crm.apiKey);
       })
       .catch((error) => console.error(error));
     return () => {
@@ -9127,6 +9239,20 @@ function SettingsPage({ navigationState = {} }) {
     } catch (err) {
       setCrmTestStatus("error");
       setCrmTestMessage(err.response?.data?.detail || "Error al conectar");
+    }
+  };
+
+  const saveCrmIntegration = async () => {
+    setCrmSaving(true);
+    try {
+      const { data } = await settingsApi.update({ crm: { provider: crmProvider, apiKey: crmApiKey } });
+      if (data?.crm?.apiKey) setCrmApiKey(data.crm.apiKey);
+      setToast({ type: "success", message: t("settings.saved") });
+    } catch (error) {
+      console.error(error);
+      setToast({ type: "error", message: getApiErrorMessage(error, "Could not save the CRM integration.") });
+    } finally {
+      setCrmSaving(false);
     }
   };
 
@@ -9473,9 +9599,19 @@ function SettingsPage({ navigationState = {} }) {
         <SettingsSection isDark={isDark} title="CRM Integration" IconComp={PlugIcon} desc="Connect proposal upload and opportunity sync">
           <div className="grid grid-cols-2 gap-1.5">
             <Field label="CRM Provider"><Select className={settingsControlClass} value={crmProvider} onChange={(event) => setCrmProvider(event.target.value)}><option value="hubspot">HubSpot</option><option value="salesforce">Salesforce</option><option value="custom">Custom CRM</option></Select></Field>
-            <Field label="Connection status"><Badge label="Not connected" color={isDark ? "bg-amber-500/10 text-amber-200 border border-amber-400/20" : "bg-yellow-100 text-yellow-700"} /></Field>
+            <Field label="Connection status">
+              <Badge
+                label={crmTestStatus === "connected" ? "Connected" : crmTestStatus === "error" ? "Connection failed" : crmTestStatus === "testing" ? "Testing..." : "Not tested"}
+                color={
+                  crmTestStatus === "connected"
+                    ? (isDark ? "bg-green-500/10 text-green-200 border border-green-400/20" : "bg-green-100 text-green-700")
+                    : crmTestStatus === "error"
+                    ? (isDark ? "bg-red-500/10 text-red-200 border border-red-400/20" : "bg-red-100 text-red-700")
+                    : (isDark ? "bg-amber-500/10 text-amber-200 border border-amber-400/20" : "bg-yellow-100 text-yellow-700")
+                }
+              />
+            </Field>
             <Field label="CRM API key"><Input className={settingsControlClass} type="password" value={crmApiKey} onChange={(event) => setCrmApiKey(event.target.value)} placeholder="Paste CRM API key" /></Field>
-            <Field label="CRM endpoint"><Input className={settingsControlClass} placeholder="https://api.crm.com/v1" /></Field>
           </div>
           <div className="flex items-center justify-end gap-1">
             {crmTestStatus === "connected" && (
@@ -9484,7 +9620,7 @@ function SettingsPage({ navigationState = {} }) {
             {crmTestStatus === "error" && (
               <span style={{ color: "#dc2626", fontSize: 13, fontWeight: 600 }}>✗ {crmTestMessage}</span>
             )}
-            <Btn variant="secondary" icon={crmTestStatus === "testing" ? <span className="h-3 w-3 animate-spin rounded-full border-2 border-current border-t-transparent" /> : <PlayIcon size={12} />} onClick={testCrmConnection} disabled={!crmApiKey.trim() || crmTestStatus === "testing"}>{crmTestStatus === "testing" ? "Testing..." : "Test Connection"}</Btn><Btn icon={<SaveIcon size={12} />}>Save Integration</Btn>
+            <Btn variant="secondary" icon={crmTestStatus === "testing" ? <span className="h-3 w-3 animate-spin rounded-full border-2 border-current border-t-transparent" /> : <PlayIcon size={12} />} onClick={testCrmConnection} disabled={!crmApiKey.trim() || crmTestStatus === "testing"}>{crmTestStatus === "testing" ? "Testing..." : "Test Connection"}</Btn><Btn icon={<SaveIcon size={12} />} onClick={saveCrmIntegration} disabled={!crmApiKey.trim() || crmSaving}>{crmSaving ? "Saving..." : "Save Integration"}</Btn>
           </div>
         </SettingsSection>
         <SettingsSection isDark={isDark} title="Social Connections" IconComp={Share2Icon} desc="Publishing destinations for generated social assets">
