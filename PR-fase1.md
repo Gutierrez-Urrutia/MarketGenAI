@@ -88,3 +88,34 @@ Ya está documentada en `backend/.env.example` y ahora también en `README.es.md
 | uuid (<11.1.1) | moderada |
 
 Actualizar starlette/python-multipart implica revisar compatibilidad con FastAPI; tratar en un PR propio con la suite completa.
+
+## Latencia del escaneo y razonamiento de DeepSeek (medido)
+
+**Causa de los ~116 s de una corrida de 3 vacantes:** no fue DeepSeek. `task_run_job_scout.delay()` es síncrono y, con Redis caído, tardó **108,8 s** en fallar (44 intentos de conexión de ~2,03 s en Windows), bloqueando el bucle de eventos de toda la API. El escaneo real, medido con temporizadores y sin escrituras, tomó **7,4 s** (descarga de la fuente 0,9 s, deduplicación 1,0 s, DeepSeek 5,5 s). Corregido en `3d4806d` (`.delay()` en un hilo con tope de `TASK_ENQUEUE_TIMEOUT_SECONDS` = 5 s). Con Celery real y Redis caído ahora cae al respaldo en 5,0 s con una parada máxima del bucle de 0,01 s.
+
+**Razonamiento (`reasoning_effort="high"` con razonamiento activado): se midió y se decidió mantenerlo.** La configuración viene **heredada del commit `10c1e2b`** (integración de DeepSeek v4, cliente compartido `_generate_text_sync`, usado por 21 puntos de llamada); **no fue una decisión de diseño para la puntuación**, que no puede elegirla por llamada.
+
+Medición real contra la API (modelo `deepseek-flash`, 25 vacantes de la fuente actual, lotes de 8 = 4 llamadas, mismo prompt y umbral 0,6). Se ejecutó la configuración actual dos veces para conocer el ruido natural antes de comparar; "referencia" es la primera pasada de la configuración actual de cada tanda. Son dos tandas independientes; una pasada por variante salvo la actual y "razonamiento desactivado" (tanda 1).
+
+| Configuración | Tiempo (25 vacantes) | Dif. media de puntaje vs referencia | Vacantes que cambian de lado del umbral | Correlación (Spearman) |
+|---|---|---|---|---|
+| Actual, referencia | 52,3 s / 45,3 s | — | — | — |
+| **Actual, 2.ª pasada (ruido natural)** | 48,6 s / 32,1 s | 0,088 / 0,144 | 2 / 5 | 0,96 / 0,86 |
+| `medium` | 37,8 s | 0,043 | 1 | 0,93 |
+| `low` | 41,7 s | 0,142 | 5 | 0,80 |
+| Razonamiento desactivado | 14,1 s y 14,3 s / 16,3 s | 0,198 y 0,200 / 0,187 | 7 y 7 / 6 | 0,70 y 0,67 / 0,69 |
+
+- Desactivar el razonamiento es ~3 veces más rápido, pero las puntuaciones difieren **más que el ruido natural** y en una dirección (aprueba **21 vacantes frente a 14-15**).
+- `low` y `medium` casi no ahorran tiempo (37,8 y 41,7 s frente a 32-52 s de la actual).
+- No hay verdad de referencia: solo se mide acuerdo entre configuraciones, no cuál puntúa mejor. Muestra pequeña (25 vacantes, una fuente).
+- **Decisión: se mantiene la configuración actual.**
+- **Proyección con lotes de 8:** 30 vacantes = 4 llamadas ≈ 50-60 s (medido con 25: 32-52 s). El tope de 100 por corrida = 13 llamadas ≈ 200 s, cerca del presupuesto de 240 s.
+
+### Pendientes (no corregidos)
+
+- `job_scout_service.py:507`: el bucle de lotes **no comprueba el presupuesto** (`RUN_TIME_BUDGET_SECONDS`); solo se comprueba al empezar cada fuente (`:471`). Con el tope de 100 vacantes por corrida podría pasarse.
+- Las vacantes **bajo el umbral no se guardan**, así que se **vuelven a puntuar en cada corrida** (hoy 3 por corrida). Es costo en tokens, no un fallo.
+- El mismo patrón de `.delay()` síncrono dentro de un manejador `async` existe en `routers/books.py` y `routers/publishing.py` (fuera del pipeline): con Redis caído bloquea el servidor igual. No se tocó.
+- Pruebas sin hacer: el camino con Celery real (worker) y el vencimiento del plazo de 360 s del bloqueo de corridas.
+- Si un publish a Celery termina después del tope (5 s), el escaneo ya corrió en línea: la tarea lo detecta (`status != running`) y no lo repite. Ventana residual: si la tarea llega mientras el respaldo todavía está corriendo, ambos podrían ejecutarse a la vez.
+
