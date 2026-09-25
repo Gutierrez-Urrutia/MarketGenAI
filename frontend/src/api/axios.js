@@ -391,6 +391,7 @@ export const pipelineApi = {
   runScan: () => api.post('/pipeline/runs'),
   listRuns: (params) => api.get('/pipeline/runs', { params }),
   getRun: (id) => api.get(`/pipeline/runs/${id}`),
+  getActiveRun: () => api.get('/pipeline/runs/active'),
 }
 
 export const leadsApi = {

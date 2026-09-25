@@ -66,13 +66,19 @@ export default function LeadList() {
   const [statusFilter, setStatusFilter] = useState("");
   const [minScore, setMinScore] = useState("");
   const pollRef = useRef(null);
+  const mountedRef = useRef(true);
+  // The poll outlives renders, so it must read the *current* filters, not the
+  // ones captured when the scan started.
+  const filtersRef = useRef({ statusFilter, minScore });
+  filtersRef.current = { statusFilter, minScore };
 
   const fetchLeads = async () => {
     setLoading(true);
     try {
+      const { statusFilter: status, minScore: score } = filtersRef.current;
       const params = {};
-      if (statusFilter) params.status = statusFilter;
-      if (minScore) params.min_score = Number(minScore);
+      if (status) params.status = status;
+      if (score) params.min_score = Number(score);
       const { data } = await leadsApi.list(params);
       setLeads(data.items || []);
     } catch (error) {
@@ -84,28 +90,62 @@ export default function LeadList() {
 
   useEffect(() => {
     fetchLeads();
-    return () => {
-      if (pollRef.current) clearInterval(pollRef.current);
-    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [statusFilter, minScore]);
 
+  const stopPolling = () => {
+    if (pollRef.current) clearInterval(pollRef.current);
+    pollRef.current = null;
+  };
+
+  // Mount/unmount only: a filter change must not cancel a scan being followed,
+  // and leaving the page must not leave a timer polling for a dead component.
+  // The run itself keeps going on the server; it is re-attached on next mount.
+  useEffect(() => {
+    mountedRef.current = true;
+    attachToActiveRun();
+    return () => {
+      mountedRef.current = false;
+      stopPolling();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // The run state lives on the server, not in this component: after
+  // navigating away and back (or reloading) ask which run is still active.
+  const attachToActiveRun = async () => {
+    try {
+      const { data } = await pipelineApi.getActiveRun();
+      if (mountedRef.current && data?.run?.id) {
+        setScanning(true);
+        pollRun(data.run.id);
+      }
+    } catch {
+      // Best effort: without it the button is just enabled, and the backend
+      // still rejects a second concurrent run with 409.
+    }
+  };
+
   const pollRun = (runId) => {
+    stopPolling();
     let attempts = 0;
+    let inFlight = false;
     pollRef.current = setInterval(async () => {
+      if (inFlight) return;
+      inFlight = true;
       attempts += 1;
       try {
         const { data: run } = await pipelineApi.getRun(runId);
+        if (!mountedRef.current) return;
         if (run.status === "running") {
           if (attempts >= POLL_MAX_ATTEMPTS) {
-            clearInterval(pollRef.current);
+            stopPolling();
             setScanning(false);
             toast.error(t("leads.scanFailed"));
           }
           return;
         }
-        clearInterval(pollRef.current);
-        setScanning(false);
+        stopPolling();
         if (run.status === "completed") {
           toast.success(
             t("leads.scanCompleted")
@@ -117,11 +157,17 @@ export default function LeadList() {
         } else {
           toast.error(t("leads.scanFailed"));
         }
-        fetchLeads();
+        // Stay disabled until the refreshed list is on screen, so the button
+        // only comes back once the new results are visible.
+        await fetchLeads();
+        if (mountedRef.current) setScanning(false);
       } catch (error) {
-        clearInterval(pollRef.current);
+        stopPolling();
+        if (!mountedRef.current) return;
         setScanning(false);
         toast.error(getApiErrorMessage(error, t("leads.scanFailed")));
+      } finally {
+        inFlight = false;
       }
     }, POLL_INTERVAL_MS);
   };
@@ -130,9 +176,18 @@ export default function LeadList() {
     setScanning(true);
     try {
       const { data } = await pipelineApi.runScan();
+      if (!mountedRef.current) return; // left the page mid-request: re-attached on return
       toast.success(t("leads.scanStarted"));
       pollRun(data.job_id);
     } catch (error) {
+      if (!mountedRef.current) return;
+      const activeRunId = error?.response?.status === 409 ? error.response.data?.detail?.run_id : null;
+      if (activeRunId) {
+        // Someone (another tab, a reload) already started one: follow it.
+        toast(t("leads.scanAlreadyRunning"));
+        pollRun(activeRunId);
+        return;
+      }
       setScanning(false);
       toast.error(getApiErrorMessage(error, t("leads.scanFailed")));
     }
