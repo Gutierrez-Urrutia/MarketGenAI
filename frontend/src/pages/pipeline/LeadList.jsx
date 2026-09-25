@@ -63,6 +63,7 @@ export default function LeadList() {
   const [leads, setLeads] = useState([]);
   const [loading, setLoading] = useState(true);
   const [scanning, setScanning] = useState(false);
+  const [loadError, setLoadError] = useState(null);
   const [statusFilter, setStatusFilter] = useState("");
   const [minScore, setMinScore] = useState("");
   const pollRef = useRef(null);
@@ -72,19 +73,25 @@ export default function LeadList() {
   const filtersRef = useRef({ statusFilter, minScore });
   filtersRef.current = { statusFilter, minScore };
 
+  const requestSeqRef = useRef(0);
+
   const fetchLeads = async () => {
+    const seq = ++requestSeqRef.current;
     setLoading(true);
+    setLoadError(null);
     try {
       const { statusFilter: status, minScore: score } = filtersRef.current;
       const params = {};
       if (status) params.status = status;
       if (score) params.min_score = Number(score);
       const { data } = await leadsApi.list(params);
+      if (seq !== requestSeqRef.current) return; // a newer load superseded this one
       setLeads(data.items || []);
     } catch (error) {
-      toast.error(getApiErrorMessage(error, "Failed to load leads."));
+      if (seq !== requestSeqRef.current) return;
+      setLoadError(describeLoadError(error));
     } finally {
-      setLoading(false);
+      if (seq === requestSeqRef.current) setLoading(false);
     }
   };
 
@@ -92,6 +99,13 @@ export default function LeadList() {
     fetchLeads();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [statusFilter, minScore]);
+
+  // A failed load must say why and offer a retry — never leave "Loading...".
+  const describeLoadError = (error) => {
+    if (error?.response?.status === 401) return t("leads.sessionExpired");
+    if (error?.code === "ECONNABORTED" || error?.code === "ETIMEDOUT") return t("leads.loadTimeout");
+    return getApiErrorMessage(error, t("leads.loadError"));
+  };
 
   const stopPolling = () => {
     if (pollRef.current) clearInterval(pollRef.current);
@@ -240,6 +254,16 @@ export default function LeadList() {
       <Card className="overflow-x-auto">
         {loading ? (
           <div className="p-8 text-center text-gray-400 text-sm">{t("common.loading")}</div>
+        ) : loadError ? (
+          <div role="alert" className="p-8 text-center text-sm">
+            <p className="text-red-600 mb-3">{loadError}</p>
+            <button
+              onClick={fetchLeads}
+              className="px-3.5 py-2 rounded-lg text-xs font-medium border border-gray-300 text-gray-700 hover:bg-gray-50"
+            >
+              {t("leads.retry")}
+            </button>
+          </div>
         ) : leads.length === 0 ? (
           <div className="p-8 text-center text-gray-400 text-sm">{t("leads.empty")}</div>
         ) : (
