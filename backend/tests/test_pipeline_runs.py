@@ -11,6 +11,22 @@ from tests.test_pipeline_config import fake_config, fake_source
 API = "/api/v1/pipeline/runs"
 
 
+@pytest.fixture(autouse=True)
+def mock_run_lock():
+    """The per-config run lock lives in a Firestore transaction (unavailable in
+    unit tests): by default every run acquires it. The lock behaviour itself is
+    covered in test_pipeline_run_lock.py."""
+    with (
+        patch(
+            "app.routers.pipeline.pipeline_run_locks_repo.try_acquire",
+            new_callable=AsyncMock,
+            return_value={"acquired": True, "holder_run_id": None, "stale_run_id": None},
+        ),
+        patch("app.routers.pipeline.pipeline_run_locks_repo.release", new_callable=AsyncMock),
+    ):
+        yield
+
+
 def fake_run(overrides: dict | None = None) -> dict:
     base = {
         "id": "run-001",

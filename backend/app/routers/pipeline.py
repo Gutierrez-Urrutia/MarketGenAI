@@ -16,11 +16,13 @@ without ever getting the secret back.
 """
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, List
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
 from app.core import url_safety
+from app.core.pipeline_constants import RUN_CONSIDERED_DEAD_AFTER_SECONDS
 from app.core.rate_limit import limiter
 from app.dependencies.auth import CurrentUser, get_current_user
 from app.schemas.job import JobAccepted
@@ -36,8 +38,16 @@ from app.schemas.pipeline import (
     SourceType,
 )
 from app.services import encryption_service, job_scout_service
-from app.services.firestore_service import new_id, now_utc, pipeline_configs_repo, pipeline_runs_repo
+from app.services.firestore_service import (
+    new_id,
+    now_utc,
+    pipeline_configs_repo,
+    pipeline_run_locks_repo,
+    pipeline_runs_repo,
+)
 from app.workers.tasks.pipeline_tasks import task_run_job_scout
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/pipeline", tags=["Pipeline"])
 
@@ -311,11 +321,14 @@ async def test_source(
 # ── Pipeline runs (Fase 2 — Agente 1 only, always manual) ──────────────────
 async def _run_job_scout_now(run_id: str, config: Dict[str, Any]) -> None:
     try:
-        result = await job_scout_service.scan_all_sources(config, run_id)
-    except Exception as exc:
-        await job_scout_service.fail_run(run_id, str(exc))
-        raise
-    await job_scout_service.finalize_run(run_id, result)
+        try:
+            result = await job_scout_service.scan_all_sources(config, run_id)
+        except Exception as exc:
+            await job_scout_service.fail_run(run_id, str(exc))
+            raise
+        await job_scout_service.finalize_run(run_id, result)
+    finally:
+        await pipeline_run_locks_repo.release(config["id"], run_id)
 
 
 @router.post("/runs", status_code=status.HTTP_202_ACCEPTED, response_model=JobAccepted)
@@ -335,24 +348,52 @@ async def create_run(request: Request, user: CurrentUser = Depends(get_current_u
             detail="No enabled sources configured for this pipeline.",
         )
 
-    run = await pipeline_runs_repo.create({
-        "pipeline_config_id": config["id"],
-        "user_id": user.sub,
-        "status": PipelineRunStatus.RUNNING.value,
-        "leads_found": 0,
-        "leads_new": 0,
-        "contacts_found": 0,
-        "emails_generated": 0,
-        "emails_auto_approved": 0,
-        "emails_pending_review": 0,
-        "emails_sent": 0,
-        "started_at": now_utc(),
-        "agent1_completed_at": None,
-        "agent2_completed_at": None,
-        "agent3_completed_at": None,
-        "completed_at": None,
-        "errors": [],
-    })
+    # One active run per config, enforced here (not just in the UI) with a
+    # Firestore-transaction lock so two simultaneous requests can't both pass.
+    run_id = new_id()
+    lock = await pipeline_run_locks_repo.try_acquire(
+        config["id"], run_id, RUN_CONSIDERED_DEAD_AFTER_SECONDS,
+    )
+    if not lock["acquired"]:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "message": "A run is already in progress for this pipeline.",
+                "run_id": lock["holder_run_id"],
+            },
+        )
+    if lock["stale_run_id"]:
+        # The previous run never released its lock (worker died): close it out.
+        try:
+            await job_scout_service.fail_run(
+                lock["stale_run_id"],
+                "Run presumed dead: it did not finish within the allowed time.",
+            )
+        except Exception:  # noqa: BLE001 — cleanup must not block the new run
+            logger.warning("could not close out stale run %s", lock["stale_run_id"], exc_info=True)
+
+    try:
+        run = await pipeline_runs_repo.create({
+            "pipeline_config_id": config["id"],
+            "user_id": user.sub,
+            "status": PipelineRunStatus.RUNNING.value,
+            "leads_found": 0,
+            "leads_new": 0,
+            "contacts_found": 0,
+            "emails_generated": 0,
+            "emails_auto_approved": 0,
+            "emails_pending_review": 0,
+            "emails_sent": 0,
+            "started_at": now_utc(),
+            "agent1_completed_at": None,
+            "agent2_completed_at": None,
+            "agent3_completed_at": None,
+            "completed_at": None,
+            "errors": [],
+        }, doc_id=run_id)
+    except Exception:
+        await pipeline_run_locks_repo.release(config["id"], run_id)
+        raise
 
     try:
         task_run_job_scout.delay(run["id"], config)
@@ -380,6 +421,20 @@ async def list_runs(
 def _assert_run_owner(run: Dict[str, Any], user_id: str) -> None:
     if run.get("user_id") != user_id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied.")
+
+
+@router.get("/runs/active")
+async def get_active_run(user: CurrentUser = Depends(get_current_user)):
+    """The run currently in progress for the caller's config, or `{"run": null}`.
+    Lets the UI recover "a scan is running" after navigating away or reloading."""
+    config = await _get_or_create_doc(user.sub)
+    holder_run_id = await pipeline_run_locks_repo.get_active_run_id(config["id"])
+    if not holder_run_id:
+        return {"run": None}
+    run = await pipeline_runs_repo.get(holder_run_id)
+    if not run or run.get("user_id") != user.sub or run.get("status") != PipelineRunStatus.RUNNING.value:
+        return {"run": None}
+    return {"run": run}
 
 
 @router.get("/runs/{run_id}")

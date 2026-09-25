@@ -15,6 +15,7 @@ from typing import Any, Dict
 from celery import Task
 
 from app.services import job_scout_service
+from app.services.firestore_service import pipeline_run_locks_repo
 from app.workers.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
@@ -36,3 +37,5 @@ def task_run_job_scout(self: Task, run_id: str, pipeline_config: Dict[str, Any])
     except Exception as exc:
         logger.exception("task_run_job_scout failed for run %s", run_id)
         _run(job_scout_service.fail_run(run_id, str(exc)))
+    finally:
+        _run(pipeline_run_locks_repo.release(pipeline_config["id"], run_id))

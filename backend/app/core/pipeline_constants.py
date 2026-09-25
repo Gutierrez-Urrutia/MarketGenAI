@@ -37,6 +37,13 @@ MAX_RESULTS_PER_RUN = 100
 # would start after this budget is skipped for this run, not force-run.
 RUN_TIME_BUDGET_SECONDS = 240
 
+# A run still marked `running` this long after it started is presumed dead (worker
+# crashed / function killed) and stops blocking new runs on the same config.
+# The 120s margin over RUN_TIME_BUDGET_SECONDS covers persistence and Celery
+# queueing delay; 240 + 120 = 6 minutes. Used as the TTL of the per-config run
+# lock (app.services.firestore_service.PipelineRunLocksRepo).
+RUN_CONSIDERED_DEAD_AFTER_SECONDS = RUN_TIME_BUDGET_SECONDS + 120
+
 # DeepSeek relevance scoring: postings are scored in batches (one DeepSeek
 # call scores up to N postings at once) instead of one call per posting, to
 # cut both latency (fewer round trips inside RUN_TIME_BUDGET_SECONDS) and
