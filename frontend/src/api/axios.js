@@ -213,6 +213,18 @@ api.interceptors.response.use(
 
     if (status === 401 && originalRequest && !originalRequest._retry) {
       originalRequest._retry = true
+
+      // This request went out with a token that has since been replaced (a
+      // refresh started by another request finished while this one was in
+      // flight). Its 401 is stale: retry with the current token. Refreshing
+      // again would rotate the refresh token a second time for no reason.
+      const sentToken = String(originalRequest.headers?.Authorization || '').replace(/^Bearer\s+/i, '')
+      const currentToken = authTokenStore.getAccessToken()
+      if (sentToken && currentToken && sentToken !== currentToken) {
+        originalRequest.headers.Authorization = `Bearer ${currentToken}`
+        return api(originalRequest)
+      }
+
       const refreshed = await ensureFreshSession()
       const token = authTokenStore.getAccessToken()
       if (refreshed && token) {
