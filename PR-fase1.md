@@ -35,6 +35,8 @@ Ya está documentada en `backend/.env.example` y ahora también en `README.es.md
 - Acción explícita para borrar la contraseña SMTP (el backend ya lo soporta con `""`; falta en la interfaz).
 - El frontend no tiene ningún ejecutor de pruebas configurado (ni Vitest ni Jest en `package.json`), así que no existen tests de interfaz en todo el proyecto; la cobertura es solo de backend.
 - Las acciones nuevas del pipeline caen al registro genérico de auditoría en vez de tener etiquetas descriptivas como las de la v1.
+- Textos del Panel principal sin pasar por i18n (`frontend/src/Dashboard.jsx`): "Last updated:" y "Refreshing..." (~L3454-3455), las etiquetas de origen de datos de `dashboardSourceLabel` — "Based on backend data", "Based on local data", "Based on cached data", "Demo data" (~L2169-2174) — y el toast "Dashboard updated". Deben moverse a `src/i18n/translations.js` (es/en/pt).
+- Panel principal: `DashboardPage` escucha el evento `storage` y cada refresco escribe un `savedAt` nuevo en localStorage; con dos pestañas abiertas se disparan refrescos entre sí sin fin (preexistente, código del commit inicial). Ver análisis en la conversación; pendiente de corrección.
 
 ## Revisión de seguridad — Fase 2
 
