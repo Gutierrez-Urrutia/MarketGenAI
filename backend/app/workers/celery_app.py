@@ -48,9 +48,14 @@ celery_app.conf.update(
     task_track_started=True,
     task_acks_late=True,                   # ack only after task completes
     worker_prefetch_multiplier=1,           # one task at a time per worker
-    broker_connection_timeout=2,            # fail fast if Redis is unreachable
+    # NOTE: these bound ONE connection attempt / the worker's own reconnects. They do
+    # NOT make `task.delay()` fail fast: publishing keeps retrying, and with Redis
+    # down `.delay()` was measured at ~109 s (44 attempts x ~2 s on Windows). Never
+    # call `.delay()` directly on the event loop: use a thread with a hard timeout,
+    # as routers/pipeline._enqueue_scan does (TASK_ENQUEUE_TIMEOUT_SECONDS).
+    broker_connection_timeout=2,            # per connection attempt
     broker_connection_retry_on_startup=False,
-    broker_connection_max_retries=1,        # so the sync fallback kicks in quickly
+    broker_connection_max_retries=1,        # worker reconnects; not the publish retry loop
     broker_transport_options={"socket_connect_timeout": 2, "socket_timeout": 2},
     result_backend_transport_options={"socket_connect_timeout": 2, "socket_timeout": 2},
     task_routes={

@@ -15,7 +15,8 @@ from typing import Any, Dict
 from celery import Task
 
 from app.services import job_scout_service
-from app.services.firestore_service import pipeline_run_locks_repo
+from app.schemas.pipeline import PipelineRunStatus
+from app.services.firestore_service import pipeline_run_locks_repo, pipeline_runs_repo
 from app.workers.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
@@ -32,6 +33,13 @@ def task_run_job_scout(self: Task, run_id: str, pipeline_config: Dict[str, Any])
     finalizes its PipelineRun doc. Agente 2/3 and the orchestrator that
     would chain them are Fase 3/4/6, not called from here."""
     try:
+        # The request that queued this task may have given up waiting for the
+        # broker and already run the scan inline (routers/pipeline._enqueue_scan).
+        # If this message arrives late, do not scan the same run twice.
+        run = _run(pipeline_runs_repo.get(run_id))
+        if not run or run.get("status") != PipelineRunStatus.RUNNING.value:
+            logger.warning("task_run_job_scout: run %s is not running any more; skipping.", run_id)
+            return
         result = _run(job_scout_service.scan_all_sources(pipeline_config, run_id))
         _run(job_scout_service.finalize_run(run_id, result))
     except Exception as exc:

@@ -16,13 +16,17 @@ without ever getting the secret back.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, Dict, List
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
 from app.core import url_safety
-from app.core.pipeline_constants import RUN_CONSIDERED_DEAD_AFTER_SECONDS
+from app.core.pipeline_constants import (
+    RUN_CONSIDERED_DEAD_AFTER_SECONDS,
+    TASK_ENQUEUE_TIMEOUT_SECONDS,
+)
 from app.core.rate_limit import limiter
 from app.dependencies.auth import CurrentUser, get_current_user
 from app.schemas.job import JobAccepted
@@ -319,6 +323,35 @@ async def test_source(
 
 
 # ── Pipeline runs (Fase 2 — Agente 1 only, always manual) ──────────────────
+async def _enqueue_scan(run_id: str, config: Dict[str, Any]) -> bool:
+    """Hand the run to Celery without ever stalling the event loop.
+
+    `task.delay()` is synchronous and, with the broker unreachable, keeps
+    retrying the connection for ~2 minutes; called directly from this async
+    handler it froze every other request for that long. It runs in a worker
+    thread here and we stop waiting after TASK_ENQUEUE_TIMEOUT_SECONDS.
+
+    Returns True if the task was queued, False if the caller must run the scan
+    inline (broker down, error, or too slow). If a timed-out publish finishes
+    later, the task itself skips a run that is no longer `running`
+    (workers/tasks/pipeline_tasks.py).
+    """
+    try:
+        await asyncio.wait_for(
+            asyncio.to_thread(task_run_job_scout.delay, run_id, config),
+            timeout=TASK_ENQUEUE_TIMEOUT_SECONDS,
+        )
+        return True
+    except asyncio.TimeoutError:
+        logger.warning(
+            "Celery enqueue for run %s did not finish in %ss; running the scan inline.",
+            run_id, TASK_ENQUEUE_TIMEOUT_SECONDS,
+        )
+    except Exception:  # Redis/Celery unavailable
+        logger.info("Celery unavailable for run %s; running the scan inline.", run_id, exc_info=True)
+    return False
+
+
 async def _run_job_scout_now(run_id: str, config: Dict[str, Any]) -> None:
     try:
         try:
@@ -395,10 +428,8 @@ async def create_run(request: Request, user: CurrentUser = Depends(get_current_u
         await pipeline_run_locks_repo.release(config["id"], run_id)
         raise
 
-    try:
-        task_run_job_scout.delay(run["id"], config)
-    except Exception:
-        # Redis/Celery no disponible — ejecutar síncronamente
+    if not await _enqueue_scan(run["id"], config):
+        # Redis/Celery no disponible (o demasiado lento) — ejecutar síncronamente
         await _run_job_scout_now(run["id"], config)
 
     return JobAccepted(job_id=run["id"])

@@ -44,6 +44,13 @@ RUN_TIME_BUDGET_SECONDS = 240
 # lock (app.services.firestore_service.PipelineRunLocksRepo).
 RUN_CONSIDERED_DEAD_AFTER_SECONDS = RUN_TIME_BUDGET_SECONDS + 120
 
+# Real upper bound for handing a run to Celery (`task.delay`). With the broker
+# down, a bare `.delay()` was measured at ~109 s (44 connection attempts of ~2 s
+# on Windows) and, called on the event loop, froze the whole API for that long.
+# It now runs in a worker thread and the request gives up after this many
+# seconds and runs the scan inline instead (routers/pipeline._enqueue_scan).
+TASK_ENQUEUE_TIMEOUT_SECONDS = 5
+
 # DeepSeek relevance scoring: postings are scored in batches (one DeepSeek
 # call scores up to N postings at once) instead of one call per posting, to
 # cut both latency (fewer round trips inside RUN_TIME_BUDGET_SECONDS) and
