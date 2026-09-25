@@ -3,8 +3,14 @@
 #
 # Fires two POST /pipeline/runs at the same instant against a running backend
 # and verifies that exactly one is accepted (202) and the other is rejected
-# (409) naming the accepted run. Then checks GET /pipeline/runs/active during
-# and after the scan.
+# (409) naming the accepted run. While the accepted scan is still running it
+# also checks GET /pipeline/runs/active and sends a THIRD POST (a "click while
+# a scan is running"), which must be rejected too. Finally it checks that the
+# lock is released.
+#
+# Reading the output: every line is printed at the moment the event happens and
+# is prefixed with the seconds elapsed since the test started. Read it top to
+# bottom; the order IS the chronological order. Nothing is grouped or replayed.
 #
 # Run from Git Bash:   bash scripts/test-run-lock.sh
 # Backend URL:         API_URL=http://host:port/api/v1 bash scripts/test-run-lock.sh
@@ -24,11 +30,19 @@ if [ -z "$PY" ]; then
   exit 2
 fi
 
+# ── Chronological logging ────────────────────────────────────────────────────
+T0=""
+elapsed() { awk -v a="$T0" -v b="$(date +%s.%N)" 'BEGIN { printf "%.1f", b - a }'; }
+log() {   # log <TAG> <message>   -- one printf per line, printed when it happens
+  local tag="$1"; shift
+  printf '[%7ss] %-8s %s\n' "$(elapsed)" "$tag" "$*"
+}
 FAILS=0
-ok()   { echo "  [OK]    $*"; }
-fail() { echo "  [FALLA] $*"; FAILS=$((FAILS + 1)); }
-info() { echo "  [..]    $*"; }
-step() { echo; echo "== $* =="; }
+INCONCLUSIVE=0
+ok()   { log "OK" "$*"; }
+fail() { log "FALLA" "$*"; FAILS=$((FAILS + 1)); }
+info() { log ".." "$*"; }
+skip() { log "N/CONCL" "$*"; INCONCLUSIVE=$((INCONCLUSIVE + 1)); }
 
 # ── 1. Warning + confirmation, before doing anything ─────────────────────────
 cat <<EOF
@@ -64,7 +78,6 @@ trap cleanup EXIT
 # JSON body built by python (handles quotes / special characters in the
 # password) and piped to curl on stdin, so it never appears on a command line.
 # Credentials reach python only through its environment.
-step "Login"
 LOGIN_CODE="$(
   LOGIN_USER="$LOGIN_USER" LOGIN_PASS="$LOGIN_PASS" "$PY" -c \
     'import json, os; print(json.dumps({"usernameOrEmail": os.environ["LOGIN_USER"], "password": os.environ["LOGIN_PASS"]}))' \
@@ -90,137 +103,149 @@ except Exception:
 }
 
 if [ "$LOGIN_CODE" != "200" ]; then
-  echo "  [FALLA] Login: HTTP $LOGIN_CODE (backend levantado en $API_URL? credenciales correctas?)"
+  echo "[FALLA] Login: HTTP $LOGIN_CODE (backend levantado en $API_URL? credenciales correctas?)"
   exit 1
 fi
 TOKEN="$(jget "$WORK/login.json" accessToken)"
 rm -f "$WORK/login.json"
 if [ -z "$TOKEN" ]; then
-  echo "  [FALLA] El login respondio 200 pero sin accessToken."
+  echo "[FALLA] El login respondio 200 pero sin accessToken."
   exit 1
 fi
-ok "Login correcto (HTTP 200)"
 
 # Token goes in a header file (curl -H @file), not on the command line.
 printf 'Authorization: Bearer %s\n' "$TOKEN" > "$WORK/auth.hdr"
 chmod 600 "$WORK/auth.hdr"
 unset TOKEN
 
-post_run() {   # post_run <label>  -> writes $WORK/<label>.code and <label>.json
-  local code
+T0="$(date +%s.%N)"
+echo
+echo "Cada linea lleva los segundos transcurridos desde el inicio y se imprime cuando ocurre."
+echo "Leela de arriba hacia abajo: ese orden es el orden real."
+echo
+log ".." "Login correcto (HTTP 200). Inicio de la prueba."
+
+# post_run <label> [background]: POST /pipeline/runs. The response is logged the
+# instant it arrives (from inside this function), then the code file is written.
+post_run() {
+  local code detail
   code="$(curl -s -o "$WORK/$1.json" -w '%{http_code}' -X POST "$API_URL/pipeline/runs" -H @"$WORK/auth.hdr")"
+  case "$code" in
+    202) detail="job_id=$(jget "$WORK/$1.json" job_id)" ;;
+    409) detail="run_id=$(jget "$WORK/$1.json" detail.run_id)" ;;
+    *)   detail="cuerpo: $(head -c 200 "$WORK/$1.json")" ;;
+  esac
+  log "POST" "$1 respondio HTTP $code  $detail"
   echo "$code" > "$WORK/$1.code"
 }
-get_active() { # get_active <label> -> prints "<code>|<run id or empty>|<status or empty>"
-  local code
-  code="$(curl -s -o "$WORK/$1.json" -w '%{http_code}' "$API_URL/pipeline/runs/active" -H @"$WORK/auth.hdr")"
-  echo "$code|$(jget "$WORK/$1.json" run.id)|$(jget "$WORK/$1.json" run.status)"
+
+get_active() {   # get_active -> sets A_CODE, A_ID, A_STATUS
+  local f="$WORK/active.json"
+  A_CODE="$(curl -s -o "$f" -w '%{http_code}' "$API_URL/pipeline/runs/active" -H @"$WORK/auth.hdr")"
+  A_ID="$(jget "$f" run.id)"
+  A_STATUS="$(jget "$f" run.status)"
 }
 
 # ── 3. Two simultaneous POSTs ────────────────────────────────────────────────
-step "Dos POST /pipeline/runs simultaneos"
+log "POST" "lanzando p1 y p2 al mismo tiempo"
 post_run p1 &
 post_run p2 &
 
-# The fast one (normally the 409) finishes first; look at /active right away,
-# while the winning scan is still running.
+# ── 4. As soon as the first one answers, the other is normally still running
+#      the scan (sync fallback). Probe /active and send the THIRD POST now,
+#      before waiting for the scan to finish. ────────────────────────────────
 until [ -f "$WORK/p1.code" ] || [ -f "$WORK/p2.code" ]; do sleep 0.1; done
-DURING="$(get_active during)"
+sleep 0.2   # let the log line of the first response print before ours
+
+get_active
+log "ACTIVE" "GET /runs/active -> HTTP $A_CODE  run=${A_ID:-<ninguna>}  status=${A_STATUS:-<n/a>}"
+if [ "$A_CODE" != "200" ]; then
+  fail "/runs/active no respondio 200."
+fi
+
+THIRD_SENT=0
+if [ -n "$A_ID" ]; then
+  log "POST3" "hay corrida activa ($A_ID): envio un tercer POST (un clic con el escaneo corriendo)"
+  post_run p3
+  THIRD_SENT=1
+  if [ "$(cat "$WORK/p3.code")" = "409" ]; then
+    ok "el tercer POST fue rechazado (409) mientras la corrida estaba activa."
+    R3="$(jget "$WORK/p3.json" detail.run_id)"
+    if [ "$R3" = "$A_ID" ]; then ok "y el 409 nombra la corrida activa ($R3)."; else fail "el 409 nombra '$R3', pero la activa es '$A_ID'."; fi
+  else
+    fail "el tercer POST NO fue 409 con la corrida activa: el bloqueo no la vio."
+  fi
+else
+  skip "no hay corrida activa en este instante (el escaneo ya termino): el tercer POST NO se envia, no se puede probar."
+fi
+
+# ── 5. Wait for both original POSTs; the scan finishes when the winner answers ─
+info "esperando a que respondan los dos POST originales..."
 wait
 
 C1="$(cat "$WORK/p1.code")"; C2="$(cat "$WORK/p2.code")"
-echo "  POST 1 -> HTTP $C1"
-echo "  POST 2 -> HTTP $C2"
-
 ACCEPTED=""; REJECTED=""
 if   [ "$C1" = "202" ] && [ "$C2" = "409" ]; then ACCEPTED=p1; REJECTED=p2
 elif [ "$C1" = "409" ] && [ "$C2" = "202" ]; then ACCEPTED=p2; REJECTED=p1
 fi
-
 if [ -n "$ACCEPTED" ]; then
-  ok "Exactamente un 202 y un 409."
+  ok "los dos POST originales: exactamente un 202 y un 409."
   JOB_ID="$(jget "$WORK/$ACCEPTED.json" job_id)"
   RUN_ID_409="$(jget "$WORK/$REJECTED.json" detail.run_id)"
-  echo "  job_id del 202 : ${JOB_ID:-<vacio>}"
-  echo "  run_id del 409 : ${RUN_ID_409:-<vacio>}"
   if [ -n "$JOB_ID" ] && [ "$JOB_ID" = "$RUN_ID_409" ]; then
-    ok "COINCIDEN: el 409 apunta a la corrida que gano."
+    ok "COINCIDEN: job_id del 202 ($JOB_ID) = run_id del 409."
   else
-    fail "NO COINCIDEN: el 409 no nombra la corrida aceptada."
+    fail "NO COINCIDEN: job_id del 202 = '${JOB_ID}', run_id del 409 = '${RUN_ID_409}'."
   fi
-else
-  JOB_ID=""
-  if [ "$C1" = "202" ] && [ "$C2" = "202" ]; then
-    fail "DOS 202: el bloqueo NO funciono, se lanzaron dos corridas."
-    echo "  job_id 1: $(jget "$WORK/p1.json" job_id)"
-    echo "  job_id 2: $(jget "$WORK/p2.json" job_id)"
-  else
-    fail "Respuestas inesperadas (esperado: un 202 y un 409). Cuerpos:"
-    echo "  POST 1: $(head -c 400 "$WORK/p1.json")"
-    echo "  POST 2: $(head -c 400 "$WORK/p2.json")"
-    echo "  Si hay un 500, copia el traceback del log de uvicorn."
+  if [ -n "$A_ID" ] && [ "$A_ID" != "$JOB_ID" ]; then
+    fail "la corrida activa observada ($A_ID) no era la aceptada ($JOB_ID)."
   fi
-fi
-
-# ── 4. /runs/active during the scan ──────────────────────────────────────────
-step "GET /pipeline/runs/active durante el escaneo"
-IFS='|' read -r A_CODE A_ID A_STATUS <<< "$DURING"
-echo "  HTTP $A_CODE  run=${A_ID:-<ninguna>}  status=${A_STATUS:-<n/a>}"
-if [ "$A_CODE" = "200" ] && [ -n "$A_ID" ] && [ -n "$JOB_ID" ] && [ "$A_ID" = "$JOB_ID" ]; then
-  ok "Durante el escaneo la corrida activa es la aceptada."
-elif [ "$A_CODE" = "200" ] && [ -z "$A_ID" ]; then
-  info "No habia corrida activa en ese instante (el escaneo pudo terminar antes de consultar)."
+elif [ "$C1" = "202" ] && [ "$C2" = "202" ]; then
+  fail "DOS 202: el bloqueo NO funciono, se lanzaron dos corridas."
 else
-  fail "La corrida activa no es la esperada."
+  fail "respuestas inesperadas en los POST originales (p1=$C1, p2=$C2). Si hay un 500, copia el traceback de uvicorn."
 fi
 
-# A third POST while the run is active must also be rejected. Only sent if the
-# run is still active, so it can never start a scan on its own.
-if [ -n "$A_ID" ]; then
-  post_run p3
-  C3="$(cat "$WORK/p3.code")"
-  echo "  Tercer POST durante el escaneo -> HTTP $C3"
-  if [ "$C3" = "409" ]; then ok "El tercer POST tambien fue rechazado (409)."; else fail "El tercer POST no fue 409."; fi
-fi
-
-# ── 5. Wait for the scan to finish, then /runs/active again ──────────────────
-step "Esperando a que termine el escaneo (max ${MAX_WAIT_SECONDS}s)"
+# ── 6. Wait until no run is active, then confirm the lock was released ───────
+info "esperando a que no quede corrida activa (max ${MAX_WAIT_SECONDS}s)..."
 WAITED=0
 while :; do
-  IFS='|' read -r W_CODE W_ID W_STATUS <<< "$(get_active poll)"
-  [ "$W_CODE" = "200" ] && [ -z "$W_ID" ] && break
+  get_active
+  [ "$A_CODE" = "200" ] && [ -z "$A_ID" ] && break
   if [ "$WAITED" -ge "$MAX_WAIT_SECONDS" ]; then break; fi
-  printf '  ... %ss, corrida %s (%s)\n' "$WAITED" "${W_ID:-?}" "${W_STATUS:-?}"
+  log "ACTIVE" "sigue activa: ${A_ID:-?} (${A_STATUS:-?})"
   sleep 5; WAITED=$((WAITED + 5))
 done
-
-step "GET /pipeline/runs/active despues del escaneo"
-IFS='|' read -r F_CODE F_ID F_STATUS <<< "$(get_active after)"
-echo "  HTTP $F_CODE  run=${F_ID:-<ninguna>}"
-if [ "$F_CODE" = "200" ] && [ -z "$F_ID" ]; then
-  ok "Sin corrida activa: el bloqueo se libero."
+log "ACTIVE" "GET /runs/active -> HTTP $A_CODE  run=${A_ID:-<ninguna>}"
+if [ "$A_CODE" = "200" ] && [ -z "$A_ID" ]; then
+  ok "sin corrida activa: el bloqueo se libero."
 else
-  fail "Sigue habiendo una corrida activa tras ${WAITED}s (bloqueo no liberado, o el escaneo no termino)."
+  fail "sigue habiendo una corrida activa tras ${WAITED}s (bloqueo no liberado, o el escaneo no termino)."
 fi
 
-# ── 6. Optional: the lock really was released -> a new run is accepted ───────
-step "Prueba opcional: nueva corrida tras liberarse el bloqueo"
-echo "  Esto lanza OTRO escaneo real (mismo costo)."
-read -r -p "  Escribe SI para probarlo, Enter para omitir: " AGAIN
+# ── 7. Optional: the lock really was released -> a new run is accepted ──────
+echo
+echo "Prueba opcional: nueva corrida tras liberarse el bloqueo (lanza OTRO escaneo real, mismo costo)."
+read -r -p "Escribe SI para probarlo, Enter para omitir: " AGAIN
 if [ "$AGAIN" = "SI" ]; then
+  log "POST4" "enviando un POST nuevo con el bloqueo ya liberado"
   post_run p4
-  C4="$(cat "$WORK/p4.code")"
-  echo "  POST -> HTTP $C4"
-  if [ "$C4" = "202" ]; then ok "Aceptada (202): el bloqueo se libero correctamente."; else fail "Se esperaba 202 y llego $C4."; fi
+  if [ "$(cat "$WORK/p4.code")" = "202" ]; then ok "aceptado (202): el bloqueo se libero correctamente."; else fail "se esperaba 202 y llego $(cat "$WORK/p4.code")."; fi
 else
-  info "Omitida."
+  info "omitida."
 fi
 
-# ── 7. Verdict ───────────────────────────────────────────────────────────────
-step "VEREDICTO"
-if [ "$FAILS" -eq 0 ]; then
-  echo "  BLOQUEO OK: un solo escaneo a la vez, el perdedor recibio 409 apuntando al ganador."
-  exit 0
+# ── 8. Verdict (only counts what was already printed above, in its moment) ────
+echo
+echo "VEREDICTO (los hechos estan arriba, en su momento; esto solo cuenta):"
+if [ "$FAILS" -gt 0 ]; then
+  echo "  HAY $FAILS FALLA(S). Copia toda esta salida (y el log de uvicorn si hubo 500)."
+  exit 1
 fi
-echo "  HAY $FAILS FALLA(S). Copia toda esta salida (y el log de uvicorn si hubo 500)."
-exit 1
+if [ "$INCONCLUSIVE" -gt 0 ]; then
+  echo "  NO CONCLUYENTE: $INCONCLUSIVE comprobacion(es) no se pudieron hacer (el escaneo termino antes)."
+  echo "  Repite la prueba; con un escaneo mas largo o el tercer POST antes."
+  exit 3
+fi
+echo "  BLOQUEO OK: un solo escaneo a la vez; el perdedor y el clic durante el escaneo recibieron 409."
+exit 0
