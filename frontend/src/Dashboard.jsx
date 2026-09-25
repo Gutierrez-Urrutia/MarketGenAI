@@ -3328,13 +3328,19 @@ function DashboardPage({ onNavigate, setCampaignFlow = () => {} }) {
   useEffect(() => {
     refreshDashboard(false);
     const reload = () => refreshDashboard(false);
+    // refreshDashboard itself writes the snapshot key, so reacting to that key would make
+    // two open instances of this page re-trigger each other forever.
+    const reloadOnStorage = (event) => {
+      if (event.key === DASHBOARD_SNAPSHOT_KEY) return;
+      reload();
+    };
     window.addEventListener("marketgen:content-library-updated", reload);
     window.addEventListener("marketgen:campaigns-updated", reload);
-    window.addEventListener("storage", reload);
+    window.addEventListener("storage", reloadOnStorage);
     return () => {
       window.removeEventListener("marketgen:content-library-updated", reload);
       window.removeEventListener("marketgen:campaigns-updated", reload);
-      window.removeEventListener("storage", reload);
+      window.removeEventListener("storage", reloadOnStorage);
     };
   }, []);
 
