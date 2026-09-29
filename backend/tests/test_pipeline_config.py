@@ -378,6 +378,77 @@ async def test_create_source_rejects_url_resolving_to_internal_address(client):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("title_format", ["none", "company_colon_title"])
+async def test_create_source_accepts_valid_title_format(client, title_format):
+    with (
+        patch(
+            "app.routers.pipeline.pipeline_configs_repo.get_by_user",
+            new_callable=AsyncMock, return_value=fake_config(),
+        ),
+        patch(
+            "app.routers.pipeline.pipeline_configs_repo.upsert_for_user",
+            new_callable=AsyncMock,
+        ) as mock_upsert,
+    ):
+        mock_upsert.return_value = fake_config({"sources": [fake_source()]})
+        resp = await client.post(f"{API}/sources", json={
+            "name": "WWR",
+            "source_type": "rss",
+            "config": {"feed_url": "https://weworkremotely.com/x.rss", "title_format": title_format},
+        })
+
+    assert resp.status_code == 201
+    saved = mock_upsert.call_args.args[1]["sources"][-1]
+    assert saved["config"]["title_format"] == title_format
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source_type, config, detail", [
+    ("rss", {"feed_url": "https://weworkremotely.com/x.rss", "title_format": "guess"}, "Invalid title_format"),
+    ("api", {"base_url": "https://api.example.com", "title_format": "company_colon_title"}, "only applies to RSS"),
+])
+async def test_create_source_rejects_bad_title_format(client, source_type, config, detail):
+    with (
+        patch(
+            "app.routers.pipeline.pipeline_configs_repo.get_by_user",
+            new_callable=AsyncMock, return_value=fake_config(),
+        ),
+        patch(
+            "app.routers.pipeline.pipeline_configs_repo.upsert_for_user",
+            new_callable=AsyncMock,
+        ) as mock_upsert,
+    ):
+        resp = await client.post(f"{API}/sources", json={
+            "name": "Bad", "source_type": source_type, "config": config,
+        })
+
+    assert resp.status_code == 422
+    assert detail in resp.json()["detail"]
+    mock_upsert.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_update_source_rejects_invalid_title_format(client):
+    doc = fake_config({"sources": [fake_source()]})
+    with (
+        patch(
+            "app.routers.pipeline.pipeline_configs_repo.get_by_user",
+            new_callable=AsyncMock, return_value=doc,
+        ),
+        patch(
+            "app.routers.pipeline.pipeline_configs_repo.upsert_for_user",
+            new_callable=AsyncMock,
+        ) as mock_upsert,
+    ):
+        resp = await client.put(f"{API}/sources/source-001", json={
+            "config": {"feed_url": "https://indeed.com/rss?q=outsourcing", "title_format": "guess"},
+        })
+
+    assert resp.status_code == 422
+    mock_upsert.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_update_source_rejects_url_resolving_to_internal_address(client):
     def fake_getaddrinfo(host, port, *args, **kwargs):
         return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 0))]

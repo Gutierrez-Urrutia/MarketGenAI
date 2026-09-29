@@ -54,6 +54,14 @@ SOURCE_TYPE_URL_FIELDS: Dict[SourceType, Optional[str]] = {
     SourceType.WEBHOOK: None,
 }
 
+# How an RSS source's entry titles are split into (job_title, company),
+# chosen per source in `JobSource.config["title_format"]`. A source that
+# doesn't set it gets RSS_TITLE_FORMAT_NONE, which never splits — there is
+# no global guess, each feed's format has to be declared explicitly.
+RSS_TITLE_FORMAT_NONE = "none"
+RSS_TITLE_FORMAT_COMPANY_COLON_TITLE = "company_colon_title"  # "Company: Job Title" (weworkremotely.com)
+RSS_TITLE_FORMATS = (RSS_TITLE_FORMAT_NONE, RSS_TITLE_FORMAT_COMPANY_COLON_TITLE)
+
 
 class JobSource(BaseModel):
     id: str

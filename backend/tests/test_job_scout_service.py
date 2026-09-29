@@ -241,12 +241,22 @@ async def test_is_duplicate_scopes_query_by_pipeline_config_id():
     same fingerprint existing for config A must not block config B."""
     with patch.object(svc.leads_repo, "list", new_callable=AsyncMock) as mock_list:
         mock_list.return_value = []
-        result = await svc._is_duplicate("config-B", "fp-123")
+        result = await svc._is_duplicate("config-B", ["fp-123"])
 
     assert result is False
     filters = mock_list.call_args.kwargs["filters"]
     assert ("pipeline_config_id", "==", "config-B") in filters
-    assert ("fingerprint", "==", "fp-123") in filters
+    assert ("fingerprint", "in", ["fp-123"]) in filters
+
+
+@pytest.mark.asyncio
+async def test_is_duplicate_checks_all_fingerprints_in_one_query_without_repeats():
+    with patch.object(svc.leads_repo, "list", new_callable=AsyncMock, return_value=[{"id": "l1"}]) as mock_list:
+        result = await svc._is_duplicate("config-1", ["fp-new", "fp-legacy", "fp-new"])
+
+    assert result is True
+    mock_list.assert_awaited_once()
+    assert ("fingerprint", "in", ["fp-new", "fp-legacy"]) in mock_list.call_args.kwargs["filters"]
 
 
 # ── Source adapters ──────────────────────────────────────────────────────────
@@ -398,23 +408,74 @@ async def test_robots_txt_allows_passes_max_bytes_cap():
     assert mock_fetch.call_args.kwargs["max_bytes"] == svc.MAX_SOURCE_RESPONSE_BYTES
 
 
-def test_split_rss_title_handles_common_separators():
-    assert svc._split_rss_title("Data Entry Clerk at Acme Corp") == ("Data Entry Clerk", "Acme Corp")
-    assert svc._split_rss_title("Ops Manager - Beta Inc") == ("Ops Manager", "Beta Inc")
-    assert svc._split_rss_title("No separator here") == ("No separator here", "")
+def test_split_rss_title_none_format_never_splits():
+    for title in ("Data Entry Clerk at Acme Corp", "Ops Manager - Beta Inc", "Acme: Dev", "Plain title"):
+        assert svc._split_rss_title(title, "none") == (title, "")
+
+
+def test_split_rss_title_unknown_format_never_splits():
+    assert svc._split_rss_title("Acme: Dev", "made_up_format") == ("Acme: Dev", "")
+
+
+@pytest.mark.parametrize("title, expected", [
+    ("Acme: Senior Dev", ("Senior Dev", "Acme")),
+    # Only the first ": " separates company from title.
+    ("Brisa: FULL TIME: Software Engineer Position - Python and SQL",
+     ("FULL TIME: Software Engineer Position - Python and SQL", "Brisa")),
+    ("  Acme :  Dev  ", ("Dev", "Acme")),
+    # Not in the declared format: returned whole, company left empty.
+    ("No separator here", ("No separator here", "")),
+    ("Ratio 3:1 analyst", ("Ratio 3:1 analyst", "")),
+    ("Acme: ", ("Acme:", "")),
+    (": Dev", (": Dev", "")),
+])
+def test_split_rss_title_company_colon_title(title, expected):
+    assert svc._split_rss_title(title, "company_colon_title") == expected
+
+
+def test_legacy_split_rss_title_keeps_old_global_heuristic():
+    assert svc._legacy_split_rss_title("Data Entry Clerk at Acme Corp") == ("Data Entry Clerk", "Acme Corp")
+    assert svc._legacy_split_rss_title("Ops Manager - Beta Inc") == ("Ops Manager", "Beta Inc")
+    assert svc._legacy_split_rss_title("Ops Manager | Beta Inc") == ("Ops Manager", "Beta Inc")
+    assert svc._legacy_split_rss_title("Acme: Dev") == ("Acme: Dev", "")
+
+
+@pytest.mark.parametrize("raw_title, stored_company, stored_title", [
+    # Shapes of the leads already in Firestore: most had no separator the
+    # heuristic knew, a few were split on " - " at the wrong place.
+    ("Acme: Senior Dev", "", "Acme: Senior Dev"),
+    ("Tiendita: Software Development Engineer II Full Stack - Payments (Remote @ Peru)",
+     "Payments (Remote @ Peru)", "Tiendita: Software Development Engineer II Full Stack"),
+])
+def test_legacy_rss_fingerprint_reproduces_stored_fingerprint(raw_title, stored_company, stored_title):
+    assert svc._legacy_rss_fingerprint(raw_title) == svc.compute_fingerprint(stored_company, stored_title)
+
+
+def _rss_entry(title, link="https://acme.example.com/jobs/1"):
+    entry = MagicMock()
+    entry.title = title
+    entry.summary = "Some summary"
+    entry.link = link
+    return entry
+
+
+async def _scan_rss_with_entries(source, entries):
+    def fake_stream(self, method, url, headers=None, params=None, **kwargs):
+        return _FakeStreamCtx(_stream_response(200, content=b"<rss></rss>", url=url))
+
+    with (
+        patch.object(httpx.AsyncClient, "stream", fake_stream),
+        patch.object(svc.feedparser, "parse", return_value=MagicMock(entries=entries)),
+    ):
+        return await svc._scan_rss(source, [])
 
 
 @pytest.mark.asyncio
 async def test_scan_rss_parses_entries():
     source = fake_source({"source_type": "rss", "config": {"feed_url": "https://feed.example.com/rss"}})
 
-    fake_entry = MagicMock()
-    fake_entry.title = "Data Entry Clerk at Acme Corp"
-    fake_entry.summary = "Some summary"
-    fake_entry.link = "https://acme.example.com/jobs/1"
-
     fake_parsed = MagicMock()
-    fake_parsed.entries = [fake_entry]
+    fake_parsed.entries = [_rss_entry("Data Entry Clerk at Acme Corp")]
 
     def fake_stream(self, method, url, headers=None, params=None, **kwargs):
         return _FakeStreamCtx(_stream_response(200, content=b"<rss>fake feed bytes</rss>", url=url))
@@ -426,12 +487,61 @@ async def test_scan_rss_parses_entries():
         postings = await svc._scan_rss(source, [])
 
     assert len(postings) == 1
-    assert postings[0].job_title == "Data Entry Clerk"
-    assert postings[0].company_name == "Acme Corp"
+    # No title_format on the source: the title is kept whole, no guessing.
+    assert postings[0].job_title == "Data Entry Clerk at Acme Corp"
+    assert postings[0].company_name == ""
+    assert postings[0].raw_title == "Data Entry Clerk at Acme Corp"
     # feedparser must receive bytes fetched by us, never the raw URL — a
     # string argument that isn't a recognized URL makes feedparser treat it
     # as a local file path (see job_scout_service._scan_rss docstring/comment).
     mock_parse.assert_called_once_with(b"<rss>fake feed bytes</rss>")
+
+
+@pytest.mark.asyncio
+async def test_scan_rss_uses_source_title_format():
+    source = fake_source({"source_type": "rss", "config": {
+        "feed_url": "https://feed.example.com/rss", "title_format": "company_colon_title",
+    }})
+
+    postings = await _scan_rss_with_entries(source, [_rss_entry("Acme: Senior Dev")])
+
+    assert len(postings) == 1
+    assert postings[0].job_title == "Senior Dev"
+    assert postings[0].company_name == "Acme"
+    assert postings[0].raw_title == "Acme: Senior Dev"
+
+
+@pytest.mark.asyncio
+async def test_scan_rss_skips_and_logs_entry_without_title(caplog):
+    """An entry with an empty/whitespace title is dropped and logged — the
+    rest of the feed is still returned, the run is not aborted."""
+    source = fake_source({"source_type": "rss", "config": {"feed_url": "https://feed.example.com/rss"}})
+    entries = [
+        _rss_entry("   ", link="https://acme.example.com/jobs/blank"),
+        _rss_entry("Acme: Senior Dev", link="https://acme.example.com/jobs/2"),
+    ]
+
+    with caplog.at_level("WARNING", logger="marketgen.pipeline.job_scout"):
+        postings = await _scan_rss_with_entries(source, entries)
+
+    assert [p.job_title for p in postings] == ["Acme: Senior Dev"]
+    [record] = [r for r in caplog.records if "skipping invalid entry" in r.getMessage()]
+    message = record.getMessage()
+    assert "jobs/blank" in message
+    # The reason says which field failed and why.
+    assert "job_title: Value error, job_title must not be empty" in message
+
+
+@pytest.mark.parametrize("blank", ["", "   "])
+def test_raw_job_posting_rejects_blank_title(blank):
+    with pytest.raises(ValueError):
+        fake_posting(job_title=blank)
+
+
+def test_raw_job_posting_allows_empty_company_and_strips_title():
+    posting = fake_posting(job_title="  Dev  ", company_name="")
+    assert posting.job_title == "Dev"
+    assert posting.company_name == ""
 
 
 @pytest.mark.asyncio
@@ -697,6 +807,71 @@ async def test_scan_all_sources_skips_duplicates_without_scoring():
     assert result["leads_new"] == 0
     mock_score.assert_not_called()
     mock_create.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_scan_all_sources_skips_posting_matching_a_lead_saved_under_legacy_fingerprint():
+    """Regression for the title_format switch: a lead stored before it
+    (fingerprint from the old global heuristic) must still block the same
+    posting once its source splits titles differently — no duplicate."""
+    raw_title = "Tiendita: Software Engineer - Payments (Remote @ Peru)"
+    stored_fp = svc.compute_fingerprint("Payments (Remote @ Peru)", "Tiendita: Software Engineer")
+    posting = fake_posting(
+        job_title="Software Engineer - Payments (Remote @ Peru)",
+        company_name="Tiendita",
+        raw_title=raw_title,
+    )
+
+    async def fake_list(filters=None, **kwargs):
+        wanted = dict((field, value) for field, _, value in filters)["fingerprint"]
+        return [{"id": "old-lead"}] if stored_fp in wanted else []
+
+    with (
+        patch.object(svc, "_scan_source", new_callable=AsyncMock, return_value=[posting]),
+        patch.object(svc.leads_repo, "list", side_effect=fake_list),
+        patch.object(svc, "score_relevance_batch", new_callable=AsyncMock) as mock_score,
+        patch.object(svc.leads_repo, "create", new_callable=AsyncMock) as mock_create,
+    ):
+        result = await svc.scan_all_sources(fake_pipeline_config(), "run-1")
+
+    assert result["leads_new"] == 0
+    mock_score.assert_not_called()
+    mock_create.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_scan_all_sources_checks_only_new_fingerprint_for_non_rss_posting():
+    posting = fake_posting()  # no raw_title — API/scraper postings
+    with (
+        patch.object(svc, "_scan_source", new_callable=AsyncMock, return_value=[posting]),
+        patch.object(svc, "_is_duplicate", new_callable=AsyncMock, return_value=True) as mock_dup,
+    ):
+        await svc.scan_all_sources(fake_pipeline_config(), "run-1")
+
+    mock_dup.assert_awaited_once_with(
+        "config-1", [svc.compute_fingerprint(posting.company_name, posting.job_title)],
+    )
+
+
+@pytest.mark.asyncio
+async def test_scan_all_sources_persists_raw_title_and_new_fingerprint():
+    posting = fake_posting(job_title="Senior Dev", company_name="Acme", raw_title="Acme: Senior Dev")
+
+    async def fake_generate_text(prompt, **kwargs):
+        return json.dumps([{"id": 0, "relevance_score": 0.9, "matched_keywords": [], "reasoning": "x"}])
+
+    with (
+        patch.object(svc, "_scan_source", new_callable=AsyncMock, return_value=[posting]),
+        patch.object(svc, "_is_duplicate", new_callable=AsyncMock, return_value=False),
+        patch.object(svc.deepseek_service, "generate_text", fake_generate_text),
+        patch.object(svc.leads_repo, "create", new_callable=AsyncMock) as mock_create,
+    ):
+        await svc.scan_all_sources(fake_pipeline_config(), "run-1")
+
+    persisted = mock_create.call_args.args[0]
+    assert persisted["raw_title"] == "Acme: Senior Dev"
+    assert persisted["company_name"] == "Acme"
+    assert persisted["fingerprint"] == svc.compute_fingerprint("Acme", "Senior Dev")
 
 
 @pytest.mark.asyncio

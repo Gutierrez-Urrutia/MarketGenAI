@@ -5,7 +5,7 @@ from datetime import datetime
 from enum import Enum
 from typing import List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class LeadStatus(str, Enum):
@@ -25,7 +25,11 @@ class LeadStatus(str, Enum):
 class RawJobPosting(BaseModel):
     """Intermediate shape returned by a source adapter, before dedup/scoring.
     Never persisted as-is — job_scout_service turns the ones that survive
-    dedup + relevance scoring into a Lead."""
+    dedup + relevance scoring into a Lead.
+
+    job_title is required (empty/whitespace-only is rejected); company_name
+    may be empty when the source doesn't say who is hiring. raw_title is the
+    unsplit entry title, only set by the RSS adapter."""
 
     job_title: str
     company_name: str
@@ -35,6 +39,15 @@ class RawJobPosting(BaseModel):
     salary_range: Optional[str] = None
     posted_date: Optional[datetime] = None
     source_id: str
+    raw_title: Optional[str] = None
+
+    @field_validator("job_title")
+    @classmethod
+    def _job_title_not_blank(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("job_title must not be empty")
+        return value
 
 
 class Lead(BaseModel):
@@ -54,6 +67,7 @@ class Lead(BaseModel):
     status: LeadStatus = LeadStatus.NEW
     pipeline_run_id: str
     fingerprint: str
+    raw_title: Optional[str] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 

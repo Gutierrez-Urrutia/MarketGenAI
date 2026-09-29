@@ -31,6 +31,7 @@ from app.core.rate_limit import limiter
 from app.dependencies.auth import CurrentUser, get_current_user
 from app.schemas.job import JobAccepted
 from app.schemas.pipeline import (
+    RSS_TITLE_FORMATS,
     SOURCE_TYPE_REQUIRED_CONFIG_FIELDS,
     SOURCE_TYPE_SECRET_CONFIG_FIELDS,
     SOURCE_TYPE_URL_FIELDS,
@@ -96,6 +97,24 @@ async def _validate_source_url(source_type: SourceType, config: Dict[str, Any]) 
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"Unsafe source URL: {exc}",
         ) from exc
+
+
+def _validate_source_title_format(source_type: SourceType, config: Dict[str, Any]) -> None:
+    """`config.title_format` is optional (absent == RSS_TITLE_FORMAT_NONE),
+    only meaningful for RSS sources, and must be one of RSS_TITLE_FORMATS."""
+    if "title_format" not in (config or {}):
+        return
+    value = config["title_format"]
+    if source_type != SourceType.RSS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="title_format only applies to RSS sources.",
+        )
+    if value not in RSS_TITLE_FORMATS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Invalid title_format {value!r}; expected one of {list(RSS_TITLE_FORMATS)}.",
+        )
 
 
 def _split_source_config(
@@ -233,6 +252,7 @@ async def create_source(
     doc = await _get_or_create_doc(user.sub)
     sources = list(doc.get("sources") or [])
     await _validate_source_url(body.source_type, body.config)
+    _validate_source_title_format(body.source_type, body.config)
     plaintext_config, encrypted_config = _split_source_config(body.source_type, body.config)
     new_source = {
         "id": new_id(),
@@ -265,6 +285,7 @@ async def update_source(
     if "config" in updates and updates["config"] is not None:
         effective_type = SourceType(updates.get("source_type", source["source_type"]))
         await _validate_source_url(effective_type, updates["config"])
+        _validate_source_title_format(effective_type, updates["config"])
         plaintext_config, encrypted_config = _split_source_config(effective_type, updates["config"])
         updates["config"] = plaintext_config
         updates["config_encrypted"] = encrypted_config

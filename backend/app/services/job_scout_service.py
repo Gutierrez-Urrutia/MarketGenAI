@@ -27,6 +27,7 @@ from urllib.parse import urljoin, urlparse
 import feedparser
 import httpx
 from bs4 import BeautifulSoup
+from pydantic import ValidationError
 
 from app.core import url_safety
 from app.core.pipeline_constants import (
@@ -44,7 +45,13 @@ from app.core.pipeline_constants import (
     SOURCE_FETCH_TIMEOUT_SECONDS,
 )
 from app.schemas.lead import LeadStatus, RawJobPosting
-from app.schemas.pipeline import SOURCE_TYPE_SECRET_CONFIG_FIELDS, PipelineRunStatus, SourceType
+from app.schemas.pipeline import (
+    RSS_TITLE_FORMAT_COMPANY_COLON_TITLE,
+    RSS_TITLE_FORMAT_NONE,
+    SOURCE_TYPE_SECRET_CONFIG_FIELDS,
+    PipelineRunStatus,
+    SourceType,
+)
 from app.services import deepseek_service, encryption_service
 from app.services.firestore_service import leads_repo, now_utc, pipeline_runs_repo
 
@@ -123,14 +130,18 @@ def compute_fingerprint(company: str, job_title: str) -> str:
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
-async def _is_duplicate(pipeline_config_id: str, fingerprint: str) -> bool:
-    """Two different pipeline configs (two different clients) can each have
+async def _is_duplicate(pipeline_config_id: str, fingerprints: List[str]) -> bool:
+    """True if any of `fingerprints` already exists as a Lead of this config.
+
+    Two different pipeline configs (two different clients) can each have
     their own Lead for the same posting — dedup only looks within this
-    config's own leads, never across all configs."""
+    config's own leads, never across all configs. Several fingerprints are
+    accepted so a posting also matches a Lead stored under its legacy
+    fingerprint (see `_legacy_rss_fingerprint`), in a single `in` query."""
     existing = await leads_repo.list(
         filters=[
             ("pipeline_config_id", "==", pipeline_config_id),
-            ("fingerprint", "==", fingerprint),
+            ("fingerprint", "in", list(dict.fromkeys(fingerprints))),
         ],
         limit=1,
     )
@@ -187,10 +198,35 @@ async def _scan_api(source: Dict[str, Any], keywords: List[str]) -> List[RawJobP
     return postings
 
 
-def _split_rss_title(title: str) -> tuple[str, str]:
-    """Best-effort split of a job RSS entry title into (job_title, company).
-    Job RSS feeds commonly format titles as "Job Title at Company" or
-    "Job Title - Company"; falls back to (title, "") if no separator is found."""
+def _split_rss_title(title: str, title_format: str) -> tuple[str, str]:
+    """Split an RSS entry title into (job_title, company) using the format
+    declared on its source (`config.title_format`, see RSS_TITLE_FORMATS).
+
+    RSS_TITLE_FORMAT_NONE — or any unknown value — never splits: returns
+    (title, ""). RSS_TITLE_FORMAT_COMPANY_COLON_TITLE splits "Company: Job
+    Title" on the FIRST ": " only, so a colon inside the job title survives.
+    A title that doesn't match its declared format isn't guessed at either:
+    it comes back whole, with an empty company."""
+    title = title.strip()
+    if title_format == RSS_TITLE_FORMAT_COMPANY_COLON_TITLE:
+        company, sep, job_title = title.partition(": ")
+        if sep and company.strip() and job_title.strip():
+            return job_title.strip(), company.strip()
+    return title, ""
+
+
+# TEMPORARY — the global heuristic `_split_rss_title` used before
+# title_format existed. Leads saved under it carry a fingerprint computed
+# from its (often wrong) split; recomputing that fingerprint lets
+# `_is_duplicate` still recognise them. Used ONLY for dedup (and the
+# migration script's cross-check), never to split a title that gets stored.
+#
+# Keep both functions for as long as a restore is possible — not just until
+# scripts/migrations/fix_rss_lead_titles.py has run with --apply:
+# `--restore` puts leads back on their legacy fingerprint, and these are the
+# only thing that stops the next scan from saving them again as new leads.
+# Remove them (and the script) only once its backup is no longer needed.
+def _legacy_split_rss_title(title: str) -> tuple[str, str]:
     for sep in (" at ", " - ", " | "):
         if sep in title:
             job_title, _, company = title.partition(sep)
@@ -198,11 +234,17 @@ def _split_rss_title(title: str) -> tuple[str, str]:
     return title.strip(), ""
 
 
+def _legacy_rss_fingerprint(raw_title: str) -> str:
+    job_title, company = _legacy_split_rss_title(raw_title)
+    return compute_fingerprint(company, job_title)
+
+
 async def _scan_rss(source: Dict[str, Any], keywords: List[str]) -> List[RawJobPosting]:
     config = source.get("config") or {}
     feed_url = config.get("feed_url")
     if not feed_url:
         return []
+    title_format = config.get("title_format") or RSS_TITLE_FORMAT_NONE
 
     # Fetch the feed ourselves (SSRF-checked) and hand feedparser raw bytes,
     # never the URL. feedparser.parse() treats a string argument that isn't
@@ -232,17 +274,31 @@ async def _scan_rss(source: Dict[str, Any], keywords: List[str]) -> List[RawJobP
 
     postings: List[RawJobPosting] = []
     for entry in list(getattr(parsed, "entries", []) or [])[:MAX_RESULTS_PER_SOURCE]:
-        title = getattr(entry, "title", "") or ""
-        job_title, company = _split_rss_title(title)
-        if not job_title:
+        raw_title = (getattr(entry, "title", "") or "").strip()
+        job_title, company = _split_rss_title(raw_title, title_format)
+        job_url = _sanitize_job_url(getattr(entry, "link", "") or "")
+        try:
+            posting = RawJobPosting(
+                job_title=job_title,
+                company_name=company,
+                job_description=(getattr(entry, "summary", "") or "")[:POSTING_DESCRIPTION_MAX_CHARS],
+                job_url=job_url,
+                source_id=source["id"],
+                raw_title=raw_title,
+            )
+        except ValidationError as exc:
+            # One bad entry is skipped, never the rest of the feed. The
+            # reason is logged per field (e.g. "job_title: ... must not be
+            # empty") — never the entry's values themselves.
+            reason = "; ".join(
+                f"{'.'.join(str(part) for part in error['loc'])}: {error['msg']}" for error in exc.errors()
+            )
+            logger.warning(
+                "job_scout: RSS source %s: skipping invalid entry (link=%r): %s",
+                source.get("id"), job_url, reason,
+            )
             continue
-        postings.append(RawJobPosting(
-            job_title=job_title,
-            company_name=company,
-            job_description=(getattr(entry, "summary", "") or "")[:POSTING_DESCRIPTION_MAX_CHARS],
-            job_url=_sanitize_job_url(getattr(entry, "link", "") or ""),
-            source_id=source["id"],
-        ))
+        postings.append(posting)
     return postings
 
 
@@ -500,7 +556,10 @@ async def scan_all_sources(pipeline_config: Dict[str, Any], run_id: str) -> Dict
                 partial = True
                 break
             fingerprint = compute_fingerprint(posting.company_name, posting.job_title)
-            if await _is_duplicate(pipeline_config_id, fingerprint):
+            known_fingerprints = [fingerprint]
+            if posting.raw_title is not None:
+                known_fingerprints.append(_legacy_rss_fingerprint(posting.raw_title))
+            if await _is_duplicate(pipeline_config_id, known_fingerprints):
                 continue
             candidates.append((posting, fingerprint))
 
@@ -535,6 +594,7 @@ async def scan_all_sources(pipeline_config: Dict[str, Any], run_id: str) -> Dict
                     "status": LeadStatus.NEW.value,
                     "pipeline_run_id": run_id,
                     "fingerprint": fingerprint,
+                    "raw_title": posting.raw_title,
                 })
                 leads_new += 1
 
