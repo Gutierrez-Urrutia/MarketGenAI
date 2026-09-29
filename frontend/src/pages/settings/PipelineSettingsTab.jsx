@@ -21,6 +21,17 @@ const SOURCE_TYPE_FIELD_KEYS = {
   ],
   rss: [
     { key: "feed_url", labelKey: "sourceFieldFeedUrl", placeholder: "https://indeed.com/rss?q=outsourcing" },
+    // Must match RSS_TITLE_FORMATS in backend/app/schemas/pipeline.py. The
+    // first option is the backend default when the field is absent.
+    {
+      key: "title_format",
+      labelKey: "sourceFieldTitleFormat",
+      hintKey: "sourceFieldTitleFormatHint",
+      options: [
+        { value: "none", labelKey: "titleFormatNone" },
+        { value: "company_colon_title", labelKey: "titleFormatCompanyColonTitle" },
+      ],
+    },
   ],
   scraper: [
     { key: "url", labelKey: "sourceFieldUrl", placeholder: "https://remote.co/remote-jobs" },
@@ -379,16 +390,35 @@ export default function PipelineSettingsTab({ isDark = false }) {
                     </Select>
                   </Field>
                 </div>
-                {SOURCE_TYPE_FIELD_KEYS[sourceForm.source_type].map((field) => (
-                  <Field key={field.key} label={t(`settings.pipelineTab.${field.labelKey}`)}>
-                    <Input
-                      type={field.type || "text"}
-                      placeholder={field.placeholder}
-                      value={sourceForm.config?.[field.key] || ""}
-                      onChange={(event) => setSourceForm((form) => ({ ...form, config: { ...form.config, [field.key]: event.target.value } }))}
-                    />
-                  </Field>
-                ))}
+                {SOURCE_TYPE_FIELD_KEYS[sourceForm.source_type].map((field) => {
+                  const setFieldValue = (event) => setSourceForm((form) => ({ ...form, config: { ...form.config, [field.key]: event.target.value } }));
+                  return (
+                    <Field
+                      key={field.key}
+                      label={t(`settings.pipelineTab.${field.labelKey}`)}
+                      hint={field.hintKey ? t(`settings.pipelineTab.${field.hintKey}`) : undefined}
+                    >
+                      {field.options ? (
+                        <Select
+                          aria-label={t(`settings.pipelineTab.${field.labelKey}`)}
+                          value={sourceForm.config?.[field.key] || field.options[0].value}
+                          onChange={setFieldValue}
+                        >
+                          {field.options.map((option) => (
+                            <option key={option.value} value={option.value}>{t(`settings.pipelineTab.${option.labelKey}`)}</option>
+                          ))}
+                        </Select>
+                      ) : (
+                        <Input
+                          type={field.type || "text"}
+                          placeholder={field.placeholder}
+                          value={sourceForm.config?.[field.key] || ""}
+                          onChange={setFieldValue}
+                        />
+                      )}
+                    </Field>
+                  );
+                })}
                 <div className="flex justify-end gap-1.5 pt-1">
                   <Btn variant="secondary" small onClick={() => setSourceFormOpen(false)}>{t("settings.pipelineTab.cancelButton")}</Btn>
                   <Btn small icon={<Save size={12} />} onClick={saveSourceForm}>{sourceForm.id ? t("settings.pipelineTab.updateSourceButton") : t("settings.pipelineTab.addSourceButton")}</Btn>

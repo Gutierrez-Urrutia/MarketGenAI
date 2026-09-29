@@ -287,7 +287,14 @@ export default function LeadList() {
                       </a>
                     ) : lead.job_title}
                   </td>
-                  <td className="px-4 py-3 text-gray-700">{lead.company_name}</td>
+                  <td className="px-4 py-3 text-gray-700">
+                    {lead.company_name?.trim() ? lead.company_name : (
+                      <>
+                        <span className="text-gray-400" title={t("leads.unknownCompany")} aria-hidden="true">—</span>
+                        <span className="sr-only">{t("leads.unknownCompany")}</span>
+                      </>
+                    )}
+                  </td>
                   <td className="px-4 py-3"><ScoreBadge score={lead.relevance_score} /></td>
                   <td className="px-4 py-3 text-gray-600">{t(`leads.status.${lead.status}`)}</td>
                   <td className="px-4 py-3 text-gray-500 text-xs">
