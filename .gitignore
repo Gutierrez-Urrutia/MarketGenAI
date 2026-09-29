@@ -87,3 +87,8 @@ backend/generated_files/*
 !backend/generated_files/.gitkeep
 generated_files/*
 *.log
+
+# =============================================================================
+# Respaldos locales de scripts de migración (contienen datos reales de Firestore)
+# =============================================================================
+backend/scripts/migrations/backups/
