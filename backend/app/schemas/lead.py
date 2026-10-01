@@ -5,7 +5,7 @@ from datetime import datetime
 from enum import Enum
 from typing import List, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import AliasChoices, BaseModel, Field, field_validator
 
 
 class LeadStatus(str, Enum):
@@ -68,8 +68,10 @@ class Lead(BaseModel):
     pipeline_run_id: str
     fingerprint: str
     raw_title: Optional[str] = None
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
+    # Firestore stores createdAt/updatedAt (FirestoreRepo.create). Accept both
+    # spellings on input only: the JSON key stays created_at/updated_at.
+    created_at: Optional[datetime] = Field(None, validation_alias=AliasChoices("created_at", "createdAt"))
+    updated_at: Optional[datetime] = Field(None, validation_alias=AliasChoices("updated_at", "updatedAt"))
 
 
 class LeadListResponse(BaseModel):

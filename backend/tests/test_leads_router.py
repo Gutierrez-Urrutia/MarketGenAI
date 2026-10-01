@@ -1,10 +1,12 @@
 """Tests for /api/v1/leads (Fase 2 — read-only: list + detail)."""
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from app.schemas.lead import Lead
 from tests.conftest import FAKE_USER_SUB
 
 API = "/api/v1/leads"
@@ -34,6 +36,54 @@ def fake_lead(overrides: dict | None = None) -> dict:
     if overrides:
         base.update(overrides)
     return base
+
+
+CREATED = datetime(2026, 9, 25, 2, 33, 55, 838421, tzinfo=timezone.utc)
+UPDATED = datetime(2026, 9, 29, 1, 15, 11, 833672, tzinfo=timezone.utc)
+
+
+def firestore_lead() -> dict:
+    """A lead as stored in Firestore: FirestoreRepo.create writes camelCase
+    createdAt/updatedAt, not created_at/updated_at."""
+    doc = fake_lead()
+    del doc["created_at"], doc["updated_at"]
+    return {**doc, "createdAt": CREATED, "updatedAt": UPDATED}
+
+
+def test_lead_schema_reads_firestore_camel_case_timestamps():
+    lead = Lead.model_validate(firestore_lead())
+    assert lead.created_at == CREATED
+    assert lead.updated_at == UPDATED
+
+
+def test_lead_schema_still_accepts_snake_case_timestamps():
+    lead = Lead.model_validate(fake_lead({"created_at": CREATED, "updated_at": UPDATED}))
+    assert lead.created_at == CREATED
+    assert lead.updated_at == UPDATED
+
+
+@pytest.mark.asyncio
+async def test_list_leads_returns_firestore_timestamps_as_snake_case(client):
+    with patch(
+        "app.routers.leads.leads_repo.list", new_callable=AsyncMock, return_value=[firestore_lead()],
+    ):
+        resp = await client.get(API)
+
+    assert resp.status_code == 200
+    item = resp.json()["items"][0]
+    assert datetime.fromisoformat(item["created_at"].replace("Z", "+00:00")) == CREATED
+    assert datetime.fromisoformat(item["updated_at"].replace("Z", "+00:00")) == UPDATED
+    assert "createdAt" not in item and "updatedAt" not in item
+
+
+@pytest.mark.asyncio
+async def test_get_lead_returns_firestore_timestamps(client):
+    with patch(
+        "app.routers.leads.leads_repo.get_or_404", new_callable=AsyncMock, return_value=firestore_lead(),
+    ):
+        resp = await client.get(f"{API}/lead-001")
+    assert resp.status_code == 200
+    assert datetime.fromisoformat(resp.json()["created_at"].replace("Z", "+00:00")) == CREATED
 
 
 @pytest.mark.asyncio
