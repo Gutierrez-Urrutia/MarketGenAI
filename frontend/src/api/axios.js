@@ -282,6 +282,11 @@ export const jobsApi = {
   get: (id) => api.get(`/jobs/${id}`),
 }
 
+export const tasksApi = {
+  enqueuePilot: (data) => api.post('/tasks/pilot', data),
+  getStatus: (taskId) => api.get(`/tasks/${taskId}`),
+}
+
 export const proposalsApi = {
   list: (params) => api.get('/proposals', { params }),
   create: (data) => withMarketgenEvent(api.post('/proposals', data), 'marketgen:proposal-updated'),
@@ -295,13 +300,56 @@ export const proposalsApi = {
   }),
 }
 
+export const pollCampaignJob = async (jobId, campaignId) => {
+  const startTime = Date.now();
+  const maxTimeout = 180000;
+  const doneStatuses = ["completed", "succeeded", "success"];
+  const errorStatuses = ["failed", "error", "cancelled"];
+
+  while (Date.now() - startTime < maxTimeout) {
+    const jobRes = await api.get(`/jobs/${jobId}`, { suppressPermissionToast: true });
+    const job = jobRes.data;
+    const status = String(job?.status || "").toLowerCase();
+
+    if (doneStatuses.includes(status)) {
+      if (job?.result?.asset) {
+        return job.result;
+      }
+      if (job?.result?.assetId) {
+        try {
+          const assetRes = await api.get(`/assets/${job.result.assetId}`);
+          return { ...job.result, asset: assetRes.data };
+        } catch {
+          // ignore asset fetch error
+        }
+      }
+      return job?.result || { campaignId, jobId };
+    }
+
+    if (errorStatuses.includes(status)) {
+      throw new Error(job?.error || job?.message || "Campaign generation failed");
+    }
+
+    await new Promise((r) => setTimeout(r, 1500));
+  }
+  throw new Error("Campaign generation timed out");
+};
+
 export const campaignsApi = {
   list: (params) => api.get('/campaigns', { params }),
   create: (data) => withMarketgenEvent(api.post('/campaigns', data), 'marketgen:campaign-updated'),
   get: (id) => api.get(`/campaigns/${id}`),
   update: (id, data) => withMarketgenEvent(api.put(`/campaigns/${id}`, data), 'marketgen:campaign-updated'),
   delete: (id) => api.delete(`/campaigns/${id}`),
-  generate: (id) => withMarketgenEvent(api.post(`/campaigns/${id}/generate`, undefined, { timeout: 0 }), 'marketgen:campaign-updated'),
+  generate: async (id, data) => {
+    const res = await withMarketgenEvent(api.post(`/campaigns/${id}/generate`, data, { timeout: 0 }), 'marketgen:campaign-updated');
+    if (res.data && (res.data.job_id || res.data.jobId)) {
+      const jobId = res.data.job_id || res.data.jobId;
+      const finalData = await pollCampaignJob(jobId, id);
+      return { ...res, data: finalData };
+    }
+    return res;
+  },
 }
 
 export const opportunitiesApi = {

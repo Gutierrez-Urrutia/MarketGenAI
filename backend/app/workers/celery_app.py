@@ -17,15 +17,15 @@ DEFAULT_RESULT_BACKEND = "redis://localhost:6379/1"
 
 
 def _broker_url() -> str:
-    if settings.celery_broker_url != DEFAULT_REDIS_URL:
+    if settings.celery_broker_url and settings.celery_broker_url != DEFAULT_REDIS_URL:
         return settings.celery_broker_url
-    return settings.redis_url
+    return settings.redis_url or DEFAULT_REDIS_URL
 
 
 def _result_backend_url() -> str:
-    if settings.celery_result_backend != DEFAULT_RESULT_BACKEND:
+    if settings.celery_result_backend and settings.celery_result_backend != DEFAULT_RESULT_BACKEND:
         return settings.celery_result_backend
-    return settings.redis_url
+    return settings.redis_url or DEFAULT_RESULT_BACKEND
 
 
 celery_app = Celery(
@@ -33,8 +33,11 @@ celery_app = Celery(
     broker=_broker_url(),
     backend=_result_backend_url(),
     include=[
+        "app.workers.tasks.pilot_tasks",
         "app.workers.tasks.content_tasks",
         "app.workers.tasks.asset_tasks",
+        "app.workers.tasks.proposal_tasks",
+        "app.workers.tasks.campaign_tasks",
     ],
 )
 
@@ -54,6 +57,9 @@ celery_app.conf.update(
     result_backend_transport_options={"socket_connect_timeout": 2, "socket_timeout": 2},
     task_routes={
         "app.workers.tasks.content_tasks.*": {"queue": "llm"},
+        "app.workers.tasks.asset_tasks.*": {"queue": "llm"},
+        "app.workers.tasks.proposal_tasks.*": {"queue": "llm"},
+        "app.workers.tasks.campaign_tasks.*": {"queue": "llm"},
     },
     beat_schedule={},                       # add periodic tasks here if needed
 )

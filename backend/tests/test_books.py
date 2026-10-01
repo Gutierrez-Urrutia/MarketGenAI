@@ -161,17 +161,70 @@ async def test_delete_book_forbidden(client):
 
 @pytest.mark.asyncio
 async def test_generate_chapters_enqueues_job(client):
-    """POST /books/{id}/chapters/generate returns 202 with job_id."""
+    """POST /books/{id}/chapters/generate returns 202 with job_id and enqueues Celery task."""
     book = fake_book()
-    job  = fake_job("chapter_generation")
+    job  = fake_job("generate_chapters")
     with (
         patch("app.routers.books.books_repo.get_or_404", new_callable=AsyncMock, return_value=book),
         patch("app.routers.books.jobs_repo.create_job",  new_callable=AsyncMock, return_value=job),
-        patch("app.routers.books.task_generate_chapters.delay", return_value=None),
+        patch("app.routers.books.task_generate_chapters.delay", return_value=None) as delay_mock,
     ):
         resp = await client.post(f"{API}/book-001/chapters/generate", json={"chapterCount": 5})
     assert resp.status_code == 202
     assert resp.json()["job_id"] == "job-001"
+    delay_mock.assert_called_once_with(job["id"], "book-001", book, 5, "en")
+
+
+@pytest.mark.asyncio
+async def test_generate_chapters_sync_opt_in_skips_celery(client):
+    """When body.sync=True, generate_chapters must run _generate_chapters_now directly and skip Celery."""
+    book = fake_book()
+    job  = fake_job("generate_chapters")
+    with (
+        patch("app.routers.books.books_repo.get_or_404", new_callable=AsyncMock, return_value=book),
+        patch("app.routers.books.jobs_repo.create_job",  new_callable=AsyncMock, return_value=job),
+        patch("app.routers.books.task_generate_chapters.delay") as delay_mock,
+        patch("app.routers.books._generate_chapters_now", new_callable=AsyncMock, return_value=None) as sync_fn,
+    ):
+        resp = await client.post(f"{API}/book-001/chapters/generate", json={"chapterCount": 5, "sync": True})
+    assert resp.status_code == 202
+    assert resp.json()["job_id"] == "job-001"
+    sync_fn.assert_awaited_once_with(job["id"], "book-001", book, 5, "en")
+    delay_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_generate_chapters_falls_back_to_sync_when_celery_unavailable(client):
+    """When .delay() can't reach the Redis broker, the endpoint must run _generate_chapters_now synchronously."""
+    book = fake_book()
+    job  = fake_job("generate_chapters")
+    with (
+        patch("app.routers.books.books_repo.get_or_404", new_callable=AsyncMock, return_value=book),
+        patch("app.routers.books.jobs_repo.create_job",  new_callable=AsyncMock, return_value=job),
+        patch("app.routers.books.task_generate_chapters.delay", side_effect=ConnectionError("Redis unreachable")),
+        patch("app.routers.books._generate_chapters_now", new_callable=AsyncMock, return_value=None) as fallback,
+    ):
+        resp = await client.post(f"{API}/book-001/chapters/generate", json={"chapterCount": 5})
+    assert resp.status_code == 202
+    assert resp.json()["job_id"] == "job-001"
+    fallback.assert_awaited_once_with(job["id"], "book-001", book, 5, "en")
+
+
+@pytest.mark.asyncio
+async def test_generate_chapters_fallback_failure_fails_job(client):
+    """If both .delay() and the sync fallback fail, the job must be marked failed."""
+    book = fake_book()
+    job  = fake_job("generate_chapters")
+    with (
+        patch("app.routers.books.books_repo.get_or_404", new_callable=AsyncMock, return_value=book),
+        patch("app.routers.books.jobs_repo.create_job",  new_callable=AsyncMock, return_value=job),
+        patch("app.routers.books.jobs_repo.fail_job",    new_callable=AsyncMock, return_value=None) as fail_job,
+        patch("app.routers.books.task_generate_chapters.delay", side_effect=ConnectionError("Redis unreachable")),
+        patch("app.routers.books._generate_chapters_now", new_callable=AsyncMock, side_effect=RuntimeError("AI timeout")),
+    ):
+        with pytest.raises(RuntimeError, match="AI timeout"):
+            await client.post(f"{API}/book-001/chapters/generate", json={"chapterCount": 5})
+    fail_job.assert_awaited_once_with(job["id"], "AI timeout")
 
 
 @pytest.mark.asyncio
@@ -268,3 +321,102 @@ async def test_generate_single_chapter_fallback_failure_fails_job(client):
         with pytest.raises(RuntimeError, match="DeepSeek timeout"):
             await client.post(f"{API}/book-001/chapters/chapter-001/content/generate", json={})
     fail_job.assert_awaited_once_with(job["id"], "DeepSeek timeout")
+
+
+# ── Generate all content ───────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_generate_all_content_enqueues_job(client):
+    """POST /books/{id}/content/generate returns 202 with job_id and enqueues Celery task."""
+    book = fake_book()
+    chapter = fake_chapter()
+    job = fake_job("generate_all_content")
+    with (
+        patch("app.routers.books.books_repo.get_or_404",   new_callable=AsyncMock, return_value=book),
+        patch("app.routers.books.books_repo.get_chapters", new_callable=AsyncMock, return_value=[chapter]),
+        patch("app.routers.books.jobs_repo.create_job",    new_callable=AsyncMock, return_value=job),
+        patch("app.routers.books.task_generate_all_content.delay", return_value=None) as delay_mock,
+    ):
+        resp = await client.post(f"{API}/book-001/content/generate", json={})
+    assert resp.status_code == 202
+    assert resp.json()["job_id"] == "job-001"
+    delay_mock.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_generate_all_content_no_chapters_conflict(client):
+    """POST /books/{id}/content/generate returns 409 when no chapters exist."""
+    book = fake_book()
+    with (
+        patch("app.routers.books.books_repo.get_or_404",   new_callable=AsyncMock, return_value=book),
+        patch("app.routers.books.books_repo.get_chapters", new_callable=AsyncMock, return_value=[]),
+    ):
+        resp = await client.post(f"{API}/book-001/content/generate", json={})
+    assert resp.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_generate_all_content_sync_opt_in_skips_celery(client):
+    """When body.sync=True, generate_all_content must run _generate_all_content_now directly and skip Celery."""
+    book = fake_book()
+    chapter = fake_chapter()
+    job = fake_job("generate_all_content")
+    with (
+        patch("app.routers.books.books_repo.get_or_404",   new_callable=AsyncMock, return_value=book),
+        patch("app.routers.books.books_repo.get_chapters", new_callable=AsyncMock, return_value=[chapter]),
+        patch("app.routers.books.jobs_repo.create_job",    new_callable=AsyncMock, return_value=job),
+        patch("app.routers.books.task_generate_all_content.delay") as delay_mock,
+        patch("app.routers.books._generate_all_content_now",
+              new_callable=AsyncMock, return_value=None) as sync_fn,
+    ):
+        resp = await client.post(
+            f"{API}/book-001/content/generate",
+            json={"sync": True},
+        )
+    assert resp.status_code == 202
+    assert resp.json()["job_id"] == "job-001"
+    sync_fn.assert_awaited_once()
+    delay_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_generate_all_content_falls_back_to_sync_when_celery_unavailable(client):
+    """When .delay() can't reach the Redis broker, the endpoint must run
+    _generate_all_content_now() synchronously instead of failing the request."""
+    book = fake_book()
+    chapter = fake_chapter()
+    job = fake_job("generate_all_content")
+    with (
+        patch("app.routers.books.books_repo.get_or_404",   new_callable=AsyncMock, return_value=book),
+        patch("app.routers.books.books_repo.get_chapters", new_callable=AsyncMock, return_value=[chapter]),
+        patch("app.routers.books.jobs_repo.create_job",    new_callable=AsyncMock, return_value=job),
+        patch("app.routers.books.task_generate_all_content.delay",
+              side_effect=ConnectionError("Redis unreachable")),
+        patch("app.routers.books._generate_all_content_now",
+              new_callable=AsyncMock, return_value=None) as fallback,
+    ):
+        resp = await client.post(f"{API}/book-001/content/generate", json={})
+    assert resp.status_code == 202
+    assert resp.json()["job_id"] == job["id"]
+    fallback.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_generate_all_content_fallback_failure_fails_job(client):
+    """If both .delay() and the sync fallback fail, the job must be marked failed."""
+    book = fake_book()
+    chapter = fake_chapter()
+    job = fake_job("generate_all_content")
+    with (
+        patch("app.routers.books.books_repo.get_or_404",   new_callable=AsyncMock, return_value=book),
+        patch("app.routers.books.books_repo.get_chapters", new_callable=AsyncMock, return_value=[chapter]),
+        patch("app.routers.books.jobs_repo.create_job",    new_callable=AsyncMock, return_value=job),
+        patch("app.routers.books.jobs_repo.fail_job",      new_callable=AsyncMock, return_value=None) as fail_job,
+        patch("app.routers.books.task_generate_all_content.delay",
+              side_effect=ConnectionError("Redis unreachable")),
+        patch("app.routers.books._generate_all_content_now",
+              new_callable=AsyncMock, side_effect=RuntimeError("AI timeout")),
+    ):
+        with pytest.raises(RuntimeError, match="AI timeout"):
+            await client.post(f"{API}/book-001/content/generate", json={})
+    fail_job.assert_awaited_once_with(job["id"], "AI timeout")

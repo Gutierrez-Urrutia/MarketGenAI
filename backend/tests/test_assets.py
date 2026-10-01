@@ -80,10 +80,7 @@ async def test_delete_asset_success(client):
 
 
 @pytest.mark.asyncio
-async def test_generate_one_pager_runs_synchronously(client):
-    """No Celery/Redis dispatch anymore (it used to hang indefinitely when
-    the broker was unreachable, e.g. on Vercel with no Redis deployed) —
-    the endpoint calls generate_one_pager_now() directly."""
+async def test_generate_one_pager_enqueues_celery_task(client):
     book = fake_book({"status": "generated"})
     job  = fake_job("one_pager_generation")
     new_asset = fake_asset({"status": "pending"})
@@ -92,6 +89,52 @@ async def test_generate_one_pager_runs_synchronously(client):
         patch("app.routers.assets.assets_repo.list",       new_callable=AsyncMock, return_value=[]),
         patch("app.routers.assets.assets_repo.create",     new_callable=AsyncMock, return_value=new_asset),
         patch("app.routers.assets.jobs_repo.create_job",   new_callable=AsyncMock, return_value=job),
+        patch("app.routers.assets.task_generate_one_pager.delay") as delay_mock,
+    ):
+        resp = await client.post(f"{API}/books/book-001/assets/one-pager", json={
+            "bookId": "book-001",
+        })
+    assert resp.status_code == 202
+    assert resp.json()["job_id"] == job["id"]
+    delay_mock.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_generate_one_pager_sync_opt_in_skips_celery(client):
+    book = fake_book({"status": "generated"})
+    job  = fake_job("one_pager_generation")
+    new_asset = fake_asset({"status": "pending"})
+    with (
+        patch("app.routers.assets.books_repo.get",         new_callable=AsyncMock, return_value=book),
+        patch("app.routers.assets.assets_repo.list",       new_callable=AsyncMock, return_value=[]),
+        patch("app.routers.assets.assets_repo.create",     new_callable=AsyncMock, return_value=new_asset),
+        patch("app.routers.assets.jobs_repo.create_job",   new_callable=AsyncMock, return_value=job),
+        patch("app.routers.assets.task_generate_one_pager.delay") as delay_mock,
+        patch("app.routers.assets.generate_one_pager_now",
+              new_callable=AsyncMock, return_value="https://storage.example.com/one-pager.pdf") as sync_fn,
+    ):
+        resp = await client.post(f"{API}/books/book-001/assets/one-pager", json={
+            "bookId": "book-001",
+            "sync": True,
+        })
+    assert resp.status_code == 202
+    assert resp.json()["job_id"] == job["id"]
+    sync_fn.assert_awaited_once()
+    delay_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_generate_one_pager_falls_back_to_sync_when_celery_unavailable(client):
+    book = fake_book({"status": "generated"})
+    job  = fake_job("one_pager_generation")
+    new_asset = fake_asset({"status": "pending"})
+    with (
+        patch("app.routers.assets.books_repo.get",         new_callable=AsyncMock, return_value=book),
+        patch("app.routers.assets.assets_repo.list",       new_callable=AsyncMock, return_value=[]),
+        patch("app.routers.assets.assets_repo.create",     new_callable=AsyncMock, return_value=new_asset),
+        patch("app.routers.assets.jobs_repo.create_job",   new_callable=AsyncMock, return_value=job),
+        patch("app.routers.assets.task_generate_one_pager.delay",
+              side_effect=ConnectionError("Redis unreachable")),
         patch("app.routers.assets.generate_one_pager_now",
               new_callable=AsyncMock, return_value="https://storage.example.com/one-pager.pdf") as generate,
     ):
@@ -134,8 +177,7 @@ async def test_regenerating_one_pager_reuses_same_asset_doc_not_duplicate(client
         patch("app.routers.assets.assets_repo.list", side_effect=fake_list),
         patch("app.routers.assets.jobs_repo.create_job",
               new_callable=AsyncMock, return_value=fake_job("one_pager_generation")),
-        patch("app.routers.assets.generate_one_pager_now",
-              new_callable=AsyncMock, return_value="https://storage.example.com/one-pager.pdf"),
+        patch("app.routers.assets.task_generate_one_pager.delay", return_value=None),
     ):
         resp1 = await client.post(f"{API}/books/book-001/assets/one-pager", json={"bookId": "book-001"})
         resp2 = await client.post(f"{API}/books/book-001/assets/one-pager", json={"bookId": "book-001"})
@@ -149,7 +191,7 @@ async def test_regenerating_one_pager_reuses_same_asset_doc_not_duplicate(client
 
 @pytest.mark.asyncio
 async def test_generate_one_pager_failure_fails_job(client):
-    """If generation fails, the job must be marked failed and the asset
+    """If generation fallback fails, the job must be marked failed and the asset
     marked errored — not silently swallowed."""
     book = fake_book({"status": "generated"})
     job  = fake_job("one_pager_generation")
@@ -161,6 +203,8 @@ async def test_generate_one_pager_failure_fails_job(client):
         patch("app.routers.assets.assets_repo.update",     new_callable=AsyncMock, return_value=None) as assets_update,
         patch("app.routers.assets.jobs_repo.create_job",   new_callable=AsyncMock, return_value=job),
         patch("app.routers.assets.jobs_repo.fail_job",     new_callable=AsyncMock, return_value=None) as fail_job,
+        patch("app.routers.assets.task_generate_one_pager.delay",
+              side_effect=ConnectionError("Redis unreachable")),
         patch("app.routers.assets.generate_one_pager_now",
               new_callable=AsyncMock, side_effect=RuntimeError("DeepSeek timeout")),
     ):
@@ -173,7 +217,28 @@ async def test_generate_one_pager_failure_fails_job(client):
 
 
 @pytest.mark.asyncio
-async def test_generate_social_posts_runs_synchronously(client):
+async def test_generate_whitepaper_enqueues_celery_task(client):
+    book = fake_book({"status": "generated"})
+    job  = fake_job("whitepaper_generation")
+    new_asset = fake_asset({"type": "whitepaper", "status": "pending"})
+    with (
+        patch("app.routers.assets.books_repo.get",         new_callable=AsyncMock, return_value=book),
+        patch("app.routers.assets.books_repo.get_chapters", new_callable=AsyncMock, return_value=[]),
+        patch("app.routers.assets.assets_repo.list",       new_callable=AsyncMock, return_value=[]),
+        patch("app.routers.assets.assets_repo.create",     new_callable=AsyncMock, return_value=new_asset),
+        patch("app.routers.assets.jobs_repo.create_job",   new_callable=AsyncMock, return_value=job),
+        patch("app.routers.assets.task_generate_whitepaper.delay") as delay_mock,
+    ):
+        resp = await client.post(f"{API}/books/book-001/assets/whitepaper", json={
+            "bookId": "book-001",
+        })
+    assert resp.status_code == 202
+    assert resp.json()["job_id"] == job["id"]
+    delay_mock.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_generate_social_posts_enqueues_celery_task(client):
     book = fake_book({"status": "generated"})
     job  = fake_job("social_posts_generation")
     new_asset = fake_asset({"type": "social_post", "status": "pending"})
@@ -182,6 +247,29 @@ async def test_generate_social_posts_runs_synchronously(client):
         patch("app.routers.assets.assets_repo.list",       new_callable=AsyncMock, return_value=[]),
         patch("app.routers.assets.assets_repo.create",     new_callable=AsyncMock, return_value=new_asset),
         patch("app.routers.assets.jobs_repo.create_job",   new_callable=AsyncMock, return_value=job),
+        patch("app.routers.assets.task_generate_social_posts.delay") as delay_mock,
+    ):
+        resp = await client.post(f"{API}/books/book-001/assets/social-posts", json={
+            "bookId": "book-001",
+            "platforms": ["linkedin", "twitter"]
+        })
+    assert resp.status_code == 202
+    assert "job_id" in resp.json()
+    delay_mock.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_generate_social_posts_falls_back_to_sync_when_celery_unavailable(client):
+    book = fake_book({"status": "generated"})
+    job  = fake_job("social_posts_generation")
+    new_asset = fake_asset({"type": "social_post", "status": "pending"})
+    with (
+        patch("app.routers.assets.books_repo.get",         new_callable=AsyncMock, return_value=book),
+        patch("app.routers.assets.assets_repo.list",       new_callable=AsyncMock, return_value=[]),
+        patch("app.routers.assets.assets_repo.create",     new_callable=AsyncMock, return_value=new_asset),
+        patch("app.routers.assets.jobs_repo.create_job",   new_callable=AsyncMock, return_value=job),
+        patch("app.routers.assets.task_generate_social_posts.delay",
+              side_effect=ConnectionError("Redis unreachable")),
         patch("app.routers.assets.generate_social_posts_now",
               new_callable=AsyncMock, return_value=[{"platform": "linkedin", "content": "..."}]) as generate,
     ):
@@ -191,27 +279,6 @@ async def test_generate_social_posts_runs_synchronously(client):
         })
     assert resp.status_code == 202
     assert "job_id" in resp.json()
-    generate.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_generate_infographic_runs_synchronously(client):
-    book = fake_book({"status": "generated"})
-    job  = fake_job("infographic_generation")
-    new_asset = fake_asset({"type": "infographic", "status": "pending"})
-    with (
-        patch("app.routers.assets.books_repo.get",         new_callable=AsyncMock, return_value=book),
-        patch("app.routers.assets.assets_repo.list",       new_callable=AsyncMock, return_value=[]),
-        patch("app.routers.assets.assets_repo.create",     new_callable=AsyncMock, return_value=new_asset),
-        patch("app.routers.assets.jobs_repo.create_job",   new_callable=AsyncMock, return_value=job),
-        patch("app.routers.assets.generate_infographic_now",
-              new_callable=AsyncMock, return_value={"title": "..."}) as generate,
-    ):
-        resp = await client.post(f"{API}/books/book-001/assets/infographic", json={
-            "bookId": "book-001",
-        })
-    assert resp.status_code == 202
-    assert resp.json()["job_id"] == job["id"]
     generate.assert_awaited_once()
 
 
@@ -229,13 +296,11 @@ async def test_generate_social_posts_failure_fails_job(client):
         patch("app.routers.assets.assets_repo.update",     new_callable=AsyncMock, return_value=None) as assets_update,
         patch("app.routers.assets.jobs_repo.create_job",   new_callable=AsyncMock, return_value=job),
         patch("app.routers.assets.jobs_repo.fail_job",     new_callable=AsyncMock, return_value=None) as fail_job,
+        patch("app.routers.assets.task_generate_social_posts.delay",
+              side_effect=ConnectionError("Redis unreachable")),
         patch("app.routers.assets.generate_social_posts_now",
               new_callable=AsyncMock, side_effect=RuntimeError("DeepSeek timeout")),
     ):
-        # The test transport re-raises unhandled exceptions instead of turning
-        # them into a 500 (real clients behind uvicorn would get a 500) —
-        # what we're verifying here is that the job/asset are marked failed
-        # before the exception propagates, not the HTTP status code.
         with pytest.raises(RuntimeError, match="DeepSeek timeout"):
             await client.post(f"{API}/books/book-001/assets/social-posts", json={
                 "bookId": "book-001",
@@ -243,3 +308,47 @@ async def test_generate_social_posts_failure_fails_job(client):
             })
     fail_job.assert_awaited_once_with(job["id"], "DeepSeek timeout")
     assets_update.assert_awaited_once_with("asset-001", {"status": "error"})
+
+
+@pytest.mark.asyncio
+async def test_generate_infographic_enqueues_celery_task(client):
+    book = fake_book({"status": "generated"})
+    job  = fake_job("infographic_generation")
+    new_asset = fake_asset({"type": "infographic", "status": "pending"})
+    with (
+        patch("app.routers.assets.books_repo.get",         new_callable=AsyncMock, return_value=book),
+        patch("app.routers.assets.assets_repo.list",       new_callable=AsyncMock, return_value=[]),
+        patch("app.routers.assets.assets_repo.create",     new_callable=AsyncMock, return_value=new_asset),
+        patch("app.routers.assets.jobs_repo.create_job",   new_callable=AsyncMock, return_value=job),
+        patch("app.routers.assets.task_generate_infographic.delay") as delay_mock,
+    ):
+        resp = await client.post(f"{API}/books/book-001/assets/infographic", json={
+            "bookId": "book-001",
+        })
+    assert resp.status_code == 202
+    assert resp.json()["job_id"] == job["id"]
+    delay_mock.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_generate_infographic_falls_back_to_sync_when_celery_unavailable(client):
+    book = fake_book({"status": "generated"})
+    job  = fake_job("infographic_generation")
+    new_asset = fake_asset({"type": "infographic", "status": "pending"})
+    with (
+        patch("app.routers.assets.books_repo.get",         new_callable=AsyncMock, return_value=book),
+        patch("app.routers.assets.assets_repo.list",       new_callable=AsyncMock, return_value=[]),
+        patch("app.routers.assets.assets_repo.create",     new_callable=AsyncMock, return_value=new_asset),
+        patch("app.routers.assets.jobs_repo.create_job",   new_callable=AsyncMock, return_value=job),
+        patch("app.routers.assets.task_generate_infographic.delay",
+              side_effect=ConnectionError("Redis unreachable")),
+        patch("app.routers.assets.generate_infographic_now",
+              new_callable=AsyncMock, return_value={"title": "..."}) as generate,
+    ):
+        resp = await client.post(f"{API}/books/book-001/assets/infographic", json={
+            "bookId": "book-001",
+        })
+    assert resp.status_code == 202
+    assert resp.json()["job_id"] == job["id"]
+    generate.assert_awaited_once()
+

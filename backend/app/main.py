@@ -29,6 +29,7 @@ from app.routers import (
     settings as settings_router,
     social,
     social_mock,
+    tasks,
     templates,
 )
 
@@ -83,3 +84,4 @@ app.include_router(proposals.router, prefix="/api/v1")
 app.include_router(social.router, prefix="/api/v1")
 app.include_router(social_mock.router, prefix="/api/v1")
 app.include_router(assistant.router, prefix="/api/v1")
+app.include_router(tasks.router, prefix="/api/v1")
