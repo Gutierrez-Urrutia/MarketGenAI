@@ -186,3 +186,34 @@ async def test_create_run_is_rate_limited(client):
 
     assert codes[:10] == [202] * 10
     assert codes[10] == 429
+
+
+@pytest.mark.asyncio
+async def test_create_run_with_sync_flag_executes_inline(client):
+    doc = fake_config({"sources": [fake_source({"enabled": True})]})
+    with (
+        patch(
+            "app.routers.pipeline.pipeline_configs_repo.get_by_user",
+            new_callable=AsyncMock, return_value=doc,
+        ),
+        patch(
+            "app.routers.pipeline.pipeline_runs_repo.create",
+            new_callable=AsyncMock, return_value=fake_run(),
+        ),
+        patch("app.routers.pipeline.task_run_job_scout") as mock_task,
+        patch(
+            "app.routers.pipeline.job_scout_service.scan_all_sources", new_callable=AsyncMock,
+            return_value={"leads_found": 1, "leads_new": 1, "errors": [], "partial": False},
+        ) as mock_scan,
+        patch(
+            "app.routers.pipeline.job_scout_service.finalize_run", new_callable=AsyncMock,
+        ) as mock_finalize,
+    ):
+        resp = await client.post(API, json={"sync": True})
+
+    assert resp.status_code == 202
+    assert resp.json()["job_id"] == "run-001"
+    mock_task.delay.assert_not_called()
+    mock_scan.assert_awaited_once()
+    mock_finalize.assert_awaited_once()
+

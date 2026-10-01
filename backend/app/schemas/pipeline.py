@@ -164,6 +164,11 @@ class PipelineKeywordsUpdate(BaseModel):
     excluded_companies: List[str] = Field(default_factory=list)
 
 
+class PipelineRunCreateRequest(BaseModel):
+    """Payload for triggering a pipeline scan with optional sync execution."""
+    sync: bool = False
+
+
 class PipelineRunStatus(str, Enum):
     RUNNING = "running"
     COMPLETED = "completed"

@@ -564,6 +564,15 @@ async def scan_all_sources(pipeline_config: Dict[str, Any], run_id: str) -> Dict
             candidates.append((posting, fingerprint))
 
         for batch_start in range(0, len(candidates), RELEVANCE_SCORING_BATCH_SIZE):
+            if time.monotonic() - started_at >= RUN_TIME_BUDGET_SECONDS:
+                partial = True
+                errors.append({
+                    "agent": "job_scout",
+                    "source_id": source.get("id"),
+                    "message": "Run time budget exhausted during candidate scoring.",
+                    "timestamp": now_utc().isoformat(),
+                })
+                break
             batch = candidates[batch_start:batch_start + RELEVANCE_SCORING_BATCH_SIZE]
             scores = await score_relevance_batch([c[0] for c in batch], keywords)
             for idx, (posting, fingerprint) in enumerate(batch):
