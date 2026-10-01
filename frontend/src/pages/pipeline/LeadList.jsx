@@ -34,6 +34,31 @@ function isSafeHttpUrl(url) {
   }
 }
 
+// "Found" column: date and time (no seconds) as separate lines, the full
+// value as a tooltip. Same default locale as toLocaleString(). null for a
+// missing or unparseable value, so the cell can fall back to "-".
+function formatFoundAt(value) {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return {
+    date: date.toLocaleDateString(),
+    time: date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }),
+    full: date.toLocaleString(),
+  };
+}
+
+function FoundAtCell({ value }) {
+  const found = formatFoundAt(value);
+  if (!found) return <td className="px-4 py-3 text-gray-500 text-xs">-</td>;
+  return (
+    <td className="px-4 py-3 whitespace-nowrap" title={found.full}>
+      <span className="block text-gray-700">{found.date}</span>
+      <span className="block text-xs text-gray-500">{found.time}</span>
+    </td>
+  );
+}
+
 function getApiErrorMessage(error, fallback) {
   const detail = error?.response?.data?.detail;
   if (typeof detail === "string" && detail.trim()) return detail;
@@ -297,9 +322,7 @@ export default function LeadList() {
                   </td>
                   <td className="px-4 py-3"><ScoreBadge score={lead.relevance_score} /></td>
                   <td className="px-4 py-3 text-gray-600">{t(`leads.status.${lead.status}`)}</td>
-                  <td className="px-4 py-3 text-gray-500 text-xs">
-                    {lead.created_at ? new Date(lead.created_at).toLocaleString() : "-"}
-                  </td>
+                  <FoundAtCell value={lead.created_at} />
                 </tr>
               ))}
             </tbody>
