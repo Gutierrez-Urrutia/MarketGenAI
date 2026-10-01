@@ -11,6 +11,17 @@ const api = axios.create({
   timeout: 0,
 })
 
+// The instance default is `timeout: 0` (no limit) because generative routes
+// must never be cut. These are opt-in, per-call limits for routes that must
+// not hang forever; see the request interceptor for the generative keywords.
+export const READ_TIMEOUT_MS = 30_000
+export const AUTH_REFRESH_TIMEOUT_MS = 30_000
+// POST /pipeline/runs runs the whole scan inside the request when Celery is
+// unavailable (up to RUN_TIME_BUDGET_SECONDS = 240 s on the backend). 360 s is
+// backend RUN_CONSIDERED_DEAD_AFTER_SECONDS: the client never gives up on a
+// scan the server still considers alive.
+export const SCAN_REQUEST_TIMEOUT_MS = 360_000
+
 const emitMarketgenEvent = (name) => {
   if (typeof window !== 'undefined') {
     window.dispatchEvent(new Event(name))
@@ -126,11 +137,19 @@ export async function refreshAuthSession() {
   }
 
   try {
-    const { data } = await axios.post(`${api.defaults.baseURL}/auth/refresh`, { refreshToken })
+    const { data } = await axios.post(
+      `${api.defaults.baseURL}/auth/refresh`,
+      { refreshToken },
+      { timeout: AUTH_REFRESH_TIMEOUT_MS },
+    )
     authTokenStore.setTokens(data)
     return authTokenStore.isAccessTokenValid()
-  } catch {
-    authTokenStore.clear()
+  } catch (error) {
+    // Only a real rejection of the refresh token ends the session. A timeout or
+    // network error (e.g. a saturated backend) says nothing about the token:
+    // keep it so the next request can retry instead of logging the user out.
+    const status = error?.response?.status
+    if (status === 400 || status === 401 || status === 403) authTokenStore.clear()
     return false
   }
 }
@@ -194,6 +213,18 @@ api.interceptors.response.use(
 
     if (status === 401 && originalRequest && !originalRequest._retry) {
       originalRequest._retry = true
+
+      // This request went out with a token that has since been replaced (a
+      // refresh started by another request finished while this one was in
+      // flight). Its 401 is stale: retry with the current token. Refreshing
+      // again would rotate the refresh token a second time for no reason.
+      const sentToken = String(originalRequest.headers?.Authorization || '').replace(/^Bearer\s+/i, '')
+      const currentToken = authTokenStore.getAccessToken()
+      if (sentToken && currentToken && sentToken !== currentToken) {
+        originalRequest.headers.Authorization = `Bearer ${currentToken}`
+        return api(originalRequest)
+      }
+
       const refreshed = await ensureFreshSession()
       const token = authTokenStore.getAccessToken()
       if (refreshed && token) {
@@ -425,6 +456,26 @@ export const analysisApi = {
   seo: (data) => api.post('/analysis/seo', data),
   plagiarism: (data) => api.post('/analysis/plagiarism', data),
   aiDetection: (data) => api.post('/analysis/ai-detection', data),
+}
+
+export const pipelineApi = {
+  getConfig: () => api.get('/pipeline/config'),
+  updateConfig: (data) => api.put('/pipeline/config', data),
+  updateKeywords: (data) => api.put('/pipeline/config/keywords', data),
+  createSource: (data) => api.post('/pipeline/config/sources', data),
+  updateSource: (id, data) => api.put(`/pipeline/config/sources/${id}`, data),
+  deleteSource: (id) => api.delete(`/pipeline/config/sources/${id}`),
+  testSource: (id) => api.post(`/pipeline/config/sources/${id}/test`),
+  // Fase 2 — Agente 1, siempre disparado a mano (ver job_scout_service.py)
+  runScan: () => api.post('/pipeline/runs', undefined, { timeout: SCAN_REQUEST_TIMEOUT_MS }),
+  listRuns: (params) => api.get('/pipeline/runs', { params, timeout: READ_TIMEOUT_MS }),
+  getRun: (id) => api.get(`/pipeline/runs/${id}`, { timeout: READ_TIMEOUT_MS }),
+  getActiveRun: () => api.get('/pipeline/runs/active', { timeout: READ_TIMEOUT_MS }),
+}
+
+export const leadsApi = {
+  list: (params) => api.get('/leads', { params, timeout: READ_TIMEOUT_MS }),
+  get: (id) => api.get(`/leads/${id}`, { timeout: READ_TIMEOUT_MS }),
 }
 
 export const publishingApi = {

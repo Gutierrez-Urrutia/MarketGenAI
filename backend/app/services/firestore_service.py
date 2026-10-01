@@ -15,13 +15,18 @@ Collections used by this project:
   - assets/{assetId}
   - jobs/{jobId}
   - settings/{orgId}
+  - pipeline_configs/{userId}    (one doc per user, doc_id = userId)
+  - leads/{leadId}
+  - contacts/{contactId}
+  - outreach_emails/{emailId}
+  - pipeline_runs/{runId}
 """
 from __future__ import annotations
 
 import json
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from google.oauth2 import service_account
@@ -45,15 +50,27 @@ def get_db() -> AsyncClient:
         source = "ADC (Default)"
         if settings.firebase_service_account_json and settings.firebase_service_account_json.strip():
             source = "FIREBASE_SERVICE_ACCOUNT_JSON"
+            raw_json = settings.firebase_service_account_json.strip()
+            logger.info(
+                "🔍 [Firestore] FIREBASE_SERVICE_ACCOUNT_JSON detectado (len=%d, inicio='%s', fin='%s')",
+                len(raw_json),
+                raw_json[:40],
+                raw_json[-20:],
+            )
             try:
-                raw_json = settings.firebase_service_account_json.strip()
                 sa_info = json.loads(raw_json)
+                logger.info(
+                    "🔍 [Firestore] JSON parseado correctamente. Claves presentes: %s",
+                    sorted(sa_info.keys()) if isinstance(sa_info, dict) else type(sa_info),
+                )
                 credentials = service_account.Credentials.from_service_account_info(sa_info)
                 logger.info(
                     "✅ [Firestore] Credenciales cargadas exitosamente desde FIREBASE_SERVICE_ACCOUNT_JSON (project='%s', email='%s')",
                     sa_info.get("project_id"),
                     sa_info.get("client_email"),
                 )
+            except json.JSONDecodeError as exc:
+                logger.error("❌ [Firestore] FIREBASE_SERVICE_ACCOUNT_JSON no es JSON válido: %s", exc)
             except Exception as exc:
                 logger.error("❌ [Firestore] Fallo al parsear FIREBASE_SERVICE_ACCOUNT_JSON: %s", exc)
         elif settings.firebase_credentials_path:
@@ -409,6 +426,116 @@ class SettingsRepo(FirestoreRepo):
         return doc or {"userId": user_id, "crm": {}, "llm": {}, "socialConnections": [], "dateFormat": "DD/MM/YYYY"}
 
 
+class PipelineConfigsRepo(FirestoreRepo):
+    """One document per user (doc_id = user_id), like SettingsRepo."""
+
+    collection = "pipeline_configs"
+
+    async def get_by_user(self, user_id: str) -> Optional[Dict[str, Any]]:
+        return await self.get(user_id)
+
+    async def upsert_for_user(self, user_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
+        existing = await self.get(user_id)
+        if existing:
+            return await self.update(user_id, data)
+        return await self.create({**data, "userId": user_id}, doc_id=user_id)
+
+
+class LeadsRepo(FirestoreRepo):
+    collection = "leads"
+
+
+class ContactsRepo(FirestoreRepo):
+    collection = "contacts"
+
+
+class OutreachEmailsRepo(FirestoreRepo):
+    collection = "outreach_emails"
+
+
+class PipelineRunsRepo(FirestoreRepo):
+    collection = "pipeline_runs"
+
+
+class PipelineRunLocksRepo(FirestoreRepo):
+    """One lock document per PipelineConfig (doc id == config id) so two runs
+    can never be active on the same config at once. Acquired inside a Firestore
+    transaction: two simultaneous POST /pipeline/runs both read and write this
+    single document, so Firestore serializes them and exactly one wins.
+
+    A lock is *held* until it is released or its `expiresAt` passes — the TTL
+    covers a worker that died without releasing it."""
+
+    collection = "pipeline_run_locks"
+
+    @staticmethod
+    def lock_state(lock: Optional[Dict[str, Any]], now: datetime) -> str:
+        """"free" (no lock / released), "held", or "stale" (expired without release)."""
+        if not lock or lock.get("released"):
+            return "free"
+        expires_at = lock.get("expiresAt")
+        if expires_at is None or expires_at <= now:
+            return "stale"
+        return "held"
+
+    async def try_acquire(self, config_id: str, run_id: str, ttl_seconds: int) -> Dict[str, Any]:
+        """Atomically take the lock. Returns
+        {"acquired": bool, "holder_run_id": str|None, "stale_run_id": str|None}:
+        `holder_run_id` is the live run that blocked us; `stale_run_id` is an
+        expired run whose lock we just took over (caller may mark it failed)."""
+        ref = self._doc(config_id)
+        transaction = self.db.transaction()
+
+        @firestore.async_transactional
+        async def _txn(txn):
+            snap = await ref.get(transaction=txn)
+            existing = snap.to_dict() if snap.exists else None
+            now = now_utc()
+            state = self.lock_state(existing, now)
+            if state == "held":
+                return {"acquired": False, "holder_run_id": existing.get("runId"), "stale_run_id": None}
+            txn.set(ref, {
+                "id": config_id,
+                "runId": run_id,
+                "released": False,
+                "acquiredAt": now,
+                "expiresAt": now + timedelta(seconds=ttl_seconds),
+            })
+            return {
+                "acquired": True,
+                "holder_run_id": None,
+                "stale_run_id": existing.get("runId") if state == "stale" else None,
+            }
+
+        return await _txn(transaction)
+
+    async def release(self, config_id: str, run_id: str) -> None:
+        """Release the lock, but only if `run_id` still owns it (a stale run
+        finishing late must not free a newer run's lock). Best-effort: the TTL
+        is the backstop, so a failure here is logged, never raised."""
+        try:
+            ref = self._doc(config_id)
+            transaction = self.db.transaction()
+
+            @firestore.async_transactional
+            async def _txn(txn):
+                snap = await ref.get(transaction=txn)
+                lock = snap.to_dict() if snap.exists else None
+                if lock and lock.get("runId") == run_id and not lock.get("released"):
+                    txn.update(ref, {"released": True})
+
+            await _txn(transaction)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("pipeline_run_locks: failed to release %s for run %s: %s", config_id, run_id, exc)
+
+    async def get_active_run_id(self, config_id: str) -> Optional[str]:
+        """Run id holding a live (not released, not expired) lock, or None."""
+        lock = await self.get(config_id)
+        if self.lock_state(lock, now_utc()) == "held":
+            return lock.get("runId")
+        return None
+
+
 # ── Module-level singletons ───────────────────────────────────────────────────
 books_repo      = BooksRepo()
 jobs_repo       = JobsRepo()
@@ -422,3 +549,9 @@ customers_repo  = CustomersRepo()
 templates_repo  = TemplatesRepo()
 assets_repo     = AssetsRepo()
 settings_repo   = SettingsRepo()
+pipeline_configs_repo = PipelineConfigsRepo()
+leads_repo            = LeadsRepo()
+contacts_repo         = ContactsRepo()
+outreach_emails_repo  = OutreachEmailsRepo()
+pipeline_runs_repo    = PipelineRunsRepo()
+pipeline_run_locks_repo = PipelineRunLocksRepo()

@@ -67,3 +67,60 @@ Flags opcionales:
 - `settings/{userId}` tampoco se incluye: el id del documento ya **es** el
   `userId` (`get_by_user` busca por id de documento, no por el campo), por lo
   que no sufre el problema de "huerfanos".
+
+## fix_rss_lead_titles.py
+
+Reescribe `job_title`, `company_name`, `fingerprint` y `raw_title` de los
+leads que una fuente RSS guardó antes de tener `config.title_format` (Fase 2,
+punto 4). Detalle completo en el docstring del script.
+
+**No borra nada.** Los duplicados solo se reportan. Solo toca leads de la
+fuente sin `raw_title` (una segunda pasada no hace nada). Los que no pasan la
+comprobación cruzada, o cuya oferta ya no está en el feed, quedan como
+REVISIÓN MANUAL y no se tocan.
+
+```
+# 1) Simulación (default): lee Firestore y el feed, no escribe nada
+python -u -m scripts.migrations.fix_rss_lead_titles --config-id <CONFIG_ID> --source-id <SOURCE_ID>
+
+# 2) Aplicar: solo si la fuente ya tiene title_format="company_colon_title".
+#    Guarda antes un respaldo en scripts/migrations/backups/ (git-ignored,
+#    contiene datos reales) y pide confirmación 'yes'.
+python -u -m scripts.migrations.fix_rss_lead_titles --config-id <CONFIG_ID> --source-id <SOURCE_ID> --apply
+
+# 2b) Solo un lead: su propio respaldo (sufijo -only-<id>); se rechaza si
+#     ese lead no está en el plan (no es de la fuente, revisión manual u omitido)
+python -u -m scripts.migrations.fix_rss_lead_titles --config-id <CONFIG_ID> --source-id <SOURCE_ID> --only <LEAD_ID> --apply
+
+# 3) Deshacer un --apply desde su respaldo: simulación y luego aplicar
+python -u -m scripts.migrations.fix_rss_lead_titles --config-id <CONFIG_ID> --source-id <SOURCE_ID> --restore scripts/migrations/backups/<archivo>.json
+python -u -m scripts.migrations.fix_rss_lead_titles --config-id <CONFIG_ID> --source-id <SOURCE_ID> --restore scripts/migrations/backups/<archivo>.json --apply
+```
+
+Cada lead se escribe dentro de una transacción que lo vuelve a leer: si
+cambió desde la lectura, no se toca ("CAMBIÓ DESDE LA LECTURA"). Solo se
+escriben `job_title`, `company_name`, `fingerprint`, `raw_title` y
+`updatedAt`. Si se interrumpe, se puede volver a correr: los leads ya
+corregidos tienen `raw_title` y se omiten.
+
+`--restore` exige también `--config-id` y `--source-id` y solo toca leads de
+esa config y fuente ("NO PERTENECE" para el resto). Antes de nada valida el
+respaldo: cada fila debe tener exactamente `id`, `original` (job_title,
+company_name, fingerprint) y `applied` (esos más raw_title), todo texto; si
+no, no hace nada. Un lead que conserva los valores aplicados se restaura;
+uno que ya tiene sus valores originales es "SIN CAMBIO"; uno que difiere de
+ambos es "CONFLICTO" y no se toca.
+
+Código de salida: 0 bien, 1 si falló alguna escritura, 2 si se rechazó la
+corrida.
+
+`_legacy_split_rss_title` / `_legacy_rss_fingerprint` de
+`job_scout_service.py` se quedan mientras se pueda restaurar: tras un
+`--restore` los leads vuelven a su huella antigua y solo esas funciones
+evitan que el siguiente escaneo los guarde de nuevo. Se quitan (junto con
+este script) cuando el respaldo ya no haga falta.
+
+**Al terminar:** cuando ya no haga falta restaurar, borra los respaldos de
+`scripts/migrations/backups/` (contienen datos reales) y, en el mismo
+cambio, quita `_legacy_split_rss_title` / `_legacy_rss_fingerprint` y este
+script.
