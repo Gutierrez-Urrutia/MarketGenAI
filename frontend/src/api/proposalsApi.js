@@ -52,5 +52,5 @@ export const downloadProposalDocx = (id) =>
 export const updateProposalStatus = (id, status) =>
   withProposalUpdated(api.patch(`/proposals/${id}/status`, { status }));
 
-export const sendProposalToCrm = (id, provider = "hubspot") =>
-  withProposalUpdated(api.post(`/proposals/${id}/send-to-crm`, { provider }));
+export const sendProposalToCrm = (id, provider) =>
+  withProposalUpdated(api.post(`/proposals/${id}/send-to-crm`, provider ? { provider } : {}));

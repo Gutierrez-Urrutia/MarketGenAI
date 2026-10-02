@@ -6253,7 +6253,8 @@ const filtered = allItems.filter((item) => {
     try {
       const { data } = await sendProposalToCrm(proposal.id);
       applyCrmSyncResult(proposal.id, data.crmSync);
-      setToast({ type: "success", message: "Proposal sent to HubSpot." });
+      const providerLabel = data?.crmSync?.provider === "salesforce" ? "Salesforce" : "HubSpot";
+      setToast({ type: "success", message: `Proposal sent to ${providerLabel}.` });
     } catch (error) {
       console.error(error);
       setToast({ type: "error", message: getCrmErrorMessage(error, "Could not send the proposal to the CRM.") });
@@ -8998,6 +8999,9 @@ function SettingsPage({ navigationState = {} }) {
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [crmApiKey, setCrmApiKey] = useState("");
   const [crmProvider, setCrmProvider] = useState("hubspot");
+  const [crmConsumerKey, setCrmConsumerKey] = useState("");
+  const [crmConsumerSecret, setCrmConsumerSecret] = useState("");
+  const [crmLoginUrl, setCrmLoginUrl] = useState("");
   const [crmTestStatus, setCrmTestStatus] = useState(null);
   const [crmTestMessage, setCrmTestMessage] = useState("");
   const [crmSaving, setCrmSaving] = useState(false);
@@ -9122,6 +9126,9 @@ function SettingsPage({ navigationState = {} }) {
         localStorage.setItem(PREF_KEYS.dateFormat, savedDateFormat);
         if (data?.crm?.provider) setCrmProvider(data.crm.provider);
         if (data?.crm?.apiKey) setCrmApiKey(data.crm.apiKey);
+        if (data?.crm?.salesforce?.consumerKey) setCrmConsumerKey(data.crm.salesforce.consumerKey);
+        if (data?.crm?.salesforce?.consumerSecret) setCrmConsumerSecret(data.crm.salesforce.consumerSecret);
+        if (data?.crm?.salesforce?.loginUrl) setCrmLoginUrl(data.crm.salesforce.loginUrl);
       })
       .catch((error) => console.error(error));
     return () => {
@@ -9226,14 +9233,21 @@ function SettingsPage({ navigationState = {} }) {
     }
   };
 
+  const crmIntegrationPayload = () => (
+    crmProvider === "salesforce"
+      ? { provider: crmProvider, consumerKey: crmConsumerKey, consumerSecret: crmConsumerSecret, loginUrl: crmLoginUrl }
+      : { provider: crmProvider, apiKey: crmApiKey }
+  );
+
+  const crmIntegrationReady = crmProvider === "salesforce"
+    ? Boolean(crmConsumerKey.trim() && crmConsumerSecret.trim() && crmLoginUrl.trim())
+    : Boolean(crmApiKey.trim());
+
   const testCrmConnection = async () => {
     setCrmTestStatus("testing");
     setCrmTestMessage("");
     try {
-      const { data } = await api.post("/settings/crm/test-connection", {
-        apiKey: crmApiKey,
-        provider: crmProvider,
-      });
+      const { data } = await api.post("/settings/crm/test-connection", crmIntegrationPayload());
       setCrmTestStatus("connected");
       setCrmTestMessage(data.message || "Conexión exitosa");
     } catch (err) {
@@ -9245,8 +9259,13 @@ function SettingsPage({ navigationState = {} }) {
   const saveCrmIntegration = async () => {
     setCrmSaving(true);
     try {
-      const { data } = await settingsApi.update({ crm: { provider: crmProvider, apiKey: crmApiKey } });
+      const payload = crmProvider === "salesforce"
+        ? { provider: crmProvider, salesforce: { consumerKey: crmConsumerKey, consumerSecret: crmConsumerSecret, loginUrl: crmLoginUrl } }
+        : { provider: crmProvider, apiKey: crmApiKey };
+      const { data } = await settingsApi.update({ crm: payload });
       if (data?.crm?.apiKey) setCrmApiKey(data.crm.apiKey);
+      if (data?.crm?.salesforce?.consumerKey) setCrmConsumerKey(data.crm.salesforce.consumerKey);
+      if (data?.crm?.salesforce?.consumerSecret) setCrmConsumerSecret(data.crm.salesforce.consumerSecret);
       setToast({ type: "success", message: t("settings.saved") });
     } catch (error) {
       console.error(error);
@@ -9611,7 +9630,16 @@ function SettingsPage({ navigationState = {} }) {
                 }
               />
             </Field>
-            <Field label="CRM API key"><Input className={settingsControlClass} type="password" value={crmApiKey} onChange={(event) => setCrmApiKey(event.target.value)} placeholder="Paste CRM API key" /></Field>
+            {crmProvider === "salesforce" ? (<>
+              <Field label="Consumer Key"><Input className={settingsControlClass} type="password" value={crmConsumerKey} onChange={(event) => setCrmConsumerKey(event.target.value)} placeholder="Connected App Consumer Key" /></Field>
+              <Field label="Consumer Secret"><Input className={settingsControlClass} type="password" value={crmConsumerSecret} onChange={(event) => setCrmConsumerSecret(event.target.value)} placeholder="Connected App Consumer Secret" /></Field>
+              <Field label="Login URL">
+                <Input className={settingsControlClass} value={crmLoginUrl} onChange={(event) => setCrmLoginUrl(event.target.value)} placeholder="https://login.salesforce.com" />
+                <p className="text-xs text-gray-400 mt-1">Use https://test.salesforce.com for a sandbox, or your org's My Domain URL.</p>
+              </Field>
+            </>) : (
+              <Field label="CRM API key"><Input className={settingsControlClass} type="password" value={crmApiKey} onChange={(event) => setCrmApiKey(event.target.value)} placeholder="Paste CRM API key" /></Field>
+            )}
           </div>
           <div className="flex items-center justify-end gap-1">
             {crmTestStatus === "connected" && (
@@ -9620,7 +9648,7 @@ function SettingsPage({ navigationState = {} }) {
             {crmTestStatus === "error" && (
               <span style={{ color: "#dc2626", fontSize: 13, fontWeight: 600 }}>✗ {crmTestMessage}</span>
             )}
-            <Btn variant="secondary" icon={crmTestStatus === "testing" ? <span className="h-3 w-3 animate-spin rounded-full border-2 border-current border-t-transparent" /> : <PlayIcon size={12} />} onClick={testCrmConnection} disabled={!crmApiKey.trim() || crmTestStatus === "testing"}>{crmTestStatus === "testing" ? "Testing..." : "Test Connection"}</Btn><Btn icon={<SaveIcon size={12} />} onClick={saveCrmIntegration} disabled={!crmApiKey.trim() || crmSaving}>{crmSaving ? "Saving..." : "Save Integration"}</Btn>
+            <Btn variant="secondary" icon={crmTestStatus === "testing" ? <span className="h-3 w-3 animate-spin rounded-full border-2 border-current border-t-transparent" /> : <PlayIcon size={12} />} onClick={testCrmConnection} disabled={!crmIntegrationReady || crmTestStatus === "testing"}>{crmTestStatus === "testing" ? "Testing..." : "Test Connection"}</Btn><Btn icon={<SaveIcon size={12} />} onClick={saveCrmIntegration} disabled={!crmIntegrationReady || crmSaving}>{crmSaving ? "Saving..." : "Save Integration"}</Btn>
           </div>
         </SettingsSection>
         <SettingsSection isDark={isDark} title="Social Connections" IconComp={Share2Icon} desc="Publishing destinations for generated social assets">
