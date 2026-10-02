@@ -68,6 +68,7 @@ class GenerateProposalRequest(BaseModel):
     style:               str = "professional"
     language:            str = "es"
     customPrompt:        Optional[str] = None
+    sync:                bool = False
 
 
 class ProposalVersionCreate(BaseModel):

@@ -86,6 +86,11 @@ class Settings(BaseSettings):
     supabase_service_key: str = ""
     supabase_storage_bucket: str = "nd-assets"
 
+    # Fernet key encrypting pipeline secrets at rest (SMTP passwords, provider
+    # API keys) — see app/services/encryption_service.py. Deliberately not
+    # derived from app_secret_key: different blast radius and rotation needs.
+    pipeline_encryption_key: str = ""
+
     redis_url: str = "redis://localhost:6379/0"
     celery_broker_url: str = "redis://localhost:6379/0"
     celery_result_backend: str = "redis://localhost:6379/1"

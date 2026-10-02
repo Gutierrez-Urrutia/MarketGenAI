@@ -19,9 +19,11 @@ from app.routers import (
     customers,
     health,
     jobs,
+    leads,
     oauth,
     outreach,
     opportunities,
+    pipeline,
     platform,
     proposals,
     publishing,
@@ -29,6 +31,7 @@ from app.routers import (
     settings as settings_router,
     social,
     social_mock,
+    tasks,
     templates,
 )
 
@@ -65,6 +68,8 @@ app.include_router(books.router, prefix="/api/v1")
 app.include_router(campaigns.router, prefix="/api/v1")
 app.include_router(content_types.router, prefix="/api/v1/content", tags=["content"])
 app.include_router(opportunities.router, prefix="/api/v1")
+app.include_router(pipeline.router, prefix="/api/v1")
+app.include_router(leads.router, prefix="/api/v1")
 app.include_router(customers.router, prefix="/api/v1")
 app.include_router(templates.router, prefix="/api/v1")
 app.include_router(assets.router, prefix="/api/v1")
@@ -83,3 +88,4 @@ app.include_router(proposals.router, prefix="/api/v1")
 app.include_router(social.router, prefix="/api/v1")
 app.include_router(social_mock.router, prefix="/api/v1")
 app.include_router(assistant.router, prefix="/api/v1")
+app.include_router(tasks.router, prefix="/api/v1")

@@ -7,7 +7,7 @@ import pytest
 
 from app.routers.proposals import _generate_proposal_content
 from app.schemas.proposal import GenerateProposalRequest
-from tests.conftest import FAKE_USER_SUB
+from tests.conftest import FAKE_USER_SUB, fake_job
 
 API = "/api/v1/proposals"
 
@@ -61,6 +61,88 @@ async def test_get_proposal_not_found(client):
 
 
 @pytest.mark.asyncio
+async def test_generate_proposal_by_id_enqueues_celery_task(client):
+    proposal = fake_proposal()
+    job = fake_job("proposal_generation")
+    with (
+        patch("app.routers.proposals.proposals_repo.get", new_callable=AsyncMock, return_value=proposal),
+        patch("app.routers.proposals.jobs_repo.create_job", new_callable=AsyncMock, return_value=job),
+        patch("app.routers.proposals.task_generate_proposal.delay") as delay_mock,
+    ):
+        resp = await client.post(f"{API}/proposal-001/generate", json={
+            "style": "professional",
+            "language": "en",
+        })
+    assert resp.status_code == 202
+    assert resp.json()["job_id"] == job["id"]
+    assert resp.json()["proposal_id"] == "proposal-001"
+    delay_mock.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_generate_proposal_by_id_sync_opt_in(client):
+    proposal = fake_proposal()
+    job = fake_job("proposal_generation")
+    updated = fake_proposal({"status": "generated"})
+    with (
+        patch("app.routers.proposals.proposals_repo.get", new_callable=AsyncMock, return_value=proposal),
+        patch("app.routers.proposals.jobs_repo.create_job", new_callable=AsyncMock, return_value=job),
+        patch("app.routers.proposals.task_generate_proposal.delay") as delay_mock,
+        patch("app.routers.proposals.generate_proposal_now", new_callable=AsyncMock, return_value=updated) as sync_mock,
+    ):
+        resp = await client.post(f"{API}/proposal-001/generate", json={
+            "style": "professional",
+            "language": "en",
+            "sync": True,
+        })
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "generated"
+    delay_mock.assert_not_called()
+    sync_mock.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_generate_proposal_by_id_falls_back_when_celery_fails(client):
+    proposal = fake_proposal()
+    job = fake_job("proposal_generation")
+    updated = fake_proposal({"status": "generated"})
+    with (
+        patch("app.routers.proposals.proposals_repo.get", new_callable=AsyncMock, return_value=proposal),
+        patch("app.routers.proposals.jobs_repo.create_job", new_callable=AsyncMock, return_value=job),
+        patch("app.routers.proposals.task_generate_proposal.delay", side_effect=ConnectionError("Redis down")),
+        patch("app.routers.proposals.generate_proposal_now", new_callable=AsyncMock, return_value=updated) as sync_mock,
+    ):
+        resp = await client.post(f"{API}/proposal-001/generate", json={
+            "style": "professional",
+            "language": "en",
+        })
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "generated"
+    sync_mock.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_generate_proposal_by_id_fallback_failure_fails_job(client):
+    proposal = fake_proposal()
+    job = fake_job("proposal_generation")
+    with (
+        patch("app.routers.proposals.proposals_repo.get", new_callable=AsyncMock, return_value=proposal),
+        patch("app.routers.proposals.jobs_repo.create_job", new_callable=AsyncMock, return_value=job),
+        patch("app.routers.proposals.task_generate_proposal.delay", side_effect=ConnectionError("Redis down")),
+        patch("app.routers.proposals.generate_proposal_now", side_effect=RuntimeError("LLM failed")),
+        patch("app.routers.proposals.proposals_repo.update", new_callable=AsyncMock) as update_mock,
+        patch("app.routers.proposals.jobs_repo.fail_job", new_callable=AsyncMock) as fail_mock,
+    ):
+        with pytest.raises(RuntimeError, match="LLM failed"):
+            await client.post(f"{API}/proposal-001/generate", json={
+                "style": "professional",
+                "language": "en",
+            })
+    update_mock.assert_awaited_once_with("proposal-001", {"status": "error"})
+    fail_mock.assert_awaited_once_with(job["id"], "LLM failed")
+
+
+@pytest.mark.asyncio
 async def test_generate_proposal_by_id(client):
     proposal = fake_proposal()
     generated = {
@@ -69,13 +151,17 @@ async def test_generate_proposal_by_id(client):
         "filePath": "generated.md",
     }
     updated = fake_proposal({"content": generated["content"], "status": "generated", "language": "en"})
+    job = fake_job("proposal_generation")
     with (
         patch("app.routers.proposals.proposals_repo.get", new_callable=AsyncMock, return_value=proposal),
-        patch("app.routers.proposals._generate_proposal_content", new_callable=AsyncMock, return_value=generated) as generate_content,
-        patch("app.routers.proposals.proposals_repo.update", new_callable=AsyncMock, return_value=updated) as update_proposal,
+        patch("app.routers.proposals.jobs_repo.create_job", new_callable=AsyncMock, return_value=job),
+        patch("app.workers.tasks.proposal_tasks.jobs_repo.update_progress", new_callable=AsyncMock),
+        patch("app.workers.tasks.proposal_tasks.jobs_repo.complete_job", new_callable=AsyncMock),
+        patch("app.workers.tasks.proposal_tasks._generate_proposal_content", new_callable=AsyncMock, return_value=generated) as generate_content,
+        patch("app.workers.tasks.proposal_tasks.proposals_repo.update", new_callable=AsyncMock, return_value=updated) as update_proposal,
     ):
         resp = await client.post(f"{API}/proposal-001/generate", json={
-            "style": "professional", "language": "en", "customPrompt": "Emphasize commercial benefits."
+            "style": "professional", "language": "en", "customPrompt": "Emphasize commercial benefits.", "sync": True
         })
     assert resp.status_code == 200
     assert resp.json()["status"] == "generated"
@@ -106,6 +192,47 @@ def test_generate_request_accepts_frontend_line_item_shape():
 
 
 @pytest.mark.asyncio
+async def test_generate_draft_enqueues_celery_task(client):
+    proposal = fake_proposal()
+    job = fake_job("proposal_generation")
+    with (
+        patch("app.routers.proposals.proposals_repo.create", new_callable=AsyncMock, return_value=proposal),
+        patch("app.routers.proposals.jobs_repo.create_job", new_callable=AsyncMock, return_value=job),
+        patch("app.routers.proposals.task_generate_proposal.delay") as delay_mock,
+    ):
+        resp = await client.post(f"{API}/generate-draft", json={
+            "title": "Automation Proposal",
+            "clientName": "Acme Corp",
+            "description": "Automate finance operations.",
+        })
+    assert resp.status_code == 202
+    assert resp.json()["job_id"] == job["id"]
+    assert resp.json()["proposal_id"] == proposal["id"]
+    delay_mock.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_generate_draft_falls_back_when_celery_fails(client):
+    proposal = fake_proposal()
+    job = fake_job("proposal_generation")
+    updated = fake_proposal({"status": "generated"})
+    with (
+        patch("app.routers.proposals.proposals_repo.create", new_callable=AsyncMock, return_value=proposal),
+        patch("app.routers.proposals.jobs_repo.create_job", new_callable=AsyncMock, return_value=job),
+        patch("app.routers.proposals.task_generate_proposal.delay", side_effect=ConnectionError("Redis down")),
+        patch("app.routers.proposals.generate_proposal_now", new_callable=AsyncMock, return_value=updated) as sync_mock,
+    ):
+        resp = await client.post(f"{API}/generate-draft", json={
+            "title": "Automation Proposal",
+            "clientName": "Acme Corp",
+            "description": "Automate finance operations.",
+        })
+    assert resp.status_code == 201
+    assert resp.json()["status"] == "generated"
+    sync_mock.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_generate_draft_passes_frontend_payload_to_generator(client):
     generated = {
         "content": "<p>Generated</p>",
@@ -113,13 +240,18 @@ async def test_generate_draft_passes_frontend_payload_to_generator(client):
         "filePath": "generated.md",
     }
     saved = fake_proposal({"content": generated["content"], "status": "generated", "language": "en"})
+    job = fake_job("proposal_generation")
     with (
         patch(
-            "app.routers.proposals._generate_proposal_content",
+            "app.workers.tasks.proposal_tasks._generate_proposal_content",
             new_callable=AsyncMock,
             return_value=generated,
         ) as generate_content,
         patch("app.routers.proposals.proposals_repo.create", new_callable=AsyncMock, return_value=saved) as create_proposal,
+        patch("app.routers.proposals.jobs_repo.create_job", new_callable=AsyncMock, return_value=job),
+        patch("app.workers.tasks.proposal_tasks.jobs_repo.update_progress", new_callable=AsyncMock),
+        patch("app.workers.tasks.proposal_tasks.jobs_repo.complete_job", new_callable=AsyncMock),
+        patch("app.workers.tasks.proposal_tasks.proposals_repo.update", new_callable=AsyncMock, return_value=saved),
     ):
         resp = await client.post(f"{API}/generate-draft", json={
             "title": "Automation Proposal",
@@ -137,6 +269,7 @@ async def test_generate_draft_passes_frontend_payload_to_generator(client):
             "length": "extended",
             "language": "en",
             "customPrompt": "Emphasize outcomes over problems.",
+            "sync": True,
         })
 
     assert resp.status_code == 201

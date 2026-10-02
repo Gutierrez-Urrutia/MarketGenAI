@@ -418,7 +418,18 @@ async def generate_chapters_endpoint(
             raise
         return JobAccepted(job_id=job["id"])
 
-    task_generate_chapters.delay(job["id"], book_id, book, body.chapter_count, body.language)
+    try:
+        task_generate_chapters.delay(job["id"], book_id, book, body.chapter_count, body.language)
+    except Exception as exc:
+        logger.warning(
+            "Celery task_generate_chapters dispatch failed (%s); falling back to synchronous execution",
+            exc,
+        )
+        try:
+            await _generate_chapters_now(job["id"], book_id, book, body.chapter_count, body.language)
+        except Exception as inner_exc:
+            await jobs_repo.fail_job(job["id"], str(inner_exc))
+            raise
     return JobAccepted(job_id=job["id"])
 
 
@@ -620,12 +631,15 @@ async def generate_all_content(
 
     try:
         task_generate_all_content.delay(job["id"], book_id, book, chapters, body.content_type, body.style, body.language)
-    except Exception:
-        # Redis/Celery no disponible — ejecutar síncronamente
+    except Exception as exc:
+        logger.warning(
+            "Celery task_generate_all_content dispatch failed (%s); falling back to synchronous execution",
+            exc,
+        )
         try:
             await _generate_all_content_now(job["id"], book_id, book, chapters, body.content_type, body.style, body.language)
-        except Exception as exc:
-            await jobs_repo.fail_job(job["id"], str(exc))
+        except Exception as inner_exc:
+            await jobs_repo.fail_job(job["id"], str(inner_exc))
             raise
     return JobAccepted(job_id=job["id"])
 
@@ -675,12 +689,15 @@ async def generate_single_chapter_content(
         task_generate_single_chapter.delay(
             job["id"], book_id, book, chapter, body.content_type, body.style, body.language
         )
-    except Exception:
-        # Redis/Celery no disponible — ejecutar síncronamente
+    except Exception as exc:
+        logger.warning(
+            "Celery task_generate_single_chapter dispatch failed (%s); falling back to synchronous execution",
+            exc,
+        )
         try:
             await _generate_single_chapter_now(job["id"], book_id, book, chapter, body.content_type, body.style, body.language)
-        except Exception as exc:
-            await jobs_repo.fail_job(job["id"], str(exc))
+        except Exception as inner_exc:
+            await jobs_repo.fail_job(job["id"], str(inner_exc))
             raise
     return {"jobId": job["id"], "status": "pending"}
 

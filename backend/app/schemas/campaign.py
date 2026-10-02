@@ -67,3 +67,12 @@ class CampaignOut(BaseModel):
     userId: str
     createdAt: datetime
     updatedAt: datetime
+
+
+class GenerateCampaignRequest(BaseModel):
+    """Payload for generating campaign content with optional sync execution."""
+
+    model_config = ConfigDict(extra="allow")
+
+    sync: bool = False
+

@@ -1,0 +1,502 @@
+"""Pipeline router — Fase 1 (PipelineConfig CRUD) + Fase 2 (manual Agente 1 trigger).
+
+Agentes 2/3, el orquestador, y los endpoints de contacts/outreach_emails
+siguen fuera de alcance (Fases 3-6 de plan-pipeline-3-agentes.md). El
+escaneo programado (Celery Beat / Vercel Cron) tampoco está — Fase 5-6,
+condicionada al plan de Vercel que confirme el cliente (ver
+analisis-worker-serverless.md). `POST /pipeline/runs` es la única forma de
+disparar un escaneo: siempre manual, a pedido de quien lo llame.
+
+One PipelineConfig document per user (doc_id == user.sub), same pattern as
+SettingsRepo. smtp_password is write-only: it is encrypted with
+app.services.encryption_service before being persisted as
+`smtp_password_encrypted`, and the API never returns it — only a
+`smtp_password_configured` boolean so the frontend can show "configured"
+without ever getting the secret back.
+"""
+from __future__ import annotations
+
+import asyncio
+import logging
+from typing import Any, Dict, List
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+
+from app.core import url_safety
+from app.core.pipeline_constants import (
+    RUN_CONSIDERED_DEAD_AFTER_SECONDS,
+    TASK_ENQUEUE_TIMEOUT_SECONDS,
+)
+from app.core.rate_limit import limiter
+from app.dependencies.auth import CurrentUser, get_current_user
+from app.schemas.job import JobAccepted
+from app.schemas.pipeline import (
+    RSS_TITLE_FORMATS,
+    SOURCE_TYPE_REQUIRED_CONFIG_FIELDS,
+    SOURCE_TYPE_SECRET_CONFIG_FIELDS,
+    SOURCE_TYPE_URL_FIELDS,
+    JobSourceCreate,
+    JobSourceUpdate,
+    PipelineConfigUpdate,
+    PipelineKeywordsUpdate,
+    PipelineRunStatus,
+    SourceType,
+)
+from app.services import encryption_service, job_scout_service
+from app.services.firestore_service import (
+    new_id,
+    now_utc,
+    pipeline_configs_repo,
+    pipeline_run_locks_repo,
+    pipeline_runs_repo,
+)
+from app.workers.tasks.pipeline_tasks import task_run_job_scout
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/pipeline", tags=["Pipeline"])
+
+
+def _default_config() -> Dict[str, Any]:
+    return {
+        "keywords": [],
+        "industries": [],
+        "excluded_companies": [],
+        "sources": [],
+        "smtp_host": "",
+        "smtp_port": 587,
+        "smtp_user": "",
+        "sender_email": "",
+        "sender_name": "",
+        "auto_send_threshold": 0.80,
+        "max_emails_per_day": 50,
+        "scan_frequency_hours": 24,
+        "is_active": True,
+    }
+
+
+async def _validate_source_url(source_type: SourceType, config: Dict[str, Any]) -> None:
+    """Reject a source whose URL (base_url/feed_url/url, per source_type)
+    resolves to an internal/blocked address, right when the user saves it.
+
+    This is a courtesy check for fast feedback — the control that actually
+    matters is app.core.url_safety.validate_url_target called again at
+    fetch time in job_scout_service.py, since DNS can change between a
+    source being saved and a scan actually running it.
+    """
+    field = SOURCE_TYPE_URL_FIELDS.get(source_type)
+    if not field:
+        return
+    url = config.get(field)
+    if not url:
+        return  # missing-field validation is /sources/{id}/test's job, not this
+    try:
+        await url_safety.validate_url_target(url)
+    except url_safety.UnsafeUrlError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Unsafe source URL: {exc}",
+        ) from exc
+
+
+def _validate_source_title_format(source_type: SourceType, config: Dict[str, Any]) -> None:
+    """`config.title_format` is optional (absent == RSS_TITLE_FORMAT_NONE),
+    only meaningful for RSS sources, and must be one of RSS_TITLE_FORMATS."""
+    if "title_format" not in (config or {}):
+        return
+    value = config["title_format"]
+    if source_type != SourceType.RSS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="title_format only applies to RSS sources.",
+        )
+    if value not in RSS_TITLE_FORMATS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Invalid title_format {value!r}; expected one of {list(RSS_TITLE_FORMATS)}.",
+        )
+
+
+def _split_source_config(
+    source_type: SourceType, config: Dict[str, Any]
+) -> tuple[Dict[str, Any], Dict[str, str]]:
+    """Split a source's config into (plaintext, encrypted) halves.
+
+    Fields listed in SOURCE_TYPE_SECRET_CONFIG_FIELDS for this source_type
+    (e.g. `api_key` for source_type=api) are encrypted with Fernet and moved
+    out of the plaintext config — same treatment as
+    PipelineConfig.smtp_password. Everything else stays in plaintext (e.g.
+    `base_url`, `feed_url`, scraper selectors — not secrets).
+    """
+    secret_fields = set(SOURCE_TYPE_SECRET_CONFIG_FIELDS.get(source_type, []))
+    plaintext: Dict[str, Any] = {}
+    encrypted: Dict[str, str] = {}
+    for key, value in (config or {}).items():
+        if key in secret_fields:
+            if value:
+                try:
+                    encrypted[key] = encryption_service.encrypt(str(value))
+                except encryption_service.EncryptionNotConfiguredError as exc:
+                    raise HTTPException(
+                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                        detail=str(exc),
+                    ) from exc
+        else:
+            plaintext[key] = value
+    return plaintext, encrypted
+
+
+def _public_source(source: Dict[str, Any]) -> Dict[str, Any]:
+    """Strip secret values — encrypted or plaintext — from a source before
+    it's returned by the API; expose only which secret fields are set.
+
+    A source created before commit 92a01c4 (the fix that started encrypting
+    these fields) may still have a secret value sitting in plaintext
+    `config` instead of `config_encrypted`. Without this, that legacy
+    plaintext value would leak straight through GET /pipeline/config —
+    stripping only `config_encrypted` is not enough.
+    """
+    source_type = SourceType(source["source_type"])
+    secret_fields = set(SOURCE_TYPE_SECRET_CONFIG_FIELDS.get(source_type, []))
+    encrypted = source.get("config_encrypted") or {}
+    plaintext_config = source.get("config") or {}
+
+    public = {k: v for k, v in source.items() if k != "config_encrypted"}
+    public["config"] = {k: v for k, v in plaintext_config.items() if k not in secret_fields}
+    public["configured_secret_fields"] = sorted(
+        field for field in secret_fields
+        if encrypted.get(field) or plaintext_config.get(field)
+    )
+    return public
+
+
+def _to_public(doc: Dict[str, Any], user_id: str) -> Dict[str, Any]:
+    """Strip secrets, add a userId, and never leak smtp_password_encrypted."""
+    base = _default_config()
+    public = {**base, **doc}
+    public["userId"] = user_id
+    public["smtp_password_configured"] = bool(public.get("smtp_password_encrypted"))
+    public.pop("smtp_password_encrypted", None)
+    public.pop("smtp_password", None)
+    public["sources"] = [_public_source(s) for s in public.get("sources") or []]
+    return public
+
+
+async def _get_or_create_doc(user_id: str) -> Dict[str, Any]:
+    doc = await pipeline_configs_repo.get_by_user(user_id)
+    if doc is None:
+        doc = await pipeline_configs_repo.upsert_for_user(user_id, _default_config())
+    return doc
+
+
+def _find_source(sources: List[Dict[str, Any]], source_id: str) -> Dict[str, Any]:
+    for source in sources:
+        if source.get("id") == source_id:
+            return source
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail=f"Source '{source_id}' not found.",
+    )
+
+
+@router.get("/config")
+async def get_config(user: CurrentUser = Depends(get_current_user)):
+    doc = await pipeline_configs_repo.get_by_user(user.sub)
+    return _to_public(doc or {}, user.sub)
+
+
+@router.put("/config")
+async def update_config(
+    body: PipelineConfigUpdate,
+    user: CurrentUser = Depends(get_current_user),
+):
+    payload = body.model_dump(exclude_unset=True, exclude={"smtp_password"})
+
+    if body.smtp_password is not None:
+        # smtp_password is never stripped (its own spaces can be meaningful),
+        # but a whitespace-only value is not a real password: treat it as
+        # "not provided" and keep whatever is already stored. Only a true
+        # empty string ("") is an explicit request to clear it.
+        if body.smtp_password.strip():
+            try:
+                payload["smtp_password_encrypted"] = encryption_service.encrypt(body.smtp_password)
+            except encryption_service.EncryptionNotConfiguredError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail=str(exc),
+                ) from exc
+        elif body.smtp_password == "":
+            # Explicit empty string clears a previously configured password.
+            payload["smtp_password_encrypted"] = ""
+
+    await _get_or_create_doc(user.sub)
+    doc = await pipeline_configs_repo.upsert_for_user(user.sub, payload)
+    return _to_public(doc, user.sub)
+
+
+@router.put("/config/keywords")
+async def update_keywords(
+    body: PipelineKeywordsUpdate,
+    user: CurrentUser = Depends(get_current_user),
+):
+    await _get_or_create_doc(user.sub)
+    doc = await pipeline_configs_repo.upsert_for_user(user.sub, body.model_dump())
+    return _to_public(doc, user.sub)
+
+
+@router.post("/config/sources", status_code=status.HTTP_201_CREATED)
+async def create_source(
+    body: JobSourceCreate,
+    user: CurrentUser = Depends(get_current_user),
+):
+    doc = await _get_or_create_doc(user.sub)
+    sources = list(doc.get("sources") or [])
+    await _validate_source_url(body.source_type, body.config)
+    _validate_source_title_format(body.source_type, body.config)
+    plaintext_config, encrypted_config = _split_source_config(body.source_type, body.config)
+    new_source = {
+        "id": new_id(),
+        "name": body.name,
+        "source_type": body.source_type.value,
+        "enabled": body.enabled,
+        "config": plaintext_config,
+        "config_encrypted": encrypted_config,
+        "rate_limit": body.rate_limit,
+        "last_fetched_at": None,
+    }
+    sources.append(new_source)
+    doc = await pipeline_configs_repo.upsert_for_user(user.sub, {"sources": sources})
+    return _to_public(doc, user.sub)
+
+
+@router.put("/config/sources/{source_id}")
+async def update_source(
+    source_id: str,
+    body: JobSourceUpdate,
+    user: CurrentUser = Depends(get_current_user),
+):
+    doc = await _get_or_create_doc(user.sub)
+    sources = list(doc.get("sources") or [])
+    source = _find_source(sources, source_id)
+
+    updates = body.model_dump(exclude_unset=True)
+    if "source_type" in updates and updates["source_type"] is not None:
+        updates["source_type"] = updates["source_type"].value
+    if "config" in updates and updates["config"] is not None:
+        effective_type = SourceType(updates.get("source_type", source["source_type"]))
+        await _validate_source_url(effective_type, updates["config"])
+        _validate_source_title_format(effective_type, updates["config"])
+        plaintext_config, encrypted_config = _split_source_config(effective_type, updates["config"])
+        updates["config"] = plaintext_config
+        updates["config_encrypted"] = encrypted_config
+    source.update(updates)
+
+    doc = await pipeline_configs_repo.upsert_for_user(user.sub, {"sources": sources})
+    return _to_public(doc, user.sub)
+
+
+@router.delete("/config/sources/{source_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_source(
+    source_id: str,
+    user: CurrentUser = Depends(get_current_user),
+):
+    doc = await _get_or_create_doc(user.sub)
+    sources = list(doc.get("sources") or [])
+    _find_source(sources, source_id)  # 404 if missing
+    sources = [source for source in sources if source.get("id") != source_id]
+    await pipeline_configs_repo.upsert_for_user(user.sub, {"sources": sources})
+
+
+@router.post("/config/sources/{source_id}/test")
+async def test_source(
+    source_id: str,
+    user: CurrentUser = Depends(get_current_user),
+):
+    """Validate the source has the config fields its source_type needs.
+
+    This is a static shape check only — no external call is made. A real
+    connectivity check happens when the source is actually scanned, as part
+    of a run (POST /pipeline/runs → JobScoutService).
+    """
+    doc = await _get_or_create_doc(user.sub)
+    sources = list(doc.get("sources") or [])
+    source = _find_source(sources, source_id)
+
+    source_type = SourceType(source["source_type"])
+    required_fields = SOURCE_TYPE_REQUIRED_CONFIG_FIELDS.get(source_type, [])
+    config = source.get("config") or {}
+    encrypted_config = source.get("config_encrypted") or {}
+    missing_fields = [
+        field for field in required_fields
+        if not str(config.get(field, "")).strip() and not encrypted_config.get(field)
+    ]
+
+    if missing_fields:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "message": f"Source '{source['name']}' is missing required config fields.",
+                "missing_fields": missing_fields,
+            },
+        )
+
+    return {"ok": True, "message": f"Source '{source['name']}' has all required fields for {source_type.value}."}
+
+
+# ── Pipeline runs (Fase 2 — Agente 1 only, always manual) ──────────────────
+async def _enqueue_scan(run_id: str, config: Dict[str, Any]) -> bool:
+    """Hand the run to Celery without ever stalling the event loop.
+
+    `task.delay()` is synchronous and, with the broker unreachable, keeps
+    retrying the connection for ~2 minutes; called directly from this async
+    handler it froze every other request for that long. It runs in a worker
+    thread here and we stop waiting after TASK_ENQUEUE_TIMEOUT_SECONDS.
+
+    Returns True if the task was queued, False if the caller must run the scan
+    inline (broker down, error, or too slow). If a timed-out publish finishes
+    later, the task itself skips a run that is no longer `running`
+    (workers/tasks/pipeline_tasks.py).
+    """
+    try:
+        await asyncio.wait_for(
+            asyncio.to_thread(task_run_job_scout.delay, run_id, config),
+            timeout=TASK_ENQUEUE_TIMEOUT_SECONDS,
+        )
+        return True
+    except asyncio.TimeoutError:
+        logger.warning(
+            "Celery enqueue for run %s did not finish in %ss; running the scan inline.",
+            run_id, TASK_ENQUEUE_TIMEOUT_SECONDS,
+        )
+    except Exception:  # Redis/Celery unavailable
+        logger.info("Celery unavailable for run %s; running the scan inline.", run_id, exc_info=True)
+    return False
+
+
+async def _run_job_scout_now(run_id: str, config: Dict[str, Any]) -> None:
+    try:
+        try:
+            result = await job_scout_service.scan_all_sources(config, run_id)
+        except Exception as exc:
+            await job_scout_service.fail_run(run_id, str(exc))
+            raise
+        await job_scout_service.finalize_run(run_id, result)
+    finally:
+        await pipeline_run_locks_repo.release(config["id"], run_id)
+
+
+@router.post("/runs", status_code=status.HTTP_202_ACCEPTED, response_model=JobAccepted)
+@limiter.limit("10/minute")
+async def create_run(request: Request, user: CurrentUser = Depends(get_current_user)):
+    """Trigger a manual scan (Agente 1 only) for the caller's PipelineConfig.
+
+    Always explicit — there is no scheduled/automatic trigger in this
+    phase. Tries Celery first; if the broker is unreachable, falls back to
+    running synchronously in this request, same pattern as
+    routers/books.py.
+    """
+    config = await _get_or_create_doc(user.sub)
+    if not any(source.get("enabled") for source in (config.get("sources") or [])):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="No enabled sources configured for this pipeline.",
+        )
+
+    # One active run per config, enforced here (not just in the UI) with a
+    # Firestore-transaction lock so two simultaneous requests can't both pass.
+    run_id = new_id()
+    lock = await pipeline_run_locks_repo.try_acquire(
+        config["id"], run_id, RUN_CONSIDERED_DEAD_AFTER_SECONDS,
+    )
+    if not lock["acquired"]:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "message": "A run is already in progress for this pipeline.",
+                "run_id": lock["holder_run_id"],
+            },
+        )
+    if lock["stale_run_id"]:
+        # The previous run never released its lock (worker died): close it out.
+        try:
+            await job_scout_service.fail_run(
+                lock["stale_run_id"],
+                "Run presumed dead: it did not finish within the allowed time.",
+            )
+        except Exception:  # noqa: BLE001 — cleanup must not block the new run
+            logger.warning("could not close out stale run %s", lock["stale_run_id"], exc_info=True)
+
+    try:
+        run = await pipeline_runs_repo.create({
+            "pipeline_config_id": config["id"],
+            "user_id": user.sub,
+            "status": PipelineRunStatus.RUNNING.value,
+            "leads_found": 0,
+            "leads_new": 0,
+            "contacts_found": 0,
+            "emails_generated": 0,
+            "emails_auto_approved": 0,
+            "emails_pending_review": 0,
+            "emails_sent": 0,
+            "started_at": now_utc(),
+            "agent1_completed_at": None,
+            "agent2_completed_at": None,
+            "agent3_completed_at": None,
+            "completed_at": None,
+            "errors": [],
+        }, doc_id=run_id)
+    except Exception:
+        await pipeline_run_locks_repo.release(config["id"], run_id)
+        raise
+
+    if not await _enqueue_scan(run["id"], config):
+        # Redis/Celery no disponible (o demasiado lento) — ejecutar síncronamente
+        await _run_job_scout_now(run["id"], config)
+
+    return JobAccepted(job_id=run["id"])
+
+
+@router.get("/runs")
+async def list_runs(
+    limit: int = Query(20, ge=1, le=100),
+    user: CurrentUser = Depends(get_current_user),
+):
+    runs = await pipeline_runs_repo.list(
+        filters=[("user_id", "==", user.sub)],
+        order_by="createdAt",
+        order_direction="DESCENDING",
+        limit=limit,
+    )
+    return {"items": runs, "total": len(runs)}
+
+
+def _assert_run_owner(run: Dict[str, Any], user_id: str) -> None:
+    if run.get("user_id") != user_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied.")
+
+
+@router.get("/runs/active")
+async def get_active_run(user: CurrentUser = Depends(get_current_user)):
+    """The run currently in progress for the caller's config, or `{"run": null}`.
+    Lets the UI recover "a scan is running" after navigating away or reloading."""
+    config = await _get_or_create_doc(user.sub)
+    holder_run_id = await pipeline_run_locks_repo.get_active_run_id(config["id"])
+    if not holder_run_id:
+        return {"run": None}
+    run = await pipeline_runs_repo.get(holder_run_id)
+    if not run or run.get("user_id") != user.sub or run.get("status") != PipelineRunStatus.RUNNING.value:
+        return {"run": None}
+    return {"run": run}
+
+
+@router.get("/runs/{run_id}")
+async def get_run(run_id: str, user: CurrentUser = Depends(get_current_user)):
+    try:
+        run = await pipeline_runs_repo.get_or_404(run_id)
+    except KeyError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Run '{run_id}' not found.",
+        )
+    _assert_run_owner(run, user.sub)
+    return run
