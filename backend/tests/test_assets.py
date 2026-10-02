@@ -352,3 +352,67 @@ async def test_generate_infographic_falls_back_to_sync_when_celery_unavailable(c
     assert resp.json()["job_id"] == job["id"]
     generate.assert_awaited_once()
 
+
+@pytest.mark.asyncio
+async def test_download_asset_serves_local_file_directly(client, tmp_path):
+    from pathlib import Path
+    storage_path = "assets/test-download-direct.pdf"
+    local_file = Path("generated_files") / storage_path
+    local_file.parent.mkdir(parents=True, exist_ok=True)
+    local_file.write_bytes(b"%PDF-1.4 test local download")
+    try:
+        asset = fake_asset({"storagePath": storage_path})
+        with patch("app.routers.assets.assets_repo.get", new_callable=AsyncMock, return_value=asset):
+            resp = await client.get(f"{API}/assets/{asset['id']}/download")
+        assert resp.status_code == 200
+        assert resp.content == b"%PDF-1.4 test local download"
+        assert resp.headers["content-type"] == "application/pdf"
+    finally:
+        if local_file.exists():
+            local_file.unlink()
+
+
+@pytest.mark.asyncio
+async def test_get_local_asset_endpoint(client):
+    from pathlib import Path
+    storage_path = "assets/test-local-endpoint.pdf"
+    local_file = Path("generated_files") / storage_path
+    local_file.parent.mkdir(parents=True, exist_ok=True)
+    local_file.write_bytes(b"%PDF-1.4 local endpoint content")
+    try:
+        resp = await client.get(f"{API}/assets/local/{storage_path}")
+        assert resp.status_code == 200
+        assert resp.content == b"%PDF-1.4 local endpoint content"
+    finally:
+        if local_file.exists():
+            local_file.unlink()
+
+
+@pytest.mark.asyncio
+async def test_storage_service_falls_back_to_local_on_unbound_local_or_network_error():
+    from app.services.storage_service import storage_service
+    from pathlib import Path
+    storage_path = "assets/fallback_test.pdf"
+    content = b"%PDF-1.4 fallback bytes"
+
+    # Simulate storage3 raising UnboundLocalError
+    with patch("app.services.storage_service.get_supabase") as mock_sb:
+        mock_sb.return_value.storage.from_.return_value.upload.side_effect = UnboundLocalError(
+            "cannot access local variable 'response' where it is not associated with a value"
+        )
+        url = await storage_service.upload_bytes(content, storage_path, "application/pdf")
+        assert url == f"/api/v1/assets/local/{storage_path}"
+
+        local_file = Path("generated_files") / storage_path
+        assert local_file.exists()
+        assert local_file.read_bytes() == content
+
+        # Also verify signed url fallback
+        mock_sb.return_value.storage.from_.return_value.create_signed_url.side_effect = ConnectionError("unreachable")
+        signed_url = await storage_service.get_signed_url(storage_path)
+        assert signed_url == f"/api/v1/assets/local/{storage_path}"
+
+        # Clean up
+        await storage_service.delete_file(storage_path)
+        assert not local_file.exists()
+

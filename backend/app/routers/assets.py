@@ -14,9 +14,11 @@ Endpoints:
 from __future__ import annotations
 
 import logging
+import mimetypes
+from pathlib import Path
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import RedirectResponse
+from fastapi.responses import FileResponse, RedirectResponse
 
 from app.dependencies.auth import CurrentUser, get_current_user
 from app.schemas.asset import (
@@ -133,10 +135,38 @@ async def download_asset(
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found.")
     _assert_owner(asset, user)
-    if not asset.get("storagePath"):
+    storage_path = asset.get("storagePath")
+    if not storage_path:
         raise HTTPException(status_code=404, detail="File not available yet.")
-    url = await storage_service.get_signed_url(asset["storagePath"], expires_in_seconds=300)
+
+    local_path = (Path("generated_files") / storage_path).resolve()
+    base_dir = Path("generated_files").resolve()
+    if local_path.is_file() and str(local_path).startswith(str(base_dir)):
+        media_type, _ = mimetypes.guess_type(str(local_path))
+        filename = Path(storage_path).name
+        return FileResponse(
+            str(local_path),
+            media_type=media_type or "application/octet-stream",
+            filename=filename,
+        )
+
+    url = await storage_service.get_signed_url(storage_path, expires_in_seconds=300)
     return RedirectResponse(url=url)
+
+
+# ── Local Asset Serving ───────────────────────────────────────────────────────
+@router.get("/assets/local/{file_path:path}")
+async def get_local_asset(file_path: str):
+    base_dir = Path("generated_files").resolve()
+    target_path = (base_dir / file_path).resolve()
+    if not str(target_path).startswith(str(base_dir)) or not target_path.is_file():
+        raise HTTPException(status_code=404, detail="File not found.")
+    media_type, _ = mimetypes.guess_type(str(target_path))
+    return FileResponse(
+        str(target_path),
+        media_type=media_type or "application/octet-stream",
+        filename=target_path.name,
+    )
 
 
 # ── Generate one-pager ────────────────────────────────────────────────────────
