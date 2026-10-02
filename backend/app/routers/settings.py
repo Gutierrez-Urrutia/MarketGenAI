@@ -6,6 +6,13 @@ from pydantic import BaseModel
 from typing import Any, Dict, List, Optional
 
 from app.dependencies.auth import CurrentUser, get_current_user
+from app.services.crm_service import (
+    CrmAuthError,
+    CrmProviderError,
+    CrmTimeoutError,
+    HubSpotClient,
+    SalesforceClient,
+)
 from app.services.firestore_service import settings_repo
 
 router = APIRouter(prefix="/settings", tags=["Settings"])
@@ -35,11 +42,39 @@ def _redact_social_tokens(doc: Dict[str, Any]) -> Dict[str, Any]:
     return {**doc, "socialAccounts": redacted}
 
 
+def _redact_secret(value: str) -> str:
+    return f"••••{value[-4:]}" if len(value) >= 4 else "••••"
+
+
+def _redact_crm_key(doc: Dict[str, Any]) -> Dict[str, Any]:
+    """crm.apiKey (HubSpot) and crm.salesforce.{consumerKey,consumerSecret}
+    hold raw CRM provider credentials — never return them in clear text;
+    expose only whether one is configured plus a display hint."""
+    crm = doc.get("crm")
+    if not isinstance(crm, dict):
+        return doc
+    redacted = dict(crm)
+    if crm.get("apiKey"):
+        redacted["apiKey"] = _redact_secret(crm["apiKey"])
+        redacted["hasApiKey"] = True
+    salesforce = crm.get("salesforce")
+    if isinstance(salesforce, dict):
+        redacted_sf = dict(salesforce)
+        if salesforce.get("consumerKey"):
+            redacted_sf["consumerKey"] = _redact_secret(salesforce["consumerKey"])
+            redacted_sf["hasConsumerKey"] = True
+        if salesforce.get("consumerSecret"):
+            redacted_sf["consumerSecret"] = _redact_secret(salesforce["consumerSecret"])
+            redacted_sf["hasConsumerSecret"] = True
+        redacted["salesforce"] = redacted_sf
+    return {**doc, "crm": redacted}
+
+
 @router.get("")
 async def get_settings(user: CurrentUser = Depends(get_current_user)):
     """Return the current org settings (keyed by user.sub)."""
     doc = await settings_repo.get_by_user(user.sub)
-    return _redact_social_tokens(doc)
+    return _redact_crm_key(_redact_social_tokens(doc))
 
 
 @router.post("/crm/test-connection")
@@ -47,29 +82,33 @@ async def test_crm_connection(
     body: dict,
     user: CurrentUser = Depends(get_current_user),
 ):
-    import httpx
-    api_key = body.get("apiKey", "").strip()
     provider = body.get("provider", "hubspot").lower()
-    if not api_key:
-        raise HTTPException(status_code=400, detail="API key requerida")
-    if provider == "hubspot":
-        try:
-            async with httpx.AsyncClient(timeout=8) as client:
-                resp = await client.get(
-                    "https://api.hubapi.com/crm/v3/objects/contacts",
-                    params={"limit": 1},
-                    headers={"Authorization": f"Bearer {api_key}"},
+
+    try:
+        if provider == "hubspot":
+            api_key = body.get("apiKey", "").strip()
+            if not api_key:
+                raise HTTPException(status_code=400, detail="API key requerida")
+            return await HubSpotClient(api_key).test_connection()
+
+        if provider == "salesforce":
+            consumer_key = (body.get("consumerKey") or "").strip()
+            consumer_secret = (body.get("consumerSecret") or "").strip()
+            login_url = (body.get("loginUrl") or "").strip()
+            if not consumer_key or not consumer_secret or not login_url:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Consumer Key, Consumer Secret y Login URL son requeridos",
                 )
-            if resp.status_code == 200:
-                return {"status": "connected", "message": "Conexión exitosa con HubSpot"}
-            elif resp.status_code == 401:
-                raise HTTPException(status_code=401, detail="API key inválida o sin permisos")
-            else:
-                raise HTTPException(status_code=502, detail=f"HubSpot respondió con error {resp.status_code}")
-        except httpx.TimeoutException:
-            raise HTTPException(status_code=504, detail="Timeout al conectar con HubSpot")
-    else:
-        raise HTTPException(status_code=400, detail=f"Proveedor '{provider}' no soportado aún")
+            return await SalesforceClient(consumer_key, consumer_secret, login_url).test_connection()
+    except CrmAuthError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    except CrmTimeoutError as exc:
+        raise HTTPException(status_code=504, detail=str(exc)) from exc
+    except CrmProviderError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    raise HTTPException(status_code=400, detail=f"Proveedor '{provider}' no soportado aún")
 
 
 @router.put("")
@@ -82,11 +121,26 @@ async def update_settings(
     payload = body.model_dump(exclude_none=True)
     payload["userId"] = user.sub
 
-    # Mask any API keys before storing (basic protection)
-    if "crm" in payload and payload["crm"].get("apiKey"):
-        key = payload["crm"]["apiKey"]
-        if not all(c == "•" for c in key):       # only update if not masked
-            payload["crm"]["apiKey"] = key        # store as-is (encrypt at rest via Firestore rules)
+    # Firestore's update() replaces the whole `crm` map with whatever is
+    # passed here — merge onto the previously stored map so saving just
+    # {provider: ...} (e.g. from the general Preferences save) doesn't wipe
+    # out a separately-saved apiKey, and vice versa. If the client
+    # round-tripped the redacted "••••1234" placeholder from GET /settings
+    # unchanged, keep the real stored key instead of overwriting it.
+    if "crm" in payload:
+        existing_crm = (existing or {}).get("crm") or {}
+        merged_crm = {**existing_crm, **payload["crm"]}
+        if merged_crm.get("apiKey", "").startswith("••••"):
+            merged_crm["apiKey"] = existing_crm.get("apiKey", "")
+        if "salesforce" in payload["crm"]:
+            existing_sf = existing_crm.get("salesforce") or {}
+            merged_sf = {**existing_sf, **payload["crm"]["salesforce"]}
+            if merged_sf.get("consumerKey", "").startswith("••••"):
+                merged_sf["consumerKey"] = existing_sf.get("consumerKey", "")
+            if merged_sf.get("consumerSecret", "").startswith("••••"):
+                merged_sf["consumerSecret"] = existing_sf.get("consumerSecret", "")
+            merged_crm["salesforce"] = merged_sf
+        payload["crm"] = merged_crm
 
     if existing:
         return await settings_repo.update(user.sub, payload)

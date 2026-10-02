@@ -41,8 +41,15 @@ from app.schemas.proposal import (
     ProposalVersionCreate,
     SendToCrmRequest,
 )
-from app.services.firestore_service import opportunities_repo, proposals_repo, jobs_repo
+from app.services.firestore_service import opportunities_repo, proposals_repo, jobs_repo, settings_repo
 from app.services import deepseek_service
+from app.services.crm_service import (
+    CrmAuthError,
+    CrmProviderError,
+    CrmTimeoutError,
+    HubSpotClient,
+    SalesforceClient,
+)
 from app.services.rag_netprovider import get_rag_context
 from app.rendering.brand_styles import (
     BRAND_BORDER,
@@ -110,16 +117,24 @@ def _format_usd(value) -> str:
     return f"${amount:,.0f} USD"
 
 
-def _proposal_cover_fields(proposal: dict) -> dict:
-    """Pulls the cover-page metadata (client, total, dates...) used by both
-    the PDF and DOCX exports, mirroring normalizeProposalDocument() on the frontend."""
+def _resolve_total_amount(proposal: dict):
+    """The frontend has saved this under totalAmount, total_amount, or nested
+    in structured(_)Content.totalAmount depending on which flow wrote it —
+    check all three rather than assuming one key."""
     structured = proposal.get("structured_content") or proposal.get("structuredContent") or {}
-
     total_amount = proposal.get("totalAmount")
     if total_amount is None:
         total_amount = proposal.get("total_amount")
     if total_amount is None:
         total_amount = structured.get("totalAmount")
+    return total_amount
+
+
+def _proposal_cover_fields(proposal: dict) -> dict:
+    """Pulls the cover-page metadata (client, total, dates...) used by both
+    the PDF and DOCX exports, mirroring normalizeProposalDocument() on the frontend."""
+    structured = proposal.get("structured_content") or proposal.get("structuredContent") or {}
+    total_amount = _resolve_total_amount(proposal)
 
     created_at = proposal.get("createdAt") or proposal.get("created_at")
     issued_on = None
@@ -897,12 +912,99 @@ async def send_proposal_to_crm(
     user: CurrentUser = Depends(get_current_user),
 ):
     proposal = await _get_proposal_for_user(proposal_id, user.sub)
-    crm_sync = {
-        "provider": body.provider or "manual",
-        "status": "queued",
-        "queuedAt": datetime.now(timezone.utc).isoformat(),
-        "clientName": proposal.get("clientName"),
-    }
+
+    client_email = proposal.get("clientEmail")
+    if not client_email:
+        raise HTTPException(
+            status_code=400,
+            detail="La propuesta no tiene un email de cliente. Edítala para agregarlo antes de enviarla al CRM.",
+        )
+
+    requested_provider = (body.provider or "").strip().lower() or None
+    if requested_provider and requested_provider not in ("hubspot", "salesforce"):
+        raise HTTPException(status_code=400, detail=f"Proveedor '{requested_provider}' no soportado aún")
+
+    org_settings = await settings_repo.get_by_user(user.sub)
+    crm_settings = org_settings.get("crm") or {}
+    existing_sync = proposal.get("crmSync") or {}
+    total_amount = _resolve_total_amount(proposal)
+
+    # The frontend doesn't always know which provider is configured (e.g. the
+    # Proposals view has no access to the Settings page's React state), so
+    # fall back to whatever the user has saved in Settings -> Integrations.
+    provider = requested_provider or (crm_settings.get("provider") or "hubspot").lower()
+    if provider not in ("hubspot", "salesforce"):
+        raise HTTPException(status_code=400, detail=f"Proveedor '{provider}' no soportado aún")
+
+    try:
+        if provider == "hubspot":
+            api_key = crm_settings.get("apiKey")
+            if not api_key:
+                raise HTTPException(status_code=400, detail="No hay una integración de CRM configurada en Ajustes.")
+
+            hubspot = HubSpotClient(api_key)
+            contact_id = await hubspot.upsert_contact(
+                email=client_email,
+                name=proposal.get("clientName"),
+                company=proposal.get("clientCompany"),
+            )
+            deal_id = await hubspot.upsert_deal(
+                deal_id=existing_sync.get("hubspotDealId"),
+                dealname=proposal.get("title"),
+                amount=total_amount,
+                contact_id=contact_id,
+            )
+            crm_sync = {
+                "provider": "hubspot",
+                "status": "synced",
+                "syncedAt": datetime.now(timezone.utc).isoformat(),
+                "hubspotContactId": contact_id,
+                "hubspotDealId": deal_id,
+            }
+        else:
+            sf_settings = crm_settings.get("salesforce") or {}
+            consumer_key = sf_settings.get("consumerKey")
+            consumer_secret = sf_settings.get("consumerSecret")
+            login_url = sf_settings.get("loginUrl")
+            if not consumer_key or not consumer_secret or not login_url:
+                raise HTTPException(status_code=400, detail="No hay una integración de CRM configurada en Ajustes.")
+
+            salesforce = SalesforceClient(consumer_key, consumer_secret, login_url)
+            account_name = proposal.get("clientCompany") or proposal.get("clientName") or "Untitled Account"
+            account_id = await salesforce.upsert_account(account_name)
+            contact_id = await salesforce.upsert_contact(
+                email=client_email,
+                name=proposal.get("clientName"),
+                account_id=account_id,
+            )
+            opportunity_id = await salesforce.upsert_opportunity(
+                opportunity_id=existing_sync.get("salesforceOpportunityId"),
+                name=proposal.get("title"),
+                amount=total_amount,
+                account_id=account_id,
+                contact_id=contact_id,
+            )
+            crm_sync = {
+                "provider": "salesforce",
+                "status": "synced",
+                "syncedAt": datetime.now(timezone.utc).isoformat(),
+                "salesforceAccountId": account_id,
+                "salesforceContactId": contact_id,
+                "salesforceOpportunityId": opportunity_id,
+            }
+    except CrmAuthError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    except CrmTimeoutError as exc:
+        raise HTTPException(status_code=504, detail=str(exc)) from exc
+    except CrmProviderError as exc:
+        await proposals_repo.update(proposal_id, {"crmSync": {
+            "provider": provider,
+            "status": "failed",
+            "error": str(exc),
+            "syncedAt": datetime.now(timezone.utc).isoformat(),
+        }})
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
     return await proposals_repo.update(proposal_id, {"crmSync": crm_sync})
 
 
