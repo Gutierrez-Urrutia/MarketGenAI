@@ -87,3 +87,4 @@ backend/generated_files/*
 !backend/generated_files/.gitkeep
 generated_files/*
 *.log
+*.md
