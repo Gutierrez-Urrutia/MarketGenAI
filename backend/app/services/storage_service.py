@@ -54,9 +54,9 @@ def _upload_bytes_sync(
         )
 
         return sb.storage.from_(BUCKET).get_public_url(storage_path)
-    except RuntimeError as exc:
+    except Exception as exc:
         logger.warning(
-            "⚠️ [Storage] %s. Guardando archivo localmente en 'generated_files/%s'",
+            "⚠️ [Storage] Fallo al subir a Supabase (%s). Guardando archivo localmente en 'generated_files/%s'",
             exc,
             storage_path,
         )
@@ -81,8 +81,15 @@ def _get_signed_url_sync(storage_path: str, expires_in_seconds: int = 3600) -> s
             storage_path,
             expires_in_seconds,
         )
-        return response["signedURL"]
-    except RuntimeError:
+        if isinstance(response, dict) and "signedURL" in response:
+            return response["signedURL"]
+        return f"/api/v1/assets/local/{storage_path}"
+    except Exception as exc:
+        logger.warning(
+            "⚠️ [Storage] Fallo al obtener URL firmada de Supabase (%s). Usando fallback local para '%s'",
+            exc,
+            storage_path,
+        )
         return f"/api/v1/assets/local/{storage_path}"
 
 
@@ -90,10 +97,11 @@ def _delete_file_sync(storage_path: str) -> None:
     try:
         sb = get_supabase()
         sb.storage.from_(BUCKET).remove([storage_path])
-    except RuntimeError:
-        local_dest = Path("generated_files") / storage_path
-        if local_dest.exists():
-            local_dest.unlink()
+    except Exception:
+        pass
+    local_dest = Path("generated_files") / storage_path
+    if local_dest.exists():
+        local_dest.unlink()
 
 
 

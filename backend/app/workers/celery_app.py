@@ -9,6 +9,7 @@ Queues:
   llm      — LLM generation tasks (may be scaled independently)
   exports  — document export tasks
 """
+import ssl
 from celery import Celery
 from app.config import settings
 
@@ -28,10 +29,13 @@ def _result_backend_url() -> str:
     return settings.redis_url or DEFAULT_RESULT_BACKEND
 
 
+_broker = _broker_url()
+_backend = _result_backend_url()
+
 celery_app = Celery(
     "nd_marketing",
-    broker=_broker_url(),
-    backend=_result_backend_url(),
+    broker=_broker,
+    backend=_backend,
     include=[
         "app.workers.tasks.pilot_tasks",
         "app.workers.tasks.content_tasks",
@@ -43,6 +47,7 @@ celery_app = Celery(
 )
 
 celery_app.conf.update(
+    task_default_queue="default",
     task_serializer="json",
     accept_content=["json"],
     result_serializer="json",
@@ -51,16 +56,23 @@ celery_app.conf.update(
     task_track_started=True,
     task_acks_late=True,                   # ack only after task completes
     worker_prefetch_multiplier=1,           # one task at a time per worker
-    # NOTE: these bound ONE connection attempt / the worker's own reconnects. They do
-    # NOT make `task.delay()` fail fast: publishing keeps retrying, and with Redis
-    # down `.delay()` was measured at ~109 s (44 attempts x ~2 s on Windows). Never
-    # call `.delay()` directly on the event loop: use a thread with a hard timeout,
-    # as routers/pipeline._enqueue_scan does (TASK_ENQUEUE_TIMEOUT_SECONDS).
-    broker_connection_timeout=2,            # per connection attempt
-    broker_connection_retry_on_startup=False,
-    broker_connection_max_retries=1,        # worker reconnects; not the publish retry loop
-    broker_transport_options={"socket_connect_timeout": 2, "socket_timeout": 2},
-    result_backend_transport_options={"socket_connect_timeout": 2, "socket_timeout": 2},
+    task_publish_retry=False,
+    task_publish_retry_policy={"max_retries": 1},
+    broker_connection_timeout=5,            # per connection attempt
+    broker_connection_retry_on_startup=True,
+    broker_connection_max_retries=3,
+    broker_transport_options={
+        "socket_connect_timeout": 5,
+        "socket_timeout": 5,
+        "socket_keepalive": True,
+        "health_check_interval": 25,
+    },
+    result_backend_transport_options={
+        "socket_connect_timeout": 5,
+        "socket_timeout": 5,
+        "socket_keepalive": True,
+        "health_check_interval": 25,
+    },
     task_routes={
         "app.workers.tasks.content_tasks.*": {"queue": "llm"},
         "app.workers.tasks.asset_tasks.*": {"queue": "llm"},
@@ -70,3 +82,15 @@ celery_app.conf.update(
     },
     beat_schedule={},                       # add periodic tasks here if needed
 )
+
+# Soporte para Upstash Redis y conexiones seguras (rediss://)
+if _broker.startswith("rediss://"):
+    celery_app.conf.update(
+        broker_use_ssl={"ssl_cert_reqs": ssl.CERT_NONE},
+    )
+
+if _backend.startswith("rediss://"):
+    celery_app.conf.update(
+        redis_backend_use_ssl={"ssl_cert_reqs": ssl.CERT_NONE},
+    )
+

@@ -467,7 +467,7 @@ export const pipelineApi = {
   deleteSource: (id) => api.delete(`/pipeline/config/sources/${id}`),
   testSource: (id) => api.post(`/pipeline/config/sources/${id}/test`),
   // Fase 2 — Agente 1, siempre disparado a mano (ver job_scout_service.py)
-  runScan: () => api.post('/pipeline/runs', undefined, { timeout: SCAN_REQUEST_TIMEOUT_MS }),
+  runScan: (data) => api.post('/pipeline/runs', data, { timeout: SCAN_REQUEST_TIMEOUT_MS }),
   listRuns: (params) => api.get('/pipeline/runs', { params, timeout: READ_TIMEOUT_MS }),
   getRun: (id) => api.get(`/pipeline/runs/${id}`, { timeout: READ_TIMEOUT_MS }),
   getActiveRun: () => api.get('/pipeline/runs/active', { timeout: READ_TIMEOUT_MS }),

@@ -14,13 +14,12 @@ app.services.encryption_service before being persisted as
 `smtp_password_configured` boolean so the frontend can show "configured"
 without ever getting the secret back.
 """
-from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, status
 
 from app.core import url_safety
 from app.core.pipeline_constants import (
@@ -39,6 +38,7 @@ from app.schemas.pipeline import (
     JobSourceUpdate,
     PipelineConfigUpdate,
     PipelineKeywordsUpdate,
+    PipelineRunCreateRequest,
     PipelineRunStatus,
     SourceType,
 )
@@ -50,7 +50,7 @@ from app.services.firestore_service import (
     pipeline_run_locks_repo,
     pipeline_runs_repo,
 )
-from app.workers.tasks.pipeline_tasks import task_run_job_scout
+from app.workers.tasks.pipeline_tasks import run_job_scout_now, task_run_job_scout
 
 logger = logging.getLogger(__name__)
 
@@ -387,13 +387,17 @@ async def _run_job_scout_now(run_id: str, config: Dict[str, Any]) -> None:
 
 @router.post("/runs", status_code=status.HTTP_202_ACCEPTED, response_model=JobAccepted)
 @limiter.limit("10/minute")
-async def create_run(request: Request, user: CurrentUser = Depends(get_current_user)):
+async def create_run(
+    request: Request,
+    body: Optional[PipelineRunCreateRequest] = Body(None),
+    user: CurrentUser = Depends(get_current_user),
+):
     """Trigger a manual scan (Agente 1 only) for the caller's PipelineConfig.
 
     Always explicit — there is no scheduled/automatic trigger in this
-    phase. Tries Celery first; if the broker is unreachable, falls back to
-    running synchronously in this request, same pattern as
-    routers/books.py.
+    phase. Tries Celery first; if the broker is unreachable or sync=True is
+    requested, falls back to running synchronously in this request, same
+    pattern as routers/campaigns.py and routers/books.py.
     """
     config = await _get_or_create_doc(user.sub)
     if not any(source.get("enabled") for source in (config.get("sources") or [])):
@@ -448,6 +452,11 @@ async def create_run(request: Request, user: CurrentUser = Depends(get_current_u
     except Exception:
         await pipeline_run_locks_repo.release(config["id"], run_id)
         raise
+
+    is_sync = getattr(body, "sync", False) if body else False
+    if is_sync:
+        await _run_job_scout_now(run["id"], config)
+        return JobAccepted(job_id=run["id"])
 
     if not await _enqueue_scan(run["id"], config):
         # Redis/Celery no disponible (o demasiado lento) — ejecutar síncronamente
