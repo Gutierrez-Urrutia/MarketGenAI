@@ -64,6 +64,13 @@ RELEVANCE_SCORING_TIMEOUT_SECONDS = 45
 # RELEVANCE_SCORING_BATCH_SIZE postings stays a bounded prompt size.
 POSTING_DESCRIPTION_MAX_CHARS = 600
 
+# ── Agente 2 — Lead Researcher ──────────────────────────────────────────────
+# Total budget for verifying one email address: every DNS query it makes
+# (MX, then A/AAAA when there is no MX) shares this one deadline, so a single
+# verification never takes longer than this — see
+# email_verification_service.verify_email.
+EMAIL_MX_TIMEOUT_SECONDS = 5
+
 # ── Scraper adapter — responsible scraping ──────────────────────────────────
 # Identifies the bot to site operators (robots.txt, server logs) instead of
 # spoofing a browser user-agent. The scraper source's URL and selectors are
