@@ -429,6 +429,14 @@ export const settingsApi = {
   put: (data) => api.put('/settings', data),
 }
 
+export const crmApi = {
+  status: () => api.get('/settings/crm/status'),
+  testConnection: (data) => api.post('/settings/crm/test-connection', data),
+  connect: (provider, data) => api.post(`/settings/crm/${provider}/connect`, data),
+  disconnect: (provider) => api.delete(`/settings/crm/${provider}`),
+  setActiveProvider: (activeProvider) => api.put('/settings/crm/active-provider', { activeProvider }),
+}
+
 export const socialApi = {
   status: () => api.get('/settings/social/status'),
   connectFacebook: () => api.post('/settings/social/facebook/connect'),

@@ -18,7 +18,7 @@ import {
   WidthType,
 } from "docx";
 import { getDashboardData } from "./api/dashboardApi";
-import api, { authApi, authTokenStore, campaignsApi, opportunitiesApi, reportsApi, settingsApi, socialApi } from "./api/axios";
+import api, { authApi, authTokenStore, campaignsApi, crmApi, opportunitiesApi, reportsApi, settingsApi, socialApi } from "./api/axios";
 import { useI18n } from "./hooks/useI18n";
 import { useLanguage } from "./context/LanguageContext";
 import { useTheme } from "./context/ThemeContext";
@@ -9004,14 +9004,13 @@ function SettingsPage({ navigationState = {} }) {
   const [socialStatus, setSocialStatus] = useState(null);
   const [socialBusy, setSocialBusy] = useState(false);
   const [settingsSaving, setSettingsSaving] = useState(false);
-  const [crmApiKey, setCrmApiKey] = useState("");
-  const [crmProvider, setCrmProvider] = useState("hubspot");
-  const [crmConsumerKey, setCrmConsumerKey] = useState("");
-  const [crmConsumerSecret, setCrmConsumerSecret] = useState("");
-  const [crmLoginUrl, setCrmLoginUrl] = useState("");
+  const [crmStatus, setCrmStatus] = useState(null);
+  const [crmModal, setCrmModal] = useState(null); // null or { provider, l, c, ok }
+  const [crmForm, setCrmForm] = useState({ apiKey: "", consumerKey: "", consumerSecret: "", loginUrl: "" });
   const [crmTestStatus, setCrmTestStatus] = useState(null);
   const [crmTestMessage, setCrmTestMessage] = useState("");
   const [crmSaving, setCrmSaving] = useState(false);
+  const [crmActiveSaving, setCrmActiveSaving] = useState(false);
   const [settingsTemplates, setSettingsTemplates] = useState([]);
   const [editingTemplateId, setEditingTemplateId] = useState(null);
   const [templateNameDraft, setTemplateNameDraft] = useState("");
@@ -9120,6 +9119,19 @@ function SettingsPage({ navigationState = {} }) {
     refreshSocialStatus();
   }, []);
 
+  const refreshCrmStatus = async () => {
+    try {
+      const { data } = await crmApi.status();
+      setCrmStatus(data);
+    } catch (error) {
+      console.error(error);
+    }
+  };
+
+  useEffect(() => {
+    refreshCrmStatus();
+  }, []);
+
   useEffect(() => {
     let mounted = true;
     settingsApi.get()
@@ -9131,11 +9143,6 @@ function SettingsPage({ navigationState = {} }) {
         setDateFormat(savedDateFormat);
         localStorage.setItem(PREF_KEYS.timezone, savedTimezone);
         localStorage.setItem(PREF_KEYS.dateFormat, savedDateFormat);
-        if (data?.crm?.provider) setCrmProvider(data.crm.provider);
-        if (data?.crm?.apiKey) setCrmApiKey(data.crm.apiKey);
-        if (data?.crm?.salesforce?.consumerKey) setCrmConsumerKey(data.crm.salesforce.consumerKey);
-        if (data?.crm?.salesforce?.consumerSecret) setCrmConsumerSecret(data.crm.salesforce.consumerSecret);
-        if (data?.crm?.salesforce?.loginUrl) setCrmLoginUrl(data.crm.salesforce.loginUrl);
       })
       .catch((error) => console.error(error));
     return () => {
@@ -9229,7 +9236,6 @@ function SettingsPage({ navigationState = {} }) {
         timezone,
         dateFormat,
         llm: { model },
-        crm: { provider: crmProvider },
       });
       setToast({ type: "success", message: t("settings.saved") });
     } catch (error) {
@@ -9240,21 +9246,32 @@ function SettingsPage({ navigationState = {} }) {
     }
   };
 
-  const crmIntegrationPayload = () => (
-    crmProvider === "salesforce"
-      ? { provider: crmProvider, consumerKey: crmConsumerKey, consumerSecret: crmConsumerSecret, loginUrl: crmLoginUrl }
-      : { provider: crmProvider, apiKey: crmApiKey }
-  );
+  const openCrmModal = (entry) => {
+    const saved = crmStatus?.connections?.[entry.provider] || {};
+    setCrmModal(entry);
+    setCrmForm({
+      apiKey: saved.apiKeyLast4 ? `••••${saved.apiKeyLast4}` : "",
+      consumerKey: saved.consumerKeyLast4 ? `••••${saved.consumerKeyLast4}` : "",
+      consumerSecret: saved.consumerSecretLast4 ? `••••${saved.consumerSecretLast4}` : "",
+      loginUrl: saved.loginUrl || "",
+    });
+    setCrmTestStatus(null);
+    setCrmTestMessage("");
+  };
 
-  const crmIntegrationReady = crmProvider === "salesforce"
-    ? Boolean(crmConsumerKey.trim() && crmConsumerSecret.trim() && crmLoginUrl.trim())
-    : Boolean(crmApiKey.trim());
+  const crmIntegrationReady = crmModal?.provider === "salesforce"
+    ? Boolean(crmForm.consumerKey.trim() && crmForm.consumerSecret.trim() && crmForm.loginUrl.trim())
+    : Boolean(crmForm.apiKey.trim());
 
   const testCrmConnection = async () => {
+    if (!crmModal) return;
     setCrmTestStatus("testing");
     setCrmTestMessage("");
+    const payload = crmModal.provider === "salesforce"
+      ? { provider: "salesforce", consumerKey: crmForm.consumerKey, consumerSecret: crmForm.consumerSecret, loginUrl: crmForm.loginUrl }
+      : { provider: "hubspot", apiKey: crmForm.apiKey };
     try {
-      const { data } = await api.post("/settings/crm/test-connection", crmIntegrationPayload());
+      const { data } = await crmApi.testConnection(payload);
       setCrmTestStatus("connected");
       setCrmTestMessage(data.message || "Conexión exitosa");
     } catch (err) {
@@ -9263,16 +9280,16 @@ function SettingsPage({ navigationState = {} }) {
     }
   };
 
-  const saveCrmIntegration = async () => {
+  const saveCrmConnection = async () => {
+    if (!crmModal) return;
     setCrmSaving(true);
     try {
-      const payload = crmProvider === "salesforce"
-        ? { provider: crmProvider, salesforce: { consumerKey: crmConsumerKey, consumerSecret: crmConsumerSecret, loginUrl: crmLoginUrl } }
-        : { provider: crmProvider, apiKey: crmApiKey };
-      const { data } = await settingsApi.update({ crm: payload });
-      if (data?.crm?.apiKey) setCrmApiKey(data.crm.apiKey);
-      if (data?.crm?.salesforce?.consumerKey) setCrmConsumerKey(data.crm.salesforce.consumerKey);
-      if (data?.crm?.salesforce?.consumerSecret) setCrmConsumerSecret(data.crm.salesforce.consumerSecret);
+      const payload = crmModal.provider === "salesforce"
+        ? { consumerKey: crmForm.consumerKey, consumerSecret: crmForm.consumerSecret, loginUrl: crmForm.loginUrl }
+        : { apiKey: crmForm.apiKey };
+      await crmApi.connect(crmModal.provider, payload);
+      await refreshCrmStatus();
+      setCrmModal(null);
       setToast({ type: "success", message: t("settings.saved") });
     } catch (error) {
       console.error(error);
@@ -9281,6 +9298,53 @@ function SettingsPage({ navigationState = {} }) {
       setCrmSaving(false);
     }
   };
+
+  const disconnectCrmProvider = async (provider = crmModal?.provider) => {
+    if (!provider) return;
+    setCrmSaving(true);
+    try {
+      await crmApi.disconnect(provider);
+      await refreshCrmStatus();
+      setCrmModal(null);
+      setToast({ type: "success", message: t("settings.socialDisconnected") });
+    } catch (error) {
+      console.error(error);
+      setToast({ type: "error", message: getApiErrorMessage(error, "Could not disconnect.") });
+    } finally {
+      setCrmSaving(false);
+    }
+  };
+
+  const setActiveCrmProvider = async (value) => {
+    setCrmActiveSaving(true);
+    try {
+      const { data } = await crmApi.setActiveProvider(value);
+      setCrmStatus(data);
+      setToast({ type: "success", message: t("settings.saved") });
+    } catch (error) {
+      console.error(error);
+      setToast({ type: "error", message: getApiErrorMessage(error, "Could not update active CRM provider.") });
+    } finally {
+      setCrmActiveSaving(false);
+    }
+  };
+
+  const crmProviders = [
+    {
+      provider: "hubspot",
+      l: "HubSpot",
+      c: "bg-orange-500",
+      ok: Boolean(crmStatus?.connections?.hubspot?.connected),
+      detail: crmStatus?.connections?.hubspot?.apiKeyLast4 ? `Key ••••${crmStatus.connections.hubspot.apiKeyLast4}` : "",
+    },
+    {
+      provider: "salesforce",
+      l: "Salesforce",
+      c: "bg-blue-400",
+      ok: Boolean(crmStatus?.connections?.salesforce?.connected),
+      detail: crmStatus?.connections?.salesforce?.loginUrl || "",
+    },
+  ];
 
   const socialChannels = [
     { platform: "linkedin", l: "LinkedIn", c: "bg-blue-600", ok: Boolean(socialStatus?.linkedin?.connected), user: socialStatus?.linkedin?.user || "" },
@@ -9408,7 +9472,18 @@ function SettingsPage({ navigationState = {} }) {
           </p>
         </SettingsSection>
         <SettingsSection isDark={isDark} title={t("settings.integrations")} IconComp={PlugIcon}>
-          <Field label={t("settings.crmProvider")}><Select className={settingsControlClass}><option>{t("settings.noCRM")}</option><option>HubSpot</option><option>Salesforce</option></Select></Field>
+          <Field label={t("settings.crmProvider")}>
+            <Select
+              className={settingsControlClass}
+              value={crmStatus?.activeProvider || "none"}
+              onChange={(event) => setActiveCrmProvider(event.target.value)}
+              disabled={crmActiveSaving}
+            >
+              <option value="none">{t("settings.noCRM")}</option>
+              {crmStatus?.connections?.hubspot?.connected && <option value="hubspot">HubSpot</option>}
+              {crmStatus?.connections?.salesforce?.connected && <option value="salesforce">Salesforce</option>}
+            </Select>
+          </Field>
           <p className="text-xs text-gray-400 mt-1">{t("settings.integrationDescription")}</p>
         </SettingsSection>
         <SettingsSection isDark={isDark} title={t("settings.socialConnections")} IconComp={Share2Icon} desc={t("settings.socialDescription")}>
@@ -9624,39 +9699,26 @@ function SettingsPage({ navigationState = {} }) {
 
       {tab === "integrations" && (<>
         <SettingsSection isDark={isDark} title="CRM Integration" IconComp={PlugIcon} desc="Connect proposal upload and opportunity sync">
-          <div className="grid grid-cols-2 gap-1.5">
-            <Field label="CRM Provider"><Select className={settingsControlClass} value={crmProvider} onChange={(event) => setCrmProvider(event.target.value)}><option value="hubspot">HubSpot</option><option value="salesforce">Salesforce</option><option value="custom">Custom CRM</option></Select></Field>
-            <Field label="Connection status">
-              <Badge
-                label={crmTestStatus === "connected" ? "Connected" : crmTestStatus === "error" ? "Connection failed" : crmTestStatus === "testing" ? "Testing..." : "Not tested"}
-                color={
-                  crmTestStatus === "connected"
-                    ? (isDark ? "bg-green-500/10 text-green-200 border border-green-400/20" : "bg-green-100 text-green-700")
-                    : crmTestStatus === "error"
-                    ? (isDark ? "bg-red-500/10 text-red-200 border border-red-400/20" : "bg-red-100 text-red-700")
-                    : (isDark ? "bg-amber-500/10 text-amber-200 border border-amber-400/20" : "bg-yellow-100 text-yellow-700")
-                }
-              />
-            </Field>
-            {crmProvider === "salesforce" ? (<>
-              <Field label="Consumer Key"><Input className={settingsControlClass} type="password" value={crmConsumerKey} onChange={(event) => setCrmConsumerKey(event.target.value)} placeholder="Connected App Consumer Key" /></Field>
-              <Field label="Consumer Secret"><Input className={settingsControlClass} type="password" value={crmConsumerSecret} onChange={(event) => setCrmConsumerSecret(event.target.value)} placeholder="Connected App Consumer Secret" /></Field>
-              <Field label="Login URL">
-                <Input className={settingsControlClass} value={crmLoginUrl} onChange={(event) => setCrmLoginUrl(event.target.value)} placeholder="https://login.salesforce.com" />
-                <p className="text-xs text-gray-400 mt-1">Use https://test.salesforce.com for a sandbox, or your org's My Domain URL.</p>
-              </Field>
-            </>) : (
-              <Field label="CRM API key"><Input className={settingsControlClass} type="password" value={crmApiKey} onChange={(event) => setCrmApiKey(event.target.value)} placeholder="Paste CRM API key" /></Field>
-            )}
-          </div>
-          <div className="flex items-center justify-end gap-1">
-            {crmTestStatus === "connected" && (
-              <span style={{ color: "#16a34a", fontSize: 13, fontWeight: 600 }}>✓ {crmTestMessage}</span>
-            )}
-            {crmTestStatus === "error" && (
-              <span style={{ color: "#dc2626", fontSize: 13, fontWeight: 600 }}>✗ {crmTestMessage}</span>
-            )}
-            <Btn variant="secondary" icon={crmTestStatus === "testing" ? <span className="h-3 w-3 animate-spin rounded-full border-2 border-current border-t-transparent" /> : <PlayIcon size={12} />} onClick={testCrmConnection} disabled={!crmIntegrationReady || crmTestStatus === "testing"}>{crmTestStatus === "testing" ? "Testing..." : "Test Connection"}</Btn><Btn icon={<SaveIcon size={12} />} onClick={saveCrmIntegration} disabled={!crmIntegrationReady || crmSaving}>{crmSaving ? "Saving..." : "Save Integration"}</Btn>
+          <div className="grid grid-cols-2 gap-1">
+            {crmProviders.map((p) => (
+              <div key={p.provider} className={`flex items-center justify-between ${settingsPanelClass}`}>
+                <div className="flex items-center gap-1.5">
+                  <div className={`w-7 h-7 rounded-lg ${p.c} flex items-center justify-center`}>
+                    <span className="text-white text-xs font-bold">{p.l[0]}</span>
+                  </div>
+                  <div>
+                    <span className={`text-xs font-medium ${isDark ? "text-slate-200" : "text-gray-800"}`}>{p.l}</span>
+                    {p.ok && p.detail && <p className="text-xs text-gray-400">{p.detail}</p>}
+                  </div>
+                </div>
+                <div className="flex items-center gap-1">
+                  <Badge label={p.ok ? t("settings.connected") : t("settings.notConnected")} color={settingsStatusBadgeColor(p.ok ? "Connected" : "Not connected")} />
+                  <button onClick={() => openCrmModal(p)} className={`p-1.5 rounded-lg border border-transparent transition-colors ${isDark ? "hover:bg-slate-700 hover:border-white/10" : "hover:bg-white hover:border-gray-200"}`}>
+                    <GearIcon size={12} className="text-gray-400" />
+                  </button>
+                </div>
+              </div>
+            ))}
           </div>
         </SettingsSection>
         <SettingsSection isDark={isDark} title="Social Connections" IconComp={Share2Icon} desc="Publishing destinations for generated social assets">
@@ -9735,6 +9797,58 @@ function SettingsPage({ navigationState = {} }) {
                     {socialModal.ok ? "Save connection" : "Connect"}
                   </Btn>
                 )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {tab === "integrations" && crmModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => setCrmModal(null)} />
+          <div className={`relative rounded-2xl shadow-2xl w-full max-w-md mx-4 ${isDark ? "bg-slate-800 border border-white/10" : "bg-white"}`}>
+            <div className={`flex items-center justify-between p-3 border-b ${isDark ? "border-white/10" : "border-gray-100"}`}>
+              <div className="flex items-center gap-1.5">
+                <div className={`w-9 h-9 rounded-xl ${crmModal.c} flex items-center justify-center`}>
+                  <span className="text-white text-sm font-bold">{crmModal.l[0]}</span>
+                </div>
+                <div>
+                  <h2 className={`text-sm font-semibold ${isDark ? "text-white" : "text-gray-900"}`}>{crmModal.l}</h2>
+                  <p className="text-xs text-gray-400">{crmModal.ok ? "Edit connection settings" : "Connect your account"}</p>
+                </div>
+              </div>
+              <button onClick={() => setCrmModal(null)} className={`p-1.5 rounded-lg transition-colors ${isDark ? "hover:bg-slate-700" : "hover:bg-gray-100"}`}><XIcon size={16} className="text-gray-400" /></button>
+            </div>
+            <div className="p-3 space-y-1.5">
+              {crmModal.provider === "salesforce" ? (<>
+                <Field label="Consumer Key"><Input className={settingsControlClass} type="password" value={crmForm.consumerKey} onChange={(event) => setCrmForm((current) => ({ ...current, consumerKey: event.target.value }))} placeholder="Connected App Consumer Key" /></Field>
+                <Field label="Consumer Secret"><Input className={settingsControlClass} type="password" value={crmForm.consumerSecret} onChange={(event) => setCrmForm((current) => ({ ...current, consumerSecret: event.target.value }))} placeholder="Connected App Consumer Secret" /></Field>
+                <Field label="Login URL">
+                  <Input className={settingsControlClass} value={crmForm.loginUrl} onChange={(event) => setCrmForm((current) => ({ ...current, loginUrl: event.target.value }))} placeholder="https://login.salesforce.com" />
+                  <p className="text-xs text-gray-400 mt-1">Use https://test.salesforce.com for a sandbox, or your org's My Domain URL.</p>
+                </Field>
+              </>) : (
+                <Field label="CRM API key"><Input className={settingsControlClass} type="password" value={crmForm.apiKey} onChange={(event) => setCrmForm((current) => ({ ...current, apiKey: event.target.value }))} placeholder="Paste CRM API key" /></Field>
+              )}
+              {crmTestStatus === "connected" && (
+                <span style={{ color: "#16a34a", fontSize: 13, fontWeight: 600 }}>✓ {crmTestMessage}</span>
+              )}
+              {crmTestStatus === "error" && (
+                <span style={{ color: "#dc2626", fontSize: 13, fontWeight: 600 }}>✗ {crmTestMessage}</span>
+              )}
+            </div>
+            <div className={`flex items-center justify-between p-3 border-t rounded-b-2xl ${isDark ? "border-white/10 bg-[#0F172A]" : "border-gray-100 bg-gray-50"}`}>
+              <div>
+                {crmModal.ok && (
+                  <Btn variant="ghost" className="text-red-500 hover:text-red-700 hover:bg-red-50" icon={<TrashIcon size={12} />} onClick={() => disconnectCrmProvider()} disabled={crmSaving}>
+                    {t("settings.disconnect")}
+                  </Btn>
+                )}
+              </div>
+              <div className="flex gap-1">
+                <Btn variant="secondary" icon={crmTestStatus === "testing" ? <span className="h-3 w-3 animate-spin rounded-full border-2 border-current border-t-transparent" /> : <PlayIcon size={12} />} onClick={testCrmConnection} disabled={!crmIntegrationReady || crmTestStatus === "testing"}>{crmTestStatus === "testing" ? "Testing..." : "Test Connection"}</Btn>
+                <Btn variant="secondary" onClick={() => setCrmModal(null)}>{t("common.cancel")}</Btn>
+                <Btn icon={<SaveIcon size={12} />} onClick={saveCrmConnection} disabled={!crmIntegrationReady || crmSaving}>{crmSaving ? "Saving..." : "Save"}</Btn>
               </div>
             </div>
           </div>
