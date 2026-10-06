@@ -71,6 +71,15 @@ POSTING_DESCRIPTION_MAX_CHARS = 600
 # email_verification_service.verify_email.
 EMAIL_MX_TIMEOUT_SECONDS = 5
 
+# Per-provider budget for one contact search (enrichment_service). Providers
+# run concurrently, so a slow one costs at most this much and never delays
+# the others. Same value as SOURCE_FETCH_TIMEOUT_SECONDS for Agente 1.
+ENRICHMENT_PROVIDER_TIMEOUT_SECONDS = 20
+
+# Contacts kept from a single provider per search; the rest are dropped (and
+# logged) so one misbehaving provider can't flood a lead with contacts.
+ENRICHMENT_MAX_CONTACTS_PER_PROVIDER = 50
+
 # ── Scraper adapter — responsible scraping ──────────────────────────────────
 # Identifies the bot to site operators (robots.txt, server logs) instead of
 # spoofing a browser user-agent. The scraper source's URL and selectors are
