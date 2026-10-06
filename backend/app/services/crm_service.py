@@ -1,16 +1,17 @@
 """CRM integration clients.
 
-Only HubSpot is implemented today. Other providers are rejected by the
-routers before this module is ever reached.
+Only HubSpot and Salesforce are implemented today. Other providers are
+rejected by the routers before this module is ever reached.
 """
 from __future__ import annotations
 
 from datetime import date, timedelta
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Union
 
 import httpx
 
 from app.config import settings
+from app.services import encryption_service
 
 _TIMEOUT = 8
 
@@ -155,6 +156,36 @@ class HubSpotClient:
         except ValueError:
             detail = resp.text
         raise CrmProviderError(f"HubSpot respondió con error {resp.status_code}: {detail}")
+
+
+def build_client_from_stored(
+    provider: str, connections: Dict[str, Any]
+) -> Optional[Union["HubSpotClient", "SalesforceClient"]]:
+    """Decrypt a provider's stored connection (see settings.py's `crm.connections`
+    shape) and build the matching client, or None if that provider has no
+    saved connection. Single place both settings.py (test-connection via the
+    redacted placeholder) and proposals.py (send-to-crm) go through, so the
+    decrypt-and-construct logic isn't duplicated between routers."""
+    connection = connections.get(provider)
+    if not connection:
+        return None
+    if provider == "hubspot":
+        api_key_encrypted = connection.get("apiKeyEncrypted")
+        if not api_key_encrypted:
+            return None
+        return HubSpotClient(encryption_service.decrypt(api_key_encrypted))
+    if provider == "salesforce":
+        consumer_key_encrypted = connection.get("consumerKeyEncrypted")
+        consumer_secret_encrypted = connection.get("consumerSecretEncrypted")
+        login_url = connection.get("loginUrl")
+        if not consumer_key_encrypted or not consumer_secret_encrypted or not login_url:
+            return None
+        return SalesforceClient(
+            encryption_service.decrypt(consumer_key_encrypted),
+            encryption_service.decrypt(consumer_secret_encrypted),
+            login_url,
+        )
+    return None
 
 
 def _soql_escape(value: str) -> str:

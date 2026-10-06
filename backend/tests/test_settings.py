@@ -1,171 +1,342 @@
-"""Tests for /api/v1/settings — CRM API key redaction and preservation."""
+"""Tests for /api/v1/settings — CRM connection storage, redaction, and the
+active-provider selector."""
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from cryptography.fernet import Fernet
 
+from app.services import encryption_service
 from tests.conftest import FAKE_USER_SUB
 
 API = "/api/v1/settings"
 
 
-def settings_doc(api_key: str | None = "hs-secret-key-1234") -> dict:
+@pytest.fixture(autouse=True)
+def _pipeline_encryption_key(monkeypatch):
+    """Point pipeline_encryption_key at a real Fernet key for every test here."""
+    key = Fernet.generate_key().decode()
+    monkeypatch.setattr(
+        "app.services.encryption_service.settings.pipeline_encryption_key", key
+    )
+    encryption_service._fernet.cache_clear()
+    yield
+    encryption_service._fernet.cache_clear()
+
+
+def _hubspot_connection(api_key: str) -> dict:
+    return {
+        "apiKeyEncrypted": encryption_service.encrypt(api_key),
+        "apiKeyLast4": api_key[-4:],
+        "connectedAt": "2026-01-01T00:00:00+00:00",
+    }
+
+
+def _salesforce_connection(consumerKey: str, consumerSecret: str, loginUrl: str) -> dict:
+    return {
+        "consumerKeyEncrypted": encryption_service.encrypt(consumerKey),
+        "consumerKeyLast4": consumerKey[-4:],
+        "consumerSecretEncrypted": encryption_service.encrypt(consumerSecret),
+        "consumerSecretLast4": consumerSecret[-4:],
+        "loginUrl": loginUrl,
+        "connectedAt": "2026-01-01T00:00:00+00:00",
+    }
+
+
+def crm_doc(active="none", hubspot=None, salesforce=None) -> dict:
+    connections = {}
+    if hubspot:
+        connections["hubspot"] = _hubspot_connection(hubspot)
+    if salesforce:
+        connections["salesforce"] = _salesforce_connection(**salesforce)
     return {
         "userId": FAKE_USER_SUB,
-        "crm": {"provider": "hubspot", "apiKey": api_key},
+        "crm": {"activeProvider": active, "connections": connections},
         "llm": {},
         "socialConnections": [],
     }
 
 
+# ── GET /settings/crm/status ─────────────────────────────────────────────────
+
 @pytest.mark.asyncio
-async def test_get_settings_redacts_crm_api_key(client):
-    with patch("app.routers.settings.settings_repo.get_by_user", new_callable=AsyncMock, return_value=settings_doc()):
-        resp = await client.get(API)
+async def test_crm_status_redacts_hubspot_key(client):
+    doc = crm_doc(active="hubspot", hubspot="hs-secret-key-1234")
+    with patch("app.routers.settings.settings_repo.get", new_callable=AsyncMock, return_value=doc):
+        resp = await client.get(f"{API}/crm/status")
     assert resp.status_code == 200
-    crm = resp.json()["crm"]
-    assert crm["apiKey"] == "••••1234"
-    assert crm["hasApiKey"] is True
+    body = resp.json()
+    assert body["activeProvider"] == "hubspot"
+    assert body["connections"]["hubspot"]["connected"] is True
+    assert body["connections"]["hubspot"]["apiKeyLast4"] == "1234"
     assert "hs-secret-key-1234" not in resp.text
 
 
 @pytest.mark.asyncio
-async def test_get_settings_without_crm_key_is_unchanged(client):
-    doc = settings_doc(api_key=None)
-    with patch("app.routers.settings.settings_repo.get_by_user", new_callable=AsyncMock, return_value=doc):
-        resp = await client.get(API)
+async def test_crm_status_redacts_salesforce_credentials(client):
+    doc = crm_doc(active="salesforce", salesforce={
+        "consumerKey": "3MVG9SecretConsumerKey1234",
+        "consumerSecret": "sf-secret-5678",
+        "loginUrl": "https://test.salesforce.com",
+    })
+    with patch("app.routers.settings.settings_repo.get", new_callable=AsyncMock, return_value=doc):
+        resp = await client.get(f"{API}/crm/status")
     assert resp.status_code == 200
-    assert resp.json()["crm"]["apiKey"] is None
-
-
-@pytest.mark.asyncio
-async def test_update_settings_preserves_key_when_masked_value_roundtripped(client):
-    existing = settings_doc()
-    with (
-        patch("app.routers.settings.settings_repo.get", new_callable=AsyncMock, return_value=existing),
-        patch("app.routers.settings.settings_repo.update", new_callable=AsyncMock, return_value=existing) as update_settings,
-    ):
-        resp = await client.put(API, json={"crm": {"provider": "hubspot", "apiKey": "••••1234"}})
-
-    assert resp.status_code == 200
-    saved_payload = update_settings.await_args.args[1]
-    assert saved_payload["crm"]["apiKey"] == "hs-secret-key-1234"
-
-
-@pytest.mark.asyncio
-async def test_update_settings_without_api_key_preserves_existing_key(client):
-    """Saving from an unrelated tab (e.g. Preferences -> handleSaveSettings,
-    which only sends {provider}) must not wipe out a previously saved key —
-    Firestore's update() otherwise replaces the whole `crm` map."""
-    existing = settings_doc()
-    with (
-        patch("app.routers.settings.settings_repo.get", new_callable=AsyncMock, return_value=existing),
-        patch("app.routers.settings.settings_repo.update", new_callable=AsyncMock, return_value=existing) as update_settings,
-    ):
-        resp = await client.put(API, json={"crm": {"provider": "hubspot"}})
-
-    assert resp.status_code == 200
-    saved_payload = update_settings.await_args.args[1]
-    assert saved_payload["crm"]["apiKey"] == "hs-secret-key-1234"
-
-
-@pytest.mark.asyncio
-async def test_update_settings_stores_new_key_when_changed(client):
-    existing = settings_doc()
-    with (
-        patch("app.routers.settings.settings_repo.get", new_callable=AsyncMock, return_value=existing),
-        patch("app.routers.settings.settings_repo.update", new_callable=AsyncMock, return_value=existing) as update_settings,
-    ):
-        resp = await client.put(API, json={"crm": {"provider": "hubspot", "apiKey": "hs-brand-new-key"}})
-
-    assert resp.status_code == 200
-    saved_payload = update_settings.await_args.args[1]
-    assert saved_payload["crm"]["apiKey"] == "hs-brand-new-key"
-
-
-def salesforce_settings_doc() -> dict:
-    return {
-        "userId": FAKE_USER_SUB,
-        "crm": {
-            "provider": "salesforce",
-            "salesforce": {
-                "consumerKey": "3MVG9SecretConsumerKey1234",
-                "consumerSecret": "sf-secret-5678",
-                "loginUrl": "https://test.salesforce.com",
-            },
-        },
-    }
-
-
-@pytest.mark.asyncio
-async def test_get_settings_redacts_salesforce_credentials(client):
-    with patch(
-        "app.routers.settings.settings_repo.get_by_user",
-        new_callable=AsyncMock,
-        return_value=salesforce_settings_doc(),
-    ):
-        resp = await client.get(API)
-    assert resp.status_code == 200
-    sf = resp.json()["crm"]["salesforce"]
-    assert sf["consumerKey"] == "••••1234"
-    assert sf["consumerSecret"] == "••••5678"
-    assert sf["hasConsumerKey"] is True
-    assert sf["hasConsumerSecret"] is True
+    sf = resp.json()["connections"]["salesforce"]
+    assert sf["connected"] is True
+    assert sf["consumerKeyLast4"] == "1234"
+    assert sf["consumerSecretLast4"] == "5678"
     assert sf["loginUrl"] == "https://test.salesforce.com"
     assert "3MVG9SecretConsumerKey1234" not in resp.text
     assert "sf-secret-5678" not in resp.text
 
 
 @pytest.mark.asyncio
-async def test_update_settings_preserves_salesforce_secret_when_masked_roundtripped(client):
-    existing = salesforce_settings_doc()
-    with (
-        patch("app.routers.settings.settings_repo.get", new_callable=AsyncMock, return_value=existing),
-        patch("app.routers.settings.settings_repo.update", new_callable=AsyncMock, return_value=existing) as update_settings,
-    ):
-        resp = await client.put(API, json={
-            "crm": {
-                "provider": "salesforce",
-                "salesforce": {
-                    "consumerKey": "••••1234",
-                    "consumerSecret": "••••5678",
-                    "loginUrl": "https://test.salesforce.com",
-                },
-            },
-        })
-
+async def test_crm_status_defaults_to_disconnected(client):
+    with patch("app.routers.settings.settings_repo.get", new_callable=AsyncMock, return_value=None):
+        resp = await client.get(f"{API}/crm/status")
     assert resp.status_code == 200
-    saved_sf = update_settings.await_args.args[1]["crm"]["salesforce"]
-    assert saved_sf["consumerKey"] == "3MVG9SecretConsumerKey1234"
-    assert saved_sf["consumerSecret"] == "sf-secret-5678"
+    body = resp.json()
+    assert body["activeProvider"] == "none"
+    assert body["connections"]["hubspot"]["connected"] is False
+    assert body["connections"]["salesforce"]["connected"] is False
 
 
 @pytest.mark.asyncio
-async def test_update_settings_hubspot_only_save_preserves_salesforce_credentials(client):
-    """Saving from a tab that only touches HubSpot fields must not wipe the
-    separately-configured Salesforce sub-map, and vice versa."""
-    existing = salesforce_settings_doc()
+async def test_get_settings_includes_crm_status(client):
+    doc = crm_doc(active="hubspot", hubspot="hs-secret-key-1234")
+    with patch("app.routers.settings.settings_repo.get_by_user", new_callable=AsyncMock, return_value=doc):
+        resp = await client.get(API)
+    assert resp.status_code == 200
+    crm = resp.json()["crm"]
+    assert crm["activeProvider"] == "hubspot"
+    assert crm["connections"]["hubspot"]["apiKeyLast4"] == "1234"
+    assert "hs-secret-key-1234" not in resp.text
+
+
+# ── POST /settings/crm/{provider}/connect ────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_connect_hubspot_stores_encrypted_key(client):
+    existing = crm_doc()
     with (
         patch("app.routers.settings.settings_repo.get", new_callable=AsyncMock, return_value=existing),
         patch("app.routers.settings.settings_repo.update", new_callable=AsyncMock, return_value=existing) as update_settings,
     ):
-        resp = await client.put(API, json={"crm": {"provider": "hubspot"}})
+        resp = await client.post(f"{API}/crm/hubspot/connect", json={"apiKey": "hs-brand-new-key"})
+
+    assert resp.status_code == 200
+    assert resp.json()["connections"]["hubspot"]["connected"] is True
+    saved_crm = update_settings.await_args.args[1]["crm"]
+    stored = saved_crm["connections"]["hubspot"]
+    assert stored["apiKeyLast4"] == "-key"
+    assert encryption_service.decrypt(stored["apiKeyEncrypted"]) == "hs-brand-new-key"
+    assert "hs-brand-new-key" not in resp.text
+
+
+@pytest.mark.asyncio
+async def test_connect_hubspot_requires_api_key(client):
+    resp = await client.post(f"{API}/crm/hubspot/connect", json={"apiKey": ""})
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_connect_hubspot_with_placeholder_keeps_existing_key(client):
+    existing = crm_doc(active="hubspot", hubspot="hs-secret-key-1234")
+    with (
+        patch("app.routers.settings.settings_repo.get", new_callable=AsyncMock, return_value=existing),
+        patch("app.routers.settings.settings_repo.update", new_callable=AsyncMock, return_value=existing) as update_settings,
+    ):
+        resp = await client.post(f"{API}/crm/hubspot/connect", json={"apiKey": "••••1234"})
 
     assert resp.status_code == 200
     saved_crm = update_settings.await_args.args[1]["crm"]
-    assert saved_crm["salesforce"]["consumerSecret"] == "sf-secret-5678"
+    stored = saved_crm["connections"]["hubspot"]
+    assert encryption_service.decrypt(stored["apiKeyEncrypted"]) == "hs-secret-key-1234"
+
+
+@pytest.mark.asyncio
+async def test_connect_salesforce_requires_all_fields(client):
+    resp = await client.post(f"{API}/crm/salesforce/connect", json={"consumerKey": "x"})
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_connect_salesforce_stores_encrypted_credentials(client):
+    existing = crm_doc()
+    with (
+        patch("app.routers.settings.settings_repo.get", new_callable=AsyncMock, return_value=existing),
+        patch("app.routers.settings.settings_repo.update", new_callable=AsyncMock, return_value=existing) as update_settings,
+    ):
+        resp = await client.post(f"{API}/crm/salesforce/connect", json={
+            "consumerKey": "3MVG9SecretConsumerKey1234",
+            "consumerSecret": "sf-secret-5678",
+            "loginUrl": "https://test.salesforce.com",
+        })
+
+    assert resp.status_code == 200
+    saved_crm = update_settings.await_args.args[1]["crm"]
+    stored = saved_crm["connections"]["salesforce"]
+    assert encryption_service.decrypt(stored["consumerKeyEncrypted"]) == "3MVG9SecretConsumerKey1234"
+    assert encryption_service.decrypt(stored["consumerSecretEncrypted"]) == "sf-secret-5678"
+    assert stored["loginUrl"] == "https://test.salesforce.com"
+
+
+@pytest.mark.asyncio
+async def test_connect_salesforce_with_placeholder_secret_keeps_existing_secret_but_updates_key(client):
+    """Changing just the Consumer Key (leaving the masked secret untouched)
+    must not wipe the previously-stored secret."""
+    existing = crm_doc(active="salesforce", salesforce={
+        "consumerKey": "old-consumer-key",
+        "consumerSecret": "sf-secret-5678",
+        "loginUrl": "https://test.salesforce.com",
+    })
+    with (
+        patch("app.routers.settings.settings_repo.get", new_callable=AsyncMock, return_value=existing),
+        patch("app.routers.settings.settings_repo.update", new_callable=AsyncMock, return_value=existing) as update_settings,
+    ):
+        resp = await client.post(f"{API}/crm/salesforce/connect", json={
+            "consumerKey": "new-consumer-key",
+            "consumerSecret": "••••5678",
+            "loginUrl": "https://test.salesforce.com",
+        })
+
+    assert resp.status_code == 200
+    stored = update_settings.await_args.args[1]["crm"]["connections"]["salesforce"]
+    assert encryption_service.decrypt(stored["consumerKeyEncrypted"]) == "new-consumer-key"
+    assert encryption_service.decrypt(stored["consumerSecretEncrypted"]) == "sf-secret-5678"
+
+
+@pytest.mark.asyncio
+async def test_connect_hubspot_does_not_touch_salesforce_connection(client):
+    existing = crm_doc(active="salesforce", salesforce={
+        "consumerKey": "sf-key", "consumerSecret": "sf-secret", "loginUrl": "https://test.salesforce.com",
+    })
+    with (
+        patch("app.routers.settings.settings_repo.get", new_callable=AsyncMock, return_value=existing),
+        patch("app.routers.settings.settings_repo.update", new_callable=AsyncMock, return_value=existing) as update_settings,
+    ):
+        resp = await client.post(f"{API}/crm/hubspot/connect", json={"apiKey": "hs-new-key"})
+
+    assert resp.status_code == 200
+    saved_crm = update_settings.await_args.args[1]["crm"]
+    assert "salesforce" in saved_crm["connections"]
+    assert encryption_service.decrypt(saved_crm["connections"]["salesforce"]["consumerSecretEncrypted"]) == "sf-secret"
+
+
+@pytest.mark.asyncio
+async def test_connect_unsupported_provider_returns_400(client):
+    resp = await client.post(f"{API}/crm/pipedrive/connect", json={"apiKey": "x"})
+    assert resp.status_code == 400
+
+
+# ── DELETE /settings/crm/{provider} ──────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_disconnect_provider_removes_connection_and_resets_active(client):
+    existing = crm_doc(active="hubspot", hubspot="hs-secret-key-1234")
+    with (
+        patch("app.routers.settings.settings_repo.get", new_callable=AsyncMock, return_value=existing),
+        patch("app.routers.settings.settings_repo.update", new_callable=AsyncMock, return_value=existing) as update_settings,
+    ):
+        resp = await client.delete(f"{API}/crm/hubspot")
+
+    assert resp.status_code == 200
+    saved_crm = update_settings.await_args.args[1]["crm"]
+    assert "hubspot" not in saved_crm["connections"]
+    assert saved_crm["activeProvider"] == "none"
+    assert resp.json()["activeProvider"] == "none"
+
+
+@pytest.mark.asyncio
+async def test_disconnect_inactive_provider_keeps_active_provider(client):
+    existing = crm_doc(active="salesforce", hubspot="hs-secret-key-1234", salesforce={
+        "consumerKey": "sf-key", "consumerSecret": "sf-secret", "loginUrl": "https://test.salesforce.com",
+    })
+    with (
+        patch("app.routers.settings.settings_repo.get", new_callable=AsyncMock, return_value=existing),
+        patch("app.routers.settings.settings_repo.update", new_callable=AsyncMock, return_value=existing) as update_settings,
+    ):
+        resp = await client.delete(f"{API}/crm/hubspot")
+
+    assert resp.status_code == 200
+    saved_crm = update_settings.await_args.args[1]["crm"]
+    assert saved_crm["activeProvider"] == "salesforce"
+
+
+# ── PUT /settings/crm/active-provider ────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_set_active_provider_requires_existing_connection(client):
+    existing = crm_doc()
+    with patch("app.routers.settings.settings_repo.get", new_callable=AsyncMock, return_value=existing):
+        resp = await client.put(f"{API}/crm/active-provider", json={"activeProvider": "hubspot"})
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_set_active_provider_succeeds_when_connected(client):
+    existing = crm_doc(hubspot="hs-secret-key-1234")
+    with (
+        patch("app.routers.settings.settings_repo.get", new_callable=AsyncMock, return_value=existing),
+        patch("app.routers.settings.settings_repo.update", new_callable=AsyncMock, return_value=existing) as update_settings,
+    ):
+        resp = await client.put(f"{API}/crm/active-provider", json={"activeProvider": "hubspot"})
+    assert resp.status_code == 200
+    assert resp.json()["activeProvider"] == "hubspot"
+    assert update_settings.await_args.args[1]["crm"]["activeProvider"] == "hubspot"
+
+
+@pytest.mark.asyncio
+async def test_set_active_provider_none_always_allowed(client):
+    existing = crm_doc(active="hubspot", hubspot="hs-secret-key-1234")
+    with (
+        patch("app.routers.settings.settings_repo.get", new_callable=AsyncMock, return_value=existing),
+        patch("app.routers.settings.settings_repo.update", new_callable=AsyncMock, return_value=existing),
+    ):
+        resp = await client.put(f"{API}/crm/active-provider", json={"activeProvider": "none"})
+    assert resp.status_code == 200
+    assert resp.json()["activeProvider"] == "none"
+
+
+# ── POST /settings/crm/test-connection ───────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_crm_test_connection_hubspot_requires_api_key(client):
+    with patch("app.routers.settings.settings_repo.get", new_callable=AsyncMock, return_value=None):
+        resp = await client.post(f"{API}/crm/test-connection", json={"provider": "hubspot", "apiKey": ""})
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_crm_test_connection_hubspot_resolves_placeholder_against_stored_key(client):
+    existing = crm_doc(active="hubspot", hubspot="hs-secret-key-1234")
+    with (
+        patch("app.routers.settings.settings_repo.get", new_callable=AsyncMock, return_value=existing),
+        patch("app.routers.settings.HubSpotClient") as hubspot_cls,
+    ):
+        hubspot_cls.return_value.test_connection = AsyncMock(
+            return_value={"status": "connected", "message": "Conexión exitosa con HubSpot"}
+        )
+        resp = await client.post(f"{API}/crm/test-connection", json={"provider": "hubspot", "apiKey": "••••1234"})
+    assert resp.status_code == 200
+    hubspot_cls.assert_called_once_with("hs-secret-key-1234")
 
 
 @pytest.mark.asyncio
 async def test_crm_test_connection_salesforce_requires_all_fields(client):
-    resp = await client.post(f"{API}/crm/test-connection", json={"provider": "salesforce", "consumerKey": "x"})
+    with patch("app.routers.settings.settings_repo.get", new_callable=AsyncMock, return_value=None):
+        resp = await client.post(f"{API}/crm/test-connection", json={"provider": "salesforce", "consumerKey": "x"})
     assert resp.status_code == 400
 
 
 @pytest.mark.asyncio
 async def test_crm_test_connection_salesforce_success(client):
-    with patch("app.routers.settings.SalesforceClient") as sf_cls:
+    with (
+        patch("app.routers.settings.settings_repo.get", new_callable=AsyncMock, return_value=None),
+        patch("app.routers.settings.SalesforceClient") as sf_cls,
+    ):
         sf_cls.return_value.test_connection = AsyncMock(
             return_value={"status": "connected", "message": "Conexión exitosa con Salesforce"}
         )
@@ -184,7 +355,10 @@ async def test_crm_test_connection_salesforce_success(client):
 async def test_crm_test_connection_salesforce_auth_error(client):
     from app.services.crm_service import CrmAuthError
 
-    with patch("app.routers.settings.SalesforceClient") as sf_cls:
+    with (
+        patch("app.routers.settings.settings_repo.get", new_callable=AsyncMock, return_value=None),
+        patch("app.routers.settings.SalesforceClient") as sf_cls,
+    ):
         sf_cls.return_value.test_connection = AsyncMock(side_effect=CrmAuthError("Consumer Key/Secret inválidos"))
         resp = await client.post(f"{API}/crm/test-connection", json={
             "provider": "salesforce",
@@ -193,3 +367,12 @@ async def test_crm_test_connection_salesforce_auth_error(client):
             "loginUrl": "https://test.salesforce.com",
         })
     assert resp.status_code == 401
+
+
+async def test_connect_hubspot_without_encryption_key_returns_503(client, monkeypatch):
+    monkeypatch.setattr("app.services.encryption_service.settings.pipeline_encryption_key", "")
+    encryption_service._fernet.cache_clear()
+    with patch("app.routers.settings.settings_repo.get", new_callable=AsyncMock, return_value=None):
+        resp = await client.post(f"{API}/crm/hubspot/connect", json={"apiKey": "hs-brand-new-key"})
+    assert resp.status_code == 503
+    assert "PIPELINE_ENCRYPTION_KEY" in resp.json()["detail"]

@@ -42,13 +42,11 @@ from app.schemas.proposal import (
     SendToCrmRequest,
 )
 from app.services.firestore_service import opportunities_repo, proposals_repo, jobs_repo, settings_repo
-from app.services import deepseek_service
+from app.services import crm_service, deepseek_service
 from app.services.crm_service import (
     CrmAuthError,
     CrmProviderError,
     CrmTimeoutError,
-    HubSpotClient,
-    SalesforceClient,
 )
 from app.services.rag_netprovider import get_rag_context
 from app.rendering.brand_styles import (
@@ -926,23 +924,27 @@ async def send_proposal_to_crm(
 
     org_settings = await settings_repo.get_by_user(user.sub)
     crm_settings = org_settings.get("crm") or {}
+    connections = crm_settings.get("connections") or {}
     existing_sync = proposal.get("crmSync") or {}
     total_amount = _resolve_total_amount(proposal)
 
     # The frontend doesn't always know which provider is configured (e.g. the
     # Proposals view has no access to the Settings page's React state), so
-    # fall back to whatever the user has saved in Settings -> Integrations.
-    provider = requested_provider or (crm_settings.get("provider") or "hubspot").lower()
+    # fall back to whichever provider the user marked active in
+    # Settings -> Integrations.
+    provider = requested_provider or crm_settings.get("activeProvider") or "none"
+    if provider == "none":
+        raise HTTPException(status_code=400, detail="No hay una integración de CRM configurada en Ajustes.")
     if provider not in ("hubspot", "salesforce"):
         raise HTTPException(status_code=400, detail=f"Proveedor '{provider}' no soportado aún")
 
+    client = crm_service.build_client_from_stored(provider, connections)
+    if client is None:
+        raise HTTPException(status_code=400, detail="No hay una integración de CRM configurada en Ajustes.")
+
     try:
         if provider == "hubspot":
-            api_key = crm_settings.get("apiKey")
-            if not api_key:
-                raise HTTPException(status_code=400, detail="No hay una integración de CRM configurada en Ajustes.")
-
-            hubspot = HubSpotClient(api_key)
+            hubspot = client
             contact_id = await hubspot.upsert_contact(
                 email=client_email,
                 name=proposal.get("clientName"),
@@ -962,14 +964,7 @@ async def send_proposal_to_crm(
                 "hubspotDealId": deal_id,
             }
         else:
-            sf_settings = crm_settings.get("salesforce") or {}
-            consumer_key = sf_settings.get("consumerKey")
-            consumer_secret = sf_settings.get("consumerSecret")
-            login_url = sf_settings.get("loginUrl")
-            if not consumer_key or not consumer_secret or not login_url:
-                raise HTTPException(status_code=400, detail="No hay una integración de CRM configurada en Ajustes.")
-
-            salesforce = SalesforceClient(consumer_key, consumer_secret, login_url)
+            salesforce = client
             account_name = proposal.get("clientCompany") or proposal.get("clientName") or "Untitled Account"
             account_id = await salesforce.upsert_account(account_name)
             contact_id = await salesforce.upsert_contact(
