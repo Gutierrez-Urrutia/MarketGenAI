@@ -52,7 +52,7 @@ from app.schemas.pipeline import (
     PipelineRunStatus,
     SourceType,
 )
-from app.services import deepseek_service, encryption_service
+from app.services import company_domain_service, deepseek_service, encryption_service
 from app.services.firestore_service import leads_repo, now_utc, pipeline_runs_repo
 
 logger = logging.getLogger("marketgen.pipeline.job_scout")
@@ -277,6 +277,12 @@ async def _scan_rss(source: Dict[str, Any], keywords: List[str]) -> List[RawJobP
         raw_title = (getattr(entry, "title", "") or "").strip()
         job_title, company = _split_rss_title(raw_title, title_format)
         job_url = _sanitize_job_url(getattr(entry, "link", "") or "")
+        # From the FULL summary, before the 600-char cut below. Never rejects
+        # the entry: no domain (or any error) just leaves it None.
+        try:
+            company_domain = company_domain_service.company_domain_from_description(getattr(entry, "summary", "") or "")
+        except Exception:
+            company_domain = None
         try:
             posting = RawJobPosting(
                 job_title=job_title,
@@ -285,6 +291,8 @@ async def _scan_rss(source: Dict[str, Any], keywords: List[str]) -> List[RawJobP
                 job_url=job_url,
                 source_id=source["id"],
                 raw_title=raw_title,
+                company_domain=company_domain,
+                company_domain_source="rss_url_line" if company_domain else None,
             )
         except ValidationError as exc:
             # One bad entry is skipped, never the rest of the feed. The
@@ -604,6 +612,8 @@ async def scan_all_sources(pipeline_config: Dict[str, Any], run_id: str) -> Dict
                     "pipeline_run_id": run_id,
                     "fingerprint": fingerprint,
                     "raw_title": posting.raw_title,
+                    "company_domain": posting.company_domain,
+                    "company_domain_source": posting.company_domain_source,
                 })
                 leads_new += 1
 
