@@ -5,7 +5,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field
 
 
 class ContactRole(str, Enum):
@@ -29,4 +29,7 @@ class Contact(BaseModel):
     confidence_score: float = Field(0.0, ge=0.0, le=1.0)
     source: str
     verified: bool = False
-    created_at: Optional[datetime] = None
+    # Firestore stores createdAt/updatedAt (FirestoreRepo.create). Accept both
+    # spellings on input only: the JSON key stays created_at/updated_at.
+    created_at: Optional[datetime] = Field(None, validation_alias=AliasChoices("created_at", "createdAt"))
+    updated_at: Optional[datetime] = Field(None, validation_alias=AliasChoices("updated_at", "updatedAt"))
