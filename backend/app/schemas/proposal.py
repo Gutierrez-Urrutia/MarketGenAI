@@ -119,3 +119,10 @@ class ProposalOut(BaseModel):
 class ProposalListResponse(BaseModel):
     items: List[ProposalOut]
     total: int
+
+
+class ProposalExportRequest(BaseModel):
+    """Export to PDF/DOCX, optionally from the (edited) HTML currently shown in the editor."""
+    format:   Literal["pdf", "docx"] = "pdf"
+    content:  Optional[str] = None
+    issuedBy: Optional[str] = None

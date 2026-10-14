@@ -289,6 +289,7 @@ async def test_generate_draft_passes_frontend_payload_to_generator(client):
         "length": "extended",
         "language": "en",
         "custom_prompt": "Emphasize outcomes over problems.",
+        "user_id": FAKE_USER_SUB,
     }
 
 
@@ -328,32 +329,32 @@ async def test_generation_prompt_uses_real_line_items_and_removes_example_prices
     assert "Provided total: 3500" in prompt
     assert "Process invoices and reconcile exceptions." in prompt
     assert "2 analysts and 1 team lead" in prompt
-    assert "approximately 1100-1400 words" in prompt
+    assert "approximately 1500-2000 words" in prompt
     assert "5-6 pages maximum" in prompt
     assert "Never exceed 6 rendered pages" in prompt
     assert "Anti-filler requirement:" in prompt
     assert "Never increase length through repetition" in prompt
     assert "CONTENT QUALITY INSTRUCTIONS:" in prompt
-    assert "Problems Identified: exactly 4-5 problems" in prompt
-    assert "Technologies Used: exactly 4-6 technologies" in prompt
-    assert "Expected ROI: include at least 3 projected metrics" in prompt
-    assert "Next Steps: include 4-5 sequenced steps with estimated weeks." in prompt
-    assert "Format Problems Identified and Technologies Used list items" in prompt
+    assert "business process outsourcing (BPO)" in prompt
+    assert "Never write prices or amounts yourself" in prompt
+    assert "[[PRICING_TABLE]]" in prompt
     assert "following language: English" in prompt
     assert "Respond ONLY with a clean semantic HTML fragment." in prompt
     assert "Do not include <html>, <body>, <article>, or any outer <div> container." in prompt
     assert "Do not use inline styles, style attributes, CSS classes" in prompt
-    assert "<h2>Executive Summary</h2>" in prompt
-    assert "<h2>Problems Identified</h2>" in prompt
-    assert "<h2>Proposed AI Solution</h2>" in prompt
-    assert "<h2>Technologies Used</h2>" in prompt
-    assert "<h2>Implementation Costs</h2>" in prompt
-    assert "<h2>Expected ROI</h2>" in prompt
-    assert "<h2>Next Steps</h2>" in prompt
+    for heading in (
+        "Executive Summary", "About NoonDalton", "Understanding of the Need", "Scope and Objectives",
+        "Operating Model and Service Levels", "Team and Work Organization",
+        "Implementation Plan", "Pricing and Commercial Terms", "General Terms",
+    ):
+        assert f"<h2>{heading}</h2>" in prompt
+    assert "NEVER mention internal CRM or sales-pipeline data" in prompt
+    assert "prices exclude applicable taxes" in prompt
+    assert "Team and pricing must be consistent" in prompt
+    assert "Proposed AI Solution" not in prompt
+    assert "Technologies Used" not in prompt
     assert '<div style="padding:40px' not in prompt
     assert "style=" not in prompt
-    assert "Keep these exact English section headings as structural markers; write ALL" in prompt
-    assert "body text, descriptions, labels, and table content in English." in prompt
     assert "PRIORITY STYLE AND FOCUS INSTRUCTION:" in prompt
     assert "Frame this as a commercial offer." in prompt
     assert "Desarrollo App" not in prompt
@@ -383,8 +384,8 @@ async def test_generation_prompt_without_items_requires_to_be_defined(tmp_path):
     prompt = generate_text.await_args.args[0]
     assert '"A definir"' in prompt
     assert "Do not invent services or prices." in prompt
-    assert "approximately 400-600 words" in prompt
-    assert "about 1 page" in prompt
+    assert "approximately 500-700 words" in prompt
+    assert "about 1-2 pages" in prompt
     assert "Anti-filler requirement:" in prompt
     assert "Desarrollo App" not in prompt
     assert "$2,500 USD" not in prompt
@@ -407,3 +408,31 @@ async def test_delete_proposal_forbidden(client):
     with patch("app.routers.proposals.proposals_repo.get", new_callable=AsyncMock, return_value=other):
         resp = await client.delete(f"{API}/proposal-001")
     assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_generated_content_gets_deterministic_pricing_table(tmp_path):
+    """El LLM solo pone el marcador; las cifras vienen de lineItems, nunca del modelo."""
+    llm_html = "<h1>T</h1><h2>Precios y Condiciones Comerciales</h2><p>[[PRICING_TABLE]]</p><h2>Condiciones Generales</h2><ul><li>x</li></ul>"
+    with (
+        patch("app.routers.proposals._output_dir", return_value=tmp_path),
+        patch("app.routers.proposals.deepseek_service.generate_text", new_callable=AsyncMock, return_value="```html\n" + llm_html + "\n```"),
+    ):
+        result = await _generate_proposal_content(
+            "Propuesta", "Acme", "Cobranza", language="es",
+            line_items=[{"name": "Gestores", "description": "Mensual", "qty": 15, "unitPrice": 1250}],
+            total_amount=18750,
+        )
+    html = result["content"]
+    assert "[[PRICING_TABLE]]" not in html and "```" not in html
+    assert 'class="pricing-table"' in html
+    assert "$1.250 USD" in html and "$18.750 USD" in html  # es: separador de miles con punto
+    assert "Precio unitario" in html
+
+
+def test_inject_pricing_table_fallback_when_marker_missing():
+    from app.workers.tasks.proposal_tasks import build_pricing_table_html, inject_pricing_table
+    table = build_pricing_table_html(None, None, "en")
+    out = inject_pricing_table("<h2>A</h2><p>x</p><h2>B</h2><p>y</p>", table)
+    assert out.index("pricing-table") < out.index("<h2>B</h2>")
+    assert "To be defined" in table

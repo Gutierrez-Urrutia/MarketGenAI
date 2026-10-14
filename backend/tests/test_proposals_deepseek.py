@@ -26,5 +26,5 @@ async def test_proposal_content_uses_shared_deepseek_service(tmp_path):
         )
 
     generate_text.assert_awaited_once()
-    assert result["content"] == "<p>Generated proposal</p>"
+    assert result["content"].startswith("<p>Generated proposal</p>")
     assert Path(result["filePath"]).exists()

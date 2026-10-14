@@ -95,3 +95,6 @@ generated_files/*
 backend/scripts/migrations/backups/
 
 *.md
+# Propuestas BPO de ejemplo (se regeneran con backend/scripts/gen_propuestas_bpo_ejemplo.py) y temporales de Word
+backend/tests/fixtures/propuestas_bpo/
+~$*

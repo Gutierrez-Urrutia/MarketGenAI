@@ -29,6 +29,7 @@ import {
   updateProposal,
   updateProposalStatus,
   generateProposalById,
+  proposalsApi,
   sendProposalToCrm,
 } from "./api/proposalsApi";
 
@@ -36,6 +37,8 @@ import Chat from "./pages/chat/Chat";
 import LeadList from "./pages/pipeline/LeadList";
 import Modal from "./components/ui/Modal";
 import PipelineSettingsTab from "./pages/settings/PipelineSettingsTab";
+import KnowledgeBaseTab from "./pages/settings/KnowledgeBaseTab";
+import { parseGeneratedSections, generatedSectionsToHtml } from "./utils/proposalSections";
 
 import ReactMarkdown from "react-markdown";
 
@@ -442,7 +445,7 @@ function normalizeLineItem(row = {}) {
   const subtotal = normalizeMoney(row.subtotal ?? row.total) ?? quantity * unitPrice;
   return {
     service: row.service || row.name || row.title || row.unit || "Service Unit",
-    description: row.description || row.details || row.scope || "Scope to be confirmed.",
+    description: row.description || row.details || row.scope || "",
     quantity,
     unitPrice,
     subtotal,
@@ -510,6 +513,7 @@ const PROPOSAL_COPY = {
     unitPrice: "Unit Price",
     subtotal: "Subtotal",
     totalImplementationCost: "Total Implementation Cost",
+    totalProposal: "Proposal total",
     expectedROI: "Expected ROI",
     nextSteps: "Next Steps",
     noExecutiveSummary: "No executive summary has been provided yet.",
@@ -547,6 +551,7 @@ const PROPOSAL_COPY = {
     unitPrice: "Precio Unitario",
     subtotal: "Subtotal",
     totalImplementationCost: "Costo Total de Implementación",
+    totalProposal: "Total de la propuesta",
     expectedROI: "ROI Esperado",
     nextSteps: "Próximos Pasos",
     noExecutiveSummary: "Aún no se ha proporcionado un resumen ejecutivo.",
@@ -584,6 +589,7 @@ const PROPOSAL_COPY = {
     unitPrice: "Preço Unitário",
     subtotal: "Subtotal",
     totalImplementationCost: "Custo Total de Implementação",
+    totalProposal: "Total da proposta",
     expectedROI: "ROI Esperado",
     nextSteps: "Próximos Passos",
     noExecutiveSummary: "Ainda não foi fornecido um resumo executivo.",
@@ -618,6 +624,7 @@ function getProposalIssuer() {
   return String(user.email || "").split("@")[0];
 }
 
+
 function normalizeProposalDocument(proposal = {}) {
   const structured = proposal.structuredContent || proposal.document || proposal.proposalDocument || proposal.proposal_document || {};
   const content = unwrapEmbeddedProposalHtml(proposal.content || structured.content || proposal.industry || proposal.description || "");
@@ -643,13 +650,33 @@ function normalizeProposalDocument(proposal = {}) {
   const proposedSolution = cleanStructuredText(structured.proposedSolution || structured.proposed_solution || proposal.proposedSolution)
     || extractParagraphs(section(["Proposed AI Solution"]))
     || "";
+  const generated = parseGeneratedSections(content);
   const parsedCreatedAt = proposal.createdAt ? new Date(proposal.createdAt) : null;
   const issuedOnDate = parsedCreatedAt && !Number.isNaN(parsedCreatedAt.getTime()) ? parsedCreatedAt : new Date();
   const validUntilDate = new Date(issuedOnDate);
   validUntilDate.setDate(validUntilDate.getDate() + PROPOSAL_VALIDITY_DAYS);
 
+  const localizedTotal = (language === "es" || language === "pt") && total.totalAmount !== null && total.totalAmount !== undefined
+    ? `$${new Intl.NumberFormat("es-CL", { maximumFractionDigits: 0 }).format(total.totalAmount)} USD`
+    : total.formattedTotal;
+  const generatedMode = generated
+    ? {
+      sections: generated.sections,
+      formattedTotal: localizedTotal,
+      // La plantilla fija ("B2B Operations", "NoonDalton Standard Proposal") no es dato del cliente.
+      industry: "",
+      serviceLine: "",
+      executiveSummary: "",
+      problemsIdentified: [],
+      proposedSolution: "",
+      technologiesUsed: [],
+      expectedROI: "",
+      nextSteps: [],
+    }
+    : { sections: null };
+
   return {
-    title: structured.title || proposal.title || proposal.name || "AI Generated Proposal",
+    title: structured.title || proposal.title || proposal.name || generated?.title || "AI Generated Proposal",
     client: structured.client || proposal.client || proposal.customerName || proposal.customer_name || proposal.clientName || "",
     contact: structured.contact || proposal.contact || proposal.opportunity?.contact || "",
     totalAmount: total.totalAmount,
@@ -668,6 +695,7 @@ function normalizeProposalDocument(proposal = {}) {
     issuedOn: formatProposalDate(issuedOnDate, language),
     validUntil: formatProposalDate(validUntilDate, language),
     issuedBy: getProposalIssuer(),
+    ...generatedMode,
   };
 }
 
@@ -732,7 +760,7 @@ function proposalDocumentToHtml(proposal = {}) {
   `).join("");
   return `
     <style data-proposal-pdf-page-breaks>${PROPOSAL_PDF_PAGE_BREAK_CSS}</style>
-    <article class="proposal-preview-document">
+    <article class="proposal-preview-document"${doc.sections ? ' data-sections="generic"' : ""}>
       <div class="proposal-paper">
         <header class="proposal-cover">
           <p class="proposal-eyebrow">${escapeHtml(copy.preparedBy)}</p>
@@ -750,6 +778,7 @@ function proposalDocumentToHtml(proposal = {}) {
             <span><strong>${escapeHtml(copy.preparedByPerson)}</strong>${escapeHtml(doc.issuedBy || "—")}</span>
           </div>
         </header>
+        ${doc.sections ? generatedSectionsToHtml(doc, copy) : `
         <section><h2>${escapeHtml(copy.executiveSummary)}</h2>${paragraphsToHtml(doc.executiveSummary || copy.noExecutiveSummary)}</section>
         <section><h2>${escapeHtml(copy.problemsIdentified)}</h2><div class="proposal-card-list">${cardsToHtml(doc.problemsIdentified.length ? doc.problemsIdentified : [copy.noProblems])}</div></section>
         <section><h2>${escapeHtml(copy.proposedSolution)}</h2>${paragraphsToHtml(doc.proposedSolution || copy.noSolution)}</section>
@@ -767,7 +796,7 @@ function proposalDocumentToHtml(proposal = {}) {
             <div class="proposal-signature-field"><span>${escapeHtml(copy.signatureDate)}</span><div class="proposal-signature-line"></div></div>
             <div class="proposal-signature-field"><span>${escapeHtml(copy.signatureLine)}</span><div class="proposal-signature-line"></div></div>
           </div>
-        </section>
+        </section>`}
       </div>
     </article>
   `;
@@ -821,7 +850,7 @@ function ProposalDocumentPreview({ proposal, className = "", exportRef = null })
   const nextSteps = Array.isArray(doc.nextSteps) ? doc.nextSteps.filter(Boolean) : [];
 
   return (
-    <article ref={exportRef} className={`proposal-preview-document ${className}`}>
+    <article ref={exportRef} className={`proposal-preview-document ${className}`} data-sections={doc.sections ? "generic" : undefined}>
       <div className="proposal-paper">
         <header className="proposal-cover">
           <p className="proposal-eyebrow">{copy.preparedBy}</p>
@@ -840,6 +869,9 @@ function ProposalDocumentPreview({ proposal, className = "", exportRef = null })
           </div>
         </header>
 
+        {doc.sections && <div dangerouslySetInnerHTML={{ __html: generatedSectionsToHtml(doc, copy) }} />}
+
+        {!doc.sections && (<>
         <section>
           <h2>{copy.executiveSummary}</h2>
           <ProposalParagraphs text={doc.executiveSummary} fallback={copy.noExecutiveSummary} />
@@ -920,6 +952,7 @@ function ProposalDocumentPreview({ proposal, className = "", exportRef = null })
             <div className="proposal-signature-field"><span>{copy.signatureLine}</span><div className="proposal-signature-line" /></div>
           </div>
         </section>
+        </>)}
       </div>
     </article>
   );
@@ -1381,7 +1414,28 @@ async function exportProposalDocx(proposal, sourceElement) {
   }
 }
 
+async function exportProposalViaBackend(proposal, format) {
+  const doc = normalizeProposalDocument(proposal);
+  const response = await proposalsApi.exportFile(proposal.id, {
+    format,
+    content: proposal.content || undefined,
+    issuedBy: doc.issuedBy || undefined,
+  });
+  downloadBlob(response.data, `${sanitizeDownloadName(doc.title)}.${format}`);
+}
+
 async function exportProposalDocument(proposal, format, sourceElement) {
+  // PDF/DOCX reales generados en el backend (texto seleccionable). Si la propuesta aún no está
+  // guardada o el servidor falla, se usa la captura de pantalla de siempre.
+  const savedId = proposal?.id && !String(proposal.id).startsWith("copy-");
+  if (savedId) {
+    try {
+      await exportProposalViaBackend(proposal, format === "docx" ? "docx" : "pdf");
+      return;
+    } catch (error) {
+      console.warn("Backend export failed, falling back to client-side export", error);
+    }
+  }
   if (format === "docx") {
     await exportProposalDocx(proposal, sourceElement);
     return;
@@ -3675,7 +3729,10 @@ function OpportunityProposalModal({ opportunity, onClose }) {
   const opportunityTags = opportunity?.kw || opportunity?.tags || [];
   const contentUsed = opportunity?.content && opportunity.content !== "—" && opportunity.content !== "â€”" ? opportunity.content : t("opportunitiesPage.proposalModal.none");
   const proposalForm = {
-    name: `${opportunity?.company || "Opportunity"} Proposal`,
+    name: ({
+      es: `Propuesta de ${opportunity?.job || "servicios"} – ${opportunity?.company || ""}`,
+      pt: `Proposta de ${opportunity?.job || "serviços"} – ${opportunity?.company || ""}`,
+    })[activeLanguage] || `Proposal: ${opportunity?.job || "services"} – ${opportunity?.company || ""}`,
     customer: opportunity?.company || "",
     customerEmail,
     customerCompany: opportunity?.company || "",
@@ -3683,7 +3740,7 @@ function OpportunityProposalModal({ opportunity, onClose }) {
     date: new Date().toISOString().slice(0, 10),
     tags: opportunityTags.join(", "),
   };
-  const opportunitySummary = `${opportunity?.company} is evaluating support for ${opportunity?.job}. The current stage is ${opportunity?.stage}, with a fit score of ${opportunity?.score}%. Primary tags: ${opportunityTags.join(", ") || "not specified"}.`;
+  const opportunitySummary = `${opportunity?.company} is evaluating support for ${opportunity?.job}. Primary tags: ${opportunityTags.join(", ") || "not specified"}.`;
   const pricingTotal = calculateProposalTotal({ pricingRows }).totalAmount;
   const progressSteps = t("opportunitiesPage.proposalModal.steps");
   const [proposalLanguage, setProposalLanguage] = useState(activeLanguage || getStoredPreference(PREF_KEYS.language, "en"));
@@ -3826,8 +3883,6 @@ function OpportunityProposalModal({ opportunity, onClose }) {
       `Company: ${opportunity?.company || "N/A"}`,
       `Contact: ${opportunity?.contact || "N/A"}`,
       `Role: ${opportunity?.role || "N/A"}`,
-      `Stage: ${opportunity?.stage || "N/A"}`,
-      `Score: ${opportunity?.score ?? "N/A"}`,
       `Keywords: ${opportunityTags.join(", ") || "N/A"}`,
       `Content used: ${contentUsed}`,
     ].join("\n"),
@@ -3898,9 +3953,7 @@ function OpportunityProposalModal({ opportunity, onClose }) {
           `Company: ${opportunity?.company || "N/A"}`,
           `Contact: ${opportunity?.contact || "N/A"}`,
           `Role: ${opportunity?.role || "N/A"}`,
-          `Stage: ${opportunity?.stage || "N/A"}`,
-          `Score: ${opportunity?.score ?? "N/A"}`,
-          `Keywords: ${opportunityTags.join(", ") || "N/A"}`,
+                  `Keywords: ${opportunityTags.join(", ") || "N/A"}`,
           `Content used: ${contentUsed}`,
         ].join("\n"),
         teamSizing: "",
@@ -9399,6 +9452,7 @@ function SettingsPage({ navigationState = {} }) {
         <button onClick={() => setTab("templates")} className={settingsTabClass(tab === "templates")}><FileIcon size={13} />{t("settings.templates")}</button>
         <button onClick={() => setTab("integrations")} className={settingsTabClass(tab === "integrations")}><PlugIcon size={13} />{t("settings.integrations")}</button>
         <button onClick={() => setTab("pipeline")} className={settingsTabClass(tab === "pipeline")}><LayersIcon size={13} />{t("settings.pipeline")}</button>
+        <button onClick={() => setTab("knowledge")} className={settingsTabClass(tab === "knowledge")}><FileIcon size={13} />{t("settings.kbTab")}</button>
       </div>
 
       {tab === "general" && (<>
@@ -9856,6 +9910,7 @@ function SettingsPage({ navigationState = {} }) {
       )}
 
       {tab === "pipeline" && <PipelineSettingsTab isDark={isDark} />}
+      {tab === "knowledge" && <KnowledgeBaseTab isDark={isDark} />}
 
       {tab === "content" && (<>
         <SettingsSection isDark={isDark} title="Auto-Tagging Rules" IconComp={TagIcon} desc="Define how content is tagged so agents can match it to opportunities">

@@ -20,6 +20,8 @@ Collections used by this project:
   - contacts/{contactId}
   - outreach_emails/{emailId}
   - pipeline_runs/{runId}
+  - knowledge_documents/{docId}   (RAG: propuestas históricas cargadas por el usuario)
+  - knowledge_chunks/{chunkId}    (RAG: fragmentos de cada documento)
 """
 from __future__ import annotations
 
@@ -457,6 +459,14 @@ class PipelineRunsRepo(FirestoreRepo):
     collection = "pipeline_runs"
 
 
+class KnowledgeDocumentsRepo(FirestoreRepo):
+    collection = "knowledge_documents"
+
+
+class KnowledgeChunksRepo(FirestoreRepo):
+    collection = "knowledge_chunks"
+
+
 class PipelineRunLocksRepo(FirestoreRepo):
     """One lock document per PipelineConfig (doc id == config id) so two runs
     can never be active on the same config at once. Acquired inside a Firestore
@@ -555,3 +565,5 @@ contacts_repo         = ContactsRepo()
 outreach_emails_repo  = OutreachEmailsRepo()
 pipeline_runs_repo    = PipelineRunsRepo()
 pipeline_run_locks_repo = PipelineRunLocksRepo()
+knowledge_documents_repo = KnowledgeDocumentsRepo()
+knowledge_chunks_repo    = KnowledgeChunksRepo()

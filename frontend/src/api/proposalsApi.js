@@ -49,6 +49,9 @@ export const pollProposalJob = async (jobId, proposalId) => {
 
 export const proposalsApi = {
   list: () => api.get("/proposals"),
+  // PDF/DOCX reales generados en el backend; `content` es el HTML editado en pantalla (no se guarda).
+  exportFile: (id, { format = "pdf", content, issuedBy } = {}) =>
+    api.post(`/proposals/${id}/export`, { format, content, issuedBy }, { responseType: "blob", timeout: 60000 }),
   create: (data) => withProposalUpdated(api.post("/proposals", data)),
   update: (id, data) => withProposalUpdated(api.put(`/proposals/${id}`, data)),
   delete: (id) => api.delete(`/proposals/${id}`),

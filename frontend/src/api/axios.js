@@ -325,6 +325,10 @@ export const proposalsApi = {
   update: (id, data) => withMarketgenEvent(api.put(`/proposals/${id}`, data), 'marketgen:proposal-updated'),
   delete: (id) => api.delete(`/proposals/${id}`),
   generate: (id, data) => withMarketgenEvent(api.post(`/proposals/${id}/generate`, data), 'marketgen:proposal-updated'),
+  exportFile: (id, { format = 'pdf', content, issuedBy } = {}) => api.post(`/proposals/${id}/export`, { format, content, issuedBy }, {
+    responseType: 'blob',
+    timeout: 60_000,
+  }),
   export: (id, fmt = 'pdf') => api.get(`/proposals/${id}/download`, {
     params: { format: fmt },
     responseType: 'blob',
@@ -389,6 +393,18 @@ export const opportunitiesApi = {
   get: (id) => api.get(`/opportunities/${id}`),
   update: (id, data) => withMarketgenEvent(api.put(`/opportunities/${id}`, data), 'marketgen:opportunity-updated'),
   delete: (id) => api.delete(`/opportunities/${id}`),
+}
+
+export const knowledgeApi = {
+  list: () => api.get('/knowledge/documents'),
+  upload: (files, { service, client } = {}) => {
+    const fd = new FormData()
+    files.forEach((f) => fd.append('files', f))
+    if (service) fd.append('service', service)
+    if (client) fd.append('client', client)
+    return api.post('/knowledge/documents', fd, { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 120_000 })
+  },
+  remove: (id) => api.delete(`/knowledge/documents/${id}`),
 }
 
 export const customersApi = {

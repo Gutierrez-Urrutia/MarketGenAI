@@ -9,7 +9,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import uuid
+from html import escape
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -18,7 +20,7 @@ from celery import Task
 from app.workers.celery_app import celery_app
 from app.services import deepseek_service
 from app.services.firestore_service import jobs_repo, proposals_repo
-from app.services.rag_netprovider import get_rag_context
+from app.services.rag_proposal_service import get_rag_context
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +74,163 @@ def _format_proposal_line_items(line_items: list[dict] | None, total_amount: flo
     ])
 
 
+# ── Estructura de propuesta BPO (RF-VTA-01) ───────────────────────────────────
+PRICING_MARKER = "[[PRICING_TABLE]]"
+
+# Encabezados por idioma, en el orden de la propuesta. El renderizador del frontend y los
+# exportadores del backend leen los <h2> tal cual, así que no dependen de nombres fijos.
+SECTION_HEADINGS: dict[str, list[str]] = {
+    "es": [
+        "Resumen Ejecutivo",
+        "Quiénes Somos",
+        "Entendimiento de la Necesidad",
+        "Alcance y Objetivos",
+        "Modelo Operativo y Niveles de Servicio",
+        "Equipo y Organización del Trabajo",
+        "Plan de Implementación",
+        "Precios y Condiciones Comerciales",
+        "Condiciones Generales",
+    ],
+    "en": [
+        "Executive Summary",
+        "About NoonDalton",
+        "Understanding of the Need",
+        "Scope and Objectives",
+        "Operating Model and Service Levels",
+        "Team and Work Organization",
+        "Implementation Plan",
+        "Pricing and Commercial Terms",
+        "General Terms",
+    ],
+    "pt": [
+        "Resumo Executivo",
+        "Quem Somos",
+        "Entendimento da Necessidade",
+        "Escopo e Objetivos",
+        "Modelo Operacional e Níveis de Serviço",
+        "Equipe e Organização do Trabalho",
+        "Plano de Implementação",
+        "Preços e Condições Comerciais",
+        "Condições Gerais",
+    ],
+}
+
+_PRICING_TABLE_LABELS = {
+    "es": ("Servicio / Unidad", "Descripción", "Cant.", "Precio unitario", "Subtotal", "A definir"),
+    "en": ("Service / Unit", "Description", "Qty", "Unit price", "Subtotal", "To be defined"),
+    "pt": ("Serviço / Unidade", "Descrição", "Qtd.", "Preço unitário", "Subtotal", "A definir"),
+}
+
+_LANGUAGE_NAMES = {"es": "Spanish", "en": "English", "pt": "Portuguese"}
+
+
+def _lang_code(language: str | None) -> str:
+    code = (language or "es").strip().lower()
+    if code.startswith("en"):
+        return "en"
+    if code.startswith("pt") or code.startswith("po"):
+        return "pt"
+    return "es"
+
+
+def _to_number(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def format_usd(value: float | None, fallback: str, lang: str = "en") -> str:
+    """$21,950 USD en inglés; $21.950 USD en español/portugués, coherente con el texto del documento."""
+    if value is None:
+        return fallback
+    text = f"{value:,.0f}"
+    if lang in ("es", "pt"):
+        text = text.replace(",", ".")
+    return f"${text} USD"
+
+
+def build_pricing_table_html(
+    line_items: list[dict] | None,
+    total_amount: float | None,
+    language: str = "es",
+) -> str:
+    """Tabla de precios determinista: el LLM nunca escribe cifras, solo se muestran las ingresadas."""
+    lang = _lang_code(language)
+    h_service, h_desc, h_qty, h_unit, h_sub, undefined = _PRICING_TABLE_LABELS[lang]
+    rows = []
+    for item in line_items or []:
+        name = item.get("name") or item.get("service") or undefined
+        qty = _to_number(item.get("qty") if item.get("qty") is not None else item.get("quantity"))
+        unit = _to_number(item.get("unitPrice") if item.get("unitPrice") is not None else item.get("unit_price"))
+        subtotal = qty * unit if qty is not None and unit is not None else None
+        qty_text = undefined if qty is None else f"{qty:g}"
+        rows.append(
+            f"<tr><td>{escape(str(name))}</td><td>{escape(str(item.get('description') or '—'))}</td>"
+            f"<td>{escape(qty_text)}</td><td>{format_usd(unit, undefined, lang)}</td><td>{format_usd(subtotal, undefined, lang)}</td></tr>"
+        )
+    if not rows:
+        rows.append(f"<tr><td>{undefined}</td><td>—</td><td>—</td><td>{undefined}</td><td>{undefined}</td></tr>")
+    return (
+        '<table class="pricing-table"><thead><tr>'
+        f"<th>{h_service}</th><th>{h_desc}</th><th>{h_qty}</th><th>{h_unit}</th><th>{h_sub}</th>"
+        f"</tr></thead><tbody>{''.join(rows)}</tbody></table>"
+    )
+
+
+def _strip_code_fences(content: str) -> str:
+    content = content.strip()
+    content = re.sub(r"^```(?:html)?\s*", "", content, flags=re.IGNORECASE)
+    return re.sub(r"\s*```$", "", content).strip()
+
+
+def inject_pricing_table(content: str, table_html: str) -> str:
+    """Sustituye el marcador por la tabla real; si el LLM lo omitió, la inserta antes de la última sección."""
+    marker = re.compile(
+        r"<p>\s*" + re.escape(PRICING_MARKER) + r"\s*</p>|" + re.escape(PRICING_MARKER), re.IGNORECASE
+    )
+    if marker.search(content):
+        return marker.sub(lambda _m: table_html, content, count=1)
+    h2s = list(re.finditer(r"<h2[ >]", content, flags=re.IGNORECASE))
+    if len(h2s) >= 2:
+        pos = h2s[-1].start()
+        return content[:pos] + table_html + "\n" + content[pos:]
+    return content + "\n" + table_html
+
+
+def _length_instructions(headings: list[str]) -> dict[str, str]:
+    h = headings
+    anti_filler = (
+        "Anti-filler requirement:\n"
+        "Never increase length through repetition, generic filler, empty phrases, vague claims, or padded "
+        "wording. Write like a senior commercial consultant at a BPO company preparing a serious "
+        "client-facing proposal. Be specific to this client and service."
+    )
+    return {
+        "brief": (
+            "Generate a concise professional proposal of approximately 500-700 words, about 1-2 pages.\n"
+            f'Keep all nine sections but write each one tightly: "{h[0]}", "{h[1]}" and "{h[2]}" in 1 paragraph each, '
+            "scope/objectives and service levels as short bullet lists, a compact team list, a 3-4 step plan, "
+            "and 4-5 general terms.\n" + anti_filler
+        ),
+        "standard": (
+            "Generate a complete professional proposal of approximately 1000-1400 words, about 3-4 pages.\n"
+            f'Develop every section with substance: 2 short paragraphs for "{h[0]}" and "{h[2]}", 1 paragraph for "{h[1]}", 4-6 bullets '
+            "for scope and objectives, 4-6 measurable service levels, a team list with roles and headcount, an "
+            "implementation plan with phases and estimated weeks, and 5-7 general terms.\n" + anti_filler
+        ),
+        "extended": (
+            "Generate an extensive professional proposal of approximately 1500-2000 words, designed to produce "
+            "5-6 pages maximum when rendered. Never exceed 6 rendered pages.\n"
+            f'Develop every section in depth while staying within the 5-6 pages maximum: context and business '
+            f'impact in "{h[2]}", detailed scope with in-scope and out-of-scope items, service levels with '
+            "measurement method and reporting cadence, team structure and governance (committees, escalation), "
+            "phased implementation with weeks, risks and mitigations, and 6-8 general terms.\n"
+            "If depth and page count conflict, prioritize the 6-page maximum.\n" + anti_filler
+        ),
+    }
+
+
 async def _generate_proposal_content(
     title: str,
     client_name: str,
@@ -84,71 +243,41 @@ async def _generate_proposal_content(
     length: str = "standard",
     language: str = "es",
     custom_prompt: str | None = None,
+    user_id: str | None = None,
 ) -> dict:
     """Call the LLM with the real proposal context and persist its response."""
-    length_instructions = {
-        "brief": """
-Generate a concise professional proposal of approximately 400-600 words, designed to produce about 1 page of substantive content.
-
-Depth requirement:
-- Keep every required section present and complete, but synthesize each section tightly.
-- Executive Summary must be concise and client-specific, explaining the opportunity and proposed value in a few strong paragraphs.
-- Problems Identified must summarize the most important client problems without over-expanding.
-- Proposed AI Solution must clearly explain the recommended approach and how it addresses the identified problems.
-- Implementation Costs must use ONLY the provided pricing data. Do not invent, rename, remove, merge, or add services or prices.
-- Expected ROI must briefly describe practical business impact areas and measurable outcomes where appropriate. Do not invent unsupported financial figures.
-- Next Steps must be short, practical, and action-oriented.
-
-Anti-filler requirement:
-The proposal must gain clarity through specificity, client-relevant analysis, concrete examples, and professional detail. Never increase length through repetition, generic filler, empty phrases, vague claims, or padded wording. Write like a senior commercial consultant preparing a serious client-facing proposal.
-
-Respect the 400-600 word target as closely as possible while preserving quality, the required HTML structure, the exact section headings, the requested language, the custom prompt, and all pricing rules.
-""".strip(),
-        "standard": """
-Generate a complete standard professional proposal of approximately 900-1300 words, designed to produce about 3 pages of substantive content.
-
-Depth requirement:
-- Develop every required section with 1-2 substantial paragraphs where appropriate.
-- Executive Summary must explain the client's business context, the opportunity, and the strategic value of the proposed engagement.
-- Problems Identified must include clear points with operational, process, quality, financial, or growth implications based on the client description, detailed process, industry, and team sizing provided.
-- Proposed AI Solution must explain the recommended approach, operating model, workflow, technologies, and how the solution addresses each identified problem.
-- Implementation Costs must use ONLY the provided pricing data. Do not invent, rename, remove, merge, or add services or prices.
-- Expected ROI must include concrete business impact areas, operational metrics, efficiency gains, quality improvements, risk reduction, and measurable outcomes where appropriate. Do not invent unsupported financial figures.
-- Next Steps must be practical, sequenced, and clear enough for a client to act on.
-
-Anti-filler requirement:
-The proposal must gain length through real depth, specificity, client-relevant analysis, concrete examples, and professional detail. Never increase length through repetition, generic filler, empty phrases, vague claims, or padded wording. Write like a senior commercial consultant preparing a serious client-facing proposal.
-
-Respect the 900-1300 word target as closely as possible while preserving quality, the required HTML structure, the exact section headings, the requested language, the custom prompt, and all pricing rules.
-""".strip(),
-        "extended": """
-Generate an extensive professional proposal of approximately 1100-1400 words, designed to produce 5-6 pages maximum when rendered. Never exceed 6 rendered pages.
-
-Depth requirement:
-- Develop every required section in depth, but stay concise enough for a 5-6 page final document.
-- Executive Summary must be broad and consultative, explaining the client's business context, why the opportunity matters, and the strategic value of the proposed engagement.
-- Problems Identified must include several detailed points with operational, financial, process, quality, or growth implications based on the client description, detailed process, industry, and team sizing provided.
-- Proposed AI Solution must explain the recommended approach, operating model, workflow, technologies, implementation logic, and how the solution addresses each identified problem.
-- Implementation Costs must use ONLY the provided pricing data. Do not invent, rename, remove, merge, or add services or prices.
-- Expected ROI must include concrete business impact areas, operational metrics, efficiency gains, quality improvements, risk reduction, and measurable outcomes where appropriate. Do not invent unsupported financial figures.
-- Include risks, constraints, assumptions, and mitigations inside the most relevant sections when applicable, especially in Proposed AI Solution or Expected ROI.
-- Next Steps must be detailed and practical, with clear sequencing, stakeholder actions, validation activities, and decision points, without expanding beyond what is needed for the 5-6 page maximum.
-
-Anti-filler requirement:
-The proposal must gain length through real depth, specificity, client-relevant analysis, concrete examples, and professional detail. Never increase length through repetition, generic filler, empty phrases, vague claims, or padded wording. Write like a senior commercial consultant preparing a serious client-facing proposal.
-
-Respect the 1100-1400 word target and the hard maximum of 6 rendered pages. If there is any conflict between depth and page count, prioritize the 6-page maximum while preserving quality, the required HTML structure, the exact section headings, the requested language, the custom prompt, and all pricing rules.
-""".strip(),
-    }
+    lang = _lang_code(language)
+    headings = SECTION_HEADINGS[lang]
+    length_instructions = _length_instructions(headings)
     pricing_context = _format_proposal_line_items(line_items, total_amount)
-    rag_context = get_rag_context(
+    rag_context = await get_rag_context(
+        user_id,
         client_name=client_name,
-        service_type=description,
+        service_type=f"{title} {description}",
+        extra_query=detailed_description or "",
+    )
+    structure = "\n".join(
+        [
+            "<h1>Proposal title</h1>",
+            "<p>One-line subtitle</p>",
+            f"<h2>{headings[0]}</h2>\n<p>Client situation, proposed service and expected value, in short paragraphs.</p>",
+            f"<h2>{headings[1]}</h2>\n<p>Who the company is and its BPO capabilities, using ONLY facts from the historical company context.</p>",
+            f"<h2>{headings[2]}</h2>\n<p>Client context, pain points and impact, based ONLY on the data provided.</p>",
+            f"<h2>{headings[3]}</h2>\n<ul><li>In-scope activity or objective</li></ul>",
+            f"<h2>{headings[4]}</h2>\n<p>How the service operates (channels, schedule, tools, quality control).</p>\n"
+            "<ul><li>Service level: indicator, proposed target (to be validated) and how it is measured</li></ul>",
+            f"<h2>{headings[5]}</h2>\n<ul><li>Role: headcount and responsibility</li></ul>",
+            f"<h2>{headings[6]}</h2>\n<ol><li>Phase: activities and estimated weeks</li></ol>",
+            f"<h2>{headings[7]}</h2>\n<p>{PRICING_MARKER}</p>\n"
+            "<ul><li>Commercial term (billing, payment, validity, adjustments, currency, taxes)</li></ul>",
+            f"<h2>{headings[8]}</h2>\n"
+            "<ul><li>General term (confidentiality, assumptions, exclusions, termination)</li></ul>",
+        ]
     )
     prompt = f"""
 {rag_context}
 
-Generate a PREMIUM commercial proposal in the following language: {language}.
+Generate a PREMIUM BPO commercial proposal in the following language: {_LANGUAGE_NAMES[lang]}.
 
 Title: {title}
 Client: {client_name}
@@ -160,57 +289,49 @@ PRIORITY STYLE AND FOCUS INSTRUCTION:
 {custom_prompt or "No additional instruction provided."}
 
 LENGTH REQUIREMENT:
-{length_instructions[length]}
+{length_instructions.get(length, length_instructions["standard"])}
 
 CONTENT QUALITY INSTRUCTIONS:
-- Each section must be developed with real client-specific analysis, not generic filler.
-- Problems Identified: exactly 4-5 problems, each with a clear problem name and 2-3 sentences explaining concrete impact on this specific client's business.
-- Proposed AI Solution: describe the real operating workflow step by step, with concrete technical logic. Do not say "advanced AI" generically; explain what type of model or automation is used and what it does.
-- Technologies Used: exactly 4-6 technologies, each with a real technical name and an explanation of why it applies to this specific case.
-- Expected ROI: include at least 3 projected metrics with justified percentages or numeric ranges. Do not invent unsupported financial figures or costs.
-- Next Steps: include 4-5 sequenced steps with estimated weeks.
+- The service is business process outsourcing (BPO): describe people, process, service levels and governance, not generic "AI solutions".
+- Use the historical company context above, when present, for service descriptions, structure, tone and typical service levels. Never copy client names, prices or figures from it.
+- Use ONLY facts about this client that appear in the data above. When something is unknown, state it as an assumption to validate (for example "Assumption: monthly volume to be confirmed") instead of inventing it.
+- Service levels must be measurable (indicator, target, measurement method). Label every target as a proposed target to be validated against the client's baseline during the diagnostic phase; never present it as a guarantee.
+- This is a client-facing document: NEVER mention internal CRM or sales-pipeline data such as the opportunity stage, "fit score", qualification score or lead status.
+- "About" section: include only company facts present in the historical company context (years, locations, capabilities). If there are none, write one short neutral paragraph about the service capability without figures, names or certifications.
+- Commercial terms: state the currency (USD), the billing period, and that prices exclude applicable taxes unless the data says otherwise (mark it as an assumption). Contract duration, notice periods and payment terms taken from the historical context must be labeled as standard terms subject to agreement.
+- Team: use the provided sizing and roles when given; otherwise propose a reasonable structure and label it as a proposal.
+- Team and pricing must be consistent: every role beyond the provided sizing must be explicitly described as included in the unit price, or as optional and priced separately. Never list a role as part of the service without saying how it is covered commercially.
+- Do not attribute statements to the client ("the client states/requires...") unless they appear in the data above. Market observations must be phrased as general context, and definitions that the data does not give (for example delinquency buckets) must be labeled as assumptions to validate.
+- Implementation plan: 3-5 sequenced phases with estimated weeks.
+- Never write prices or amounts yourself. The system inserts the pricing table.
 - Forbidden: paragraphs longer than 5 consecutive sentences, empty phrases such as "comprehensive solution", "holistic approach", or "cutting-edge" without substance, and repeating information already stated in another section.
-- Format Problems Identified and Technologies Used list items as "Clear item name: 2-3 sentence explanation" so the renderer can emphasize the item name without making the whole item bold.
+- Format list items that name something as "Clear item name: explanation".
 
 PRICING DATA AND NON-NEGOTIABLE RULES:
 {pricing_context}
+Place the exact text {PRICING_MARKER} alone in its own paragraph inside the pricing section. Do not write a table yourself.
 
 IMPORTANT RULES:
 - Respond ONLY with a clean semantic HTML fragment.
 - Do not include <html>, <body>, <article>, or any outer <div> container.
 - Do not use inline styles, style attributes, CSS classes, markdown, **, ###, ---, or backticks.
-- Use only these HTML tags: <h1>, <h2>, <p>, <ul>, <li>, <table>, <thead>, <tbody>, <tr>, <th>, and <td>.
-- Use short paragraphs, semantic lists, and professional HTML tables. The frontend, PDF, and DOCX renderers control all visual design.
-- Keep these exact English section headings as structural markers; write ALL
-  body text, descriptions, labels, and table content in {language}.
+- Use only these HTML tags: <h1>, <h2>, <p>, <ul>, <ol>, <li>, <strong>.
+- Use exactly the section headings below, in this order, written in {_LANGUAGE_NAMES[lang]}; write ALL body text in {_LANGUAGE_NAMES[lang]}.
 - Follow the PRIORITY STYLE AND FOCUS INSTRUCTION above when provided.
-- Use the detailed client process and team sizing when provided.
-- The pricing table must follow the PRICING DATA AND NON-NEGOTIABLE RULES exactly.
 
 REQUIRED STRUCTURE:
-<h1>Proposal title</h1>
-<p>Professional subtitle</p>
-<h2>Executive Summary</h2>
-<p>Separate text into short paragraphs.</p>
-<h2>Problems Identified</h2>
-<ul><li>Relevant client problem</li></ul>
-<h2>Proposed AI Solution</h2>
-<p>Professional explanation based on the provided client context.</p>
-<h2>Technologies Used</h2>
-<ul><li>Relevant technology or capability</li></ul>
-<h2>Implementation Costs</h2>
-<table><thead><tr><th>Service / Unit</th><th>Description</th><th>Qty</th><th>Unit Price</th><th>Subtotal</th></tr></thead><tbody><tr><td>Use provided pricing data only</td><td>Use provided pricing data only</td><td>Use provided pricing data only</td><td>Use provided pricing data only</td><td>Use provided pricing data only</td></tr></tbody></table>
-<h2>Expected ROI</h2>
-<p>Professional financial explanation.</p>
-<h2>Next Steps</h2>
-<p>Professional closing and recommended actions.</p>
+{structure}
 """
 
     content = await deepseek_service.generate_text(
         prompt,
-        system_prompt="You are an expert marketing proposal writer.",
-        temperature=0.7,
+        system_prompt="You are a senior commercial consultant writing BPO service proposals.",
+        temperature=0.5,
         timeout=None,
+    )
+    content = inject_pricing_table(
+        _strip_code_fences(content),
+        build_pricing_table_html(line_items, total_amount, lang),
     )
 
     output_dir = _output_dir()
@@ -274,6 +395,7 @@ async def generate_proposal_now(
         length=length,
         language=language,
         custom_prompt=custom_prompt,
+        user_id=options.get("userId"),
     )
 
     await jobs_repo.update_progress(job_id, 80, "processing")
