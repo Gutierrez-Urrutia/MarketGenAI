@@ -664,27 +664,27 @@ export function ContentGeneratorPage() {
       <div className="space-y-5">
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-xl font-bold" style={{ color: isDark ? '#F1F5F9' : '#0F172A' }}>{t("books.libraryTitle")}</h1>
+            <h1 className="text-xl font-bold" style={{ color: isDark ? '#F1F5F9' : 'rgb(var(--n-900))' }}>{t("books.libraryTitle")}</h1>
             <p className="text-xs" style={{ color: isDark ? '#94A3B8' : '#64748B' }}>{t("books.subtitle")}</p>
           </div>
           <Btn onClick={() => setBookView("creating")}>{t("books.newBook")}</Btn>
         </div>
 
         {loadingLibrary ? (
-          <div style={{ background: isDark ? '#1E293B' : '#fff', borderRadius: 14, border: `1px solid ${isDark ? '#334155' : '#eaecf3'}`, padding: '48px 24px', textAlign: 'center' }}>
+          <div style={{ background: isDark ? 'rgb(var(--n-800))' : '#fff', borderRadius: 14, border: `1px solid ${isDark ? 'rgb(var(--n-700))' : '#eaecf3'}`, padding: '48px 24px', textAlign: 'center' }}>
             <p style={{ fontSize: 14, color: isDark ? '#94A3B8' : '#64748B', fontWeight: 500, margin: 0 }}>Loading books...</p>
           </div>
         ) : savedBooks.length === 0 ? (
-          <div className="rounded-2xl border p-10 text-center shadow-sm" style={{ background: isDark ? '#1E293B' : '#fff', borderColor: isDark ? '#334155' : '#eaecf3' }}>
+          <div className="rounded-2xl border p-10 text-center shadow-sm" style={{ background: isDark ? 'rgb(var(--n-800))' : '#fff', borderColor: isDark ? 'rgb(var(--n-700))' : '#eaecf3' }}>
             <p className="text-sm font-medium" style={{ color: isDark ? '#94A3B8' : '#64748B' }}>{t("books.noBooksYet")}</p>
           </div>
         ) : (
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
             {savedBooks.map((savedBook) => (
-              <div key={savedBook.id} className="rounded-2xl border p-5 shadow-sm" style={{ background: isDark ? '#1E293B' : '#fff', borderColor: isDark ? '#334155' : '#eaecf3' }}>
+              <div key={savedBook.id} className="rounded-2xl border p-5 shadow-sm" style={{ background: isDark ? 'rgb(var(--n-800))' : '#fff', borderColor: isDark ? 'rgb(var(--n-700))' : '#eaecf3' }}>
                 <div className="mb-3 flex items-start justify-between gap-3">
                   <div className="min-w-0">
-                    <p className="truncate text-sm font-semibold" style={{ color: isDark ? '#F1F5F9' : '#0F172A' }}>{savedBook.title}</p>
+                    <p className="truncate text-sm font-semibold" style={{ color: isDark ? '#F1F5F9' : 'rgb(var(--n-900))' }}>{savedBook.title}</p>
                     <p className="mt-1 text-xs" style={{ color: isDark ? '#94A3B8' : '#64748B' }}>{formatRelativeBookDate(savedBook.createdAt)}</p>
                   </div>
                   <Badge label={savedBook.status || "draft"} color={bookStatusColor(savedBook.status)} />

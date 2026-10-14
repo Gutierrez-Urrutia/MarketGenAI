@@ -59,9 +59,9 @@ export function BookConceptsExperience({
   updateForm,
 }) {
   const bt = (key) => t(`books.${key}`);
-  const bookInputStyle = { background: isDark ? '#0F172A' : '#fff', color: isDark ? '#F1F5F9' : '#0F172A', borderColor: isDark ? '#334155' : '#e3e6ee' };
-  const bookPanelStyle = { background: isDark ? '#1E293B' : '#fff', borderColor: isDark ? '#334155' : '#eaecf3' };
-  const bookTextPrimary = isDark ? '#F1F5F9' : '#0F172A';
+  const bookInputStyle = { background: isDark ? 'rgb(var(--n-900))' : '#fff', color: isDark ? '#F1F5F9' : 'rgb(var(--n-900))', borderColor: isDark ? 'rgb(var(--n-700))' : '#e3e6ee' };
+  const bookPanelStyle = { background: isDark ? 'rgb(var(--n-800))' : '#fff', borderColor: isDark ? 'rgb(var(--n-700))' : '#eaecf3' };
+  const bookTextPrimary = isDark ? '#F1F5F9' : 'rgb(var(--n-900))';
   const bookTextSecondary = isDark ? '#94A3B8' : '#64748B';
   const keywordsLabel = language === "es" ? "Palabras clave" : language === "pt" ? "Palavras-chave" : bt("keywordsLabel");
   const bookLanguageLabels = {
@@ -331,8 +331,8 @@ export function BookConceptsExperience({
             onClick={() => { setBookView("library"); loadLibrary(); }}
             className="inline-flex h-11 items-center gap-2 rounded-xl border px-5 text-sm font-semibold shadow-sm"
             style={{
-              background: isDark ? '#1E293B' : '#fff',
-              borderColor: isDark ? '#334155' : '#e5e7eb',
+              background: isDark ? 'rgb(var(--n-800))' : '#fff',
+              borderColor: isDark ? 'rgb(var(--n-700))' : '#e5e7eb',
               color: isDark ? '#F1F5F9' : '#374151',
             }}
           >
@@ -341,7 +341,7 @@ export function BookConceptsExperience({
           </button>
 
           <header>
-            <h1 className="text-[17px] font-bold tracking-[-0.02em]" style={{ color: isDark ? '#F1F5F9' : '#0f172a' }}>{t("sidebar.books")}</h1>
+            <h1 className="text-[17px] font-bold tracking-[-0.02em]" style={{ color: isDark ? '#F1F5F9' : 'rgb(var(--n-900))' }}>{t("sidebar.books")}</h1>
             <p className="mt-1 text-[12.5px]" style={{ color: isDark ? '#94A3B8' : '#64748b' }}>{bt("workflowSubtitle")}</p>
           </header>
         </div>
@@ -351,7 +351,7 @@ export function BookConceptsExperience({
             type="button"
             onClick={() => { setPreviewPage(0); setPreviewOpen(true); }}
             disabled={previewItems.length <= 2}
-            className="inline-flex h-11 items-center gap-2 rounded-xl bg-[#0f172a] px-6 text-sm font-bold text-white shadow-sm hover:bg-[#111827] disabled:cursor-not-allowed disabled:opacity-50"
+            className="inline-flex h-11 items-center gap-2 rounded-xl bg-slate-900 px-6 text-sm font-bold text-white shadow-sm hover:bg-slate-900 disabled:cursor-not-allowed disabled:opacity-50"
           >
             <EyeIcon size={16} />
             {bt("bookPreviewTitle")}
@@ -379,7 +379,7 @@ export function BookConceptsExperience({
               style={
                 active
                   ? { borderColor: isDark ? 'rgb(var(--brand-800))' : 'rgb(var(--brand-200))', background: isDark ? 'rgba(55,48,163,0.18)' : 'rgb(var(--brand-50))', color: isDark ? 'rgb(var(--brand-300))' : 'rgb(var(--brand-700))' }
-                  : { borderColor: isDark ? '#334155' : '#f3f4f6', background: isDark ? '#1E293B' : '#fff', color: isDark ? '#94A3B8' : '#94a3b8' }
+                  : { borderColor: isDark ? 'rgb(var(--n-700))' : '#f3f4f6', background: isDark ? 'rgb(var(--n-800))' : '#fff', color: isDark ? '#94A3B8' : '#94a3b8' }
               }
             >
               <div className="flex items-start gap-3">
@@ -390,7 +390,7 @@ export function BookConceptsExperience({
                       ? { background: isDark ? 'rgba(16,185,129,0.15)' : '#ecfdf5', color: '#10b981' }
                       : active
                         ? { background: isDark ? 'rgb(var(--brand-800))' : 'rgb(var(--brand-700))', color: '#fff' }
-                        : { background: isDark ? '#334155' : '#f1f5f9', color: isDark ? '#94A3B8' : '#94a3b8' }
+                        : { background: isDark ? 'rgb(var(--n-700))' : '#f1f5f9', color: isDark ? '#94A3B8' : '#94a3b8' }
                   }
                 >
                   {done ? <CheckIcon size={16} /> : step}
@@ -398,7 +398,7 @@ export function BookConceptsExperience({
                 <span>
                   <span
                     className="block text-base font-bold"
-                    style={{ color: active ? (isDark ? 'rgb(var(--brand-300))' : 'rgb(var(--brand-700))') : done ? (isDark ? '#CBD5E1' : '#334155') : (isDark ? '#94A3B8' : '#94a3b8') }}
+                    style={{ color: active ? (isDark ? 'rgb(var(--brand-300))' : 'rgb(var(--brand-700))') : done ? (isDark ? '#CBD5E1' : 'rgb(var(--n-700))') : (isDark ? '#94A3B8' : '#94a3b8') }}
                   >
                     {bt("step")} {step}
                   </span>
@@ -462,10 +462,10 @@ export function BookConceptsExperience({
               <button type="button" onClick={generateChapters} disabled={loading} title={bt("generateChaptersHint")} className="flex h-11 items-center justify-center gap-3 rounded-xl bg-emerald-500 px-4 text-sm font-bold text-white hover:bg-emerald-600 disabled:opacity-60">
                 <SparkIcon size={16} /> {bt("generateChapters")}
               </button>
-              <button type="button" onClick={generateContent} disabled={!book || chapters.length === 0 || loading} title={bt("generateContentHint")} className="flex h-11 items-center justify-center gap-3 rounded-xl border px-4 text-sm font-bold hover:bg-gray-50 disabled:opacity-50" style={{ borderColor: isDark ? '#334155' : '#e5e7eb', background: isDark ? '#0F172A' : '#fff', color: isDark ? '#F1F5F9' : '#334155' }}>
+              <button type="button" onClick={generateContent} disabled={!book || chapters.length === 0 || loading} title={bt("generateContentHint")} className="flex h-11 items-center justify-center gap-3 rounded-xl border px-4 text-sm font-bold hover:bg-gray-50 disabled:opacity-50" style={{ borderColor: isDark ? 'rgb(var(--n-700))' : '#e5e7eb', background: isDark ? 'rgb(var(--n-900))' : '#fff', color: isDark ? '#F1F5F9' : 'rgb(var(--n-700))' }}>
                 <PenIcon size={16} /> {bt("generateContent")}
               </button>
-              <button type="button" onClick={exportBook} disabled={!book || chapters.length === 0 || loading} title={bt("exportBookHint")} className="flex h-11 items-center justify-center gap-3 rounded-xl border px-4 text-sm font-bold hover:bg-gray-50 disabled:opacity-50" style={{ borderColor: isDark ? '#334155' : '#e5e7eb', background: isDark ? '#0F172A' : '#fff', color: isDark ? '#F1F5F9' : '#334155' }}>
+              <button type="button" onClick={exportBook} disabled={!book || chapters.length === 0 || loading} title={bt("exportBookHint")} className="flex h-11 items-center justify-center gap-3 rounded-xl border px-4 text-sm font-bold hover:bg-gray-50 disabled:opacity-50" style={{ borderColor: isDark ? 'rgb(var(--n-700))' : '#e5e7eb', background: isDark ? 'rgb(var(--n-900))' : '#fff', color: isDark ? '#F1F5F9' : 'rgb(var(--n-700))' }}>
                 <DownloadIcon size={16} /> {bt("exportBook")}
               </button>
               {chapters.length > 0 && (
@@ -478,7 +478,7 @@ export function BookConceptsExperience({
         </div>
 
         <div className="rounded-2xl border p-6 shadow-sm" style={bookPanelStyle}>
-          <div className="mb-5 flex items-start justify-between gap-4 border-b pb-5" style={{ borderColor: isDark ? '#334155' : '#f3f4f6' }}>
+          <div className="mb-5 flex items-start justify-between gap-4 border-b pb-5" style={{ borderColor: isDark ? 'rgb(var(--n-700))' : '#f3f4f6' }}>
             <div>
               <h2 className="text-[14px] font-bold" style={{ color: bookTextPrimary }}>{book?.title || form.title}</h2>
               <p className="mt-1 text-[11.5px]" style={{ color: bookTextSecondary }}>ID: {book?.id || "f32d04c4-7b29-421a-abec-c4bf93617326"}</p>
@@ -494,7 +494,7 @@ export function BookConceptsExperience({
 
           {activeBookStep === 1 && (
             <div className="space-y-4">
-              <div className="rounded-2xl border p-5" style={{ borderColor: isDark ? '#334155' : '#f3f4f6' }}>
+              <div className="rounded-2xl border p-5" style={{ borderColor: isDark ? 'rgb(var(--n-700))' : '#f3f4f6' }}>
                 <h3 className="text-[14px] font-bold" style={{ color: bookTextPrimary }}>{bt("defineConceptTitle")}</h3>
                 <p className="mt-2 text-[13px] leading-[1.6]" style={{ color: bookTextSecondary }}>
                   {bt("defineConceptPrefix")} <strong style={{ color: bookTextPrimary }}>{bt("createBook")}</strong> {bt("defineConceptMiddle")} <strong style={{ color: bookTextPrimary }}>{bt("generateChapters")}</strong> {bt("defineConceptSuffix")}
@@ -525,7 +525,7 @@ export function BookConceptsExperience({
                   [bt("withContent").toUpperCase(), generatedChapters],
                   [bt("words").toUpperCase(), totalWords],
                 ].map(([label, value]) => (
-                  <div key={label} className="rounded-xl border p-4" style={{ borderColor: isDark ? '#334155' : '#f3f4f6' }}>
+                  <div key={label} className="rounded-xl border p-4" style={{ borderColor: isDark ? 'rgb(var(--n-700))' : '#f3f4f6' }}>
                     <p className="text-[11px] font-bold" style={{ color: bookTextSecondary }}>{label}</p>
                     <p className="mt-[6px] text-[18px] font-bold" style={{ color: bookTextPrimary }}>{value}</p>
                   </div>
@@ -552,7 +552,7 @@ export function BookConceptsExperience({
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <h3 className="text-lg font-black" style={{ color: bookTextPrimary }}>{bt("reviewEditChapters")}</h3>
                 <div className="flex gap-2">
-                  <button type="button" onClick={addChapter} className="inline-flex h-10 items-center gap-2 rounded-lg px-4 text-sm font-bold" style={{ background: isDark ? '#334155' : '#f1f5f9', color: isDark ? '#F1F5F9' : '#334155' }}>
+                  <button type="button" onClick={addChapter} className="inline-flex h-10 items-center gap-2 rounded-lg px-4 text-sm font-bold" style={{ background: isDark ? 'rgb(var(--n-700))' : '#f1f5f9', color: isDark ? '#F1F5F9' : 'rgb(var(--n-700))' }}>
                     <PlusIcon size={15} /> {bt("add")}
                   </button>
                   <button type="button" onClick={async () => {
@@ -564,13 +564,13 @@ export function BookConceptsExperience({
                 </div>
               </div>
               {chaptersForOutline.length === 0 ? (
-                <div className="rounded-2xl border border-dashed py-16 text-center text-sm" style={{ borderColor: isDark ? '#334155' : '#e5e7eb', color: bookTextSecondary }}>
+                <div className="rounded-2xl border border-dashed py-16 text-center text-sm" style={{ borderColor: isDark ? 'rgb(var(--n-700))' : '#e5e7eb', color: bookTextSecondary }}>
                   {t("books.emptyChapters")}
                 </div>
               ) : (
                 <div className="space-y-4">
                   {chaptersForOutline.map((chapter, index) => (
-                    <div key={chapter.id} className="grid grid-cols-[26px_1fr_34px] gap-3 rounded-2xl border p-4" style={{ borderColor: isDark ? '#334155' : '#f3f4f6' }}>
+                    <div key={chapter.id} className="grid grid-cols-[26px_1fr_34px] gap-3 rounded-2xl border p-4" style={{ borderColor: isDark ? 'rgb(var(--n-700))' : '#f3f4f6' }}>
                       <div className="flex flex-col items-center gap-3 pt-1">
                         <span style={{ color: isDark ? '#475569' : '#cbd5e1' }}>::</span>
                         <span className="flex h-7 w-7 items-center justify-center rounded-lg text-xs font-black" style={{ background: isDark ? 'rgba(79,70,229,0.15)' : 'rgb(var(--brand-50))', color: isDark ? 'rgb(var(--brand-300))' : 'rgb(var(--brand-700))' }}>{index + 1}</span>
@@ -601,8 +601,8 @@ export function BookConceptsExperience({
                         />
                       </div>
                       <div className="flex flex-col items-center gap-2">
-                        <button type="button" onClick={() => moveChapter(index, index - 1)} disabled={index === 0} className="flex h-8 w-8 items-center justify-center rounded-lg border" style={{ borderColor: isDark ? '#334155' : '#f3f4f6', color: isDark ? '#475569' : '#cbd5e1' }}>⌃</button>
-                        <button type="button" onClick={() => moveChapter(index, index + 1)} disabled={index === (chaptersForOutline.length - 1)} className="flex h-8 w-8 items-center justify-center rounded-lg border" style={{ borderColor: isDark ? '#334155' : '#f3f4f6', color: isDark ? '#475569' : '#cbd5e1' }}>⌄</button>
+                        <button type="button" onClick={() => moveChapter(index, index - 1)} disabled={index === 0} className="flex h-8 w-8 items-center justify-center rounded-lg border" style={{ borderColor: isDark ? 'rgb(var(--n-700))' : '#f3f4f6', color: isDark ? '#475569' : '#cbd5e1' }}>⌃</button>
+                        <button type="button" onClick={() => moveChapter(index, index + 1)} disabled={index === (chaptersForOutline.length - 1)} className="flex h-8 w-8 items-center justify-center rounded-lg border" style={{ borderColor: isDark ? 'rgb(var(--n-700))' : '#f3f4f6', color: isDark ? '#475569' : '#cbd5e1' }}>⌄</button>
                         <button type="button" onClick={() => deleteChapter(chapter.id)} className="flex h-8 w-8 items-center justify-center rounded-lg border border-red-100 text-red-400"><TrashIcon size={14} /></button>
                       </div>
                     </div>
@@ -657,7 +657,7 @@ export function BookConceptsExperience({
                 </div>
               )}
               <div className="grid grid-cols-1 gap-4 lg:grid-cols-[240px_1fr]">
-                <div className="space-y-2 rounded-xl border p-3" style={{ borderColor: isDark ? '#334155' : '#f3f4f6' }}>
+                <div className="space-y-2 rounded-xl border p-3" style={{ borderColor: isDark ? 'rgb(var(--n-700))' : '#f3f4f6' }}>
                   {chapters.map((chapter, index) => {
                     const selected = (activeChapterId || chapters[0]?.id) === chapter.id;
                     return (
@@ -693,7 +693,7 @@ export function BookConceptsExperience({
                   <div className="rounded-xl border p-4" style={{ borderColor: isDark ? 'rgba(99,102,241,0.3)' : 'rgb(var(--brand-100))', background: isDark ? 'rgba(99,102,241,0.1)' : 'rgb(var(--brand-50))' }}>
                     <div className="mb-2 flex items-center justify-between">
                       <p className="text-sm font-bold" style={{ color: isDark ? 'rgb(var(--brand-300))' : 'rgb(var(--brand-900))' }}>{bt("refineWithAi")}</p>
-                      <button type="button" onClick={refineActiveChapter} disabled={!refineText.trim()} className="rounded-lg px-3 py-1.5 text-xs font-bold disabled:opacity-50" style={{ background: isDark ? '#1E293B' : '#fff', color: isDark ? 'rgb(var(--brand-300))' : 'rgb(var(--brand-700))' }}>{bt("apply")}</button>
+                      <button type="button" onClick={refineActiveChapter} disabled={!refineText.trim()} className="rounded-lg px-3 py-1.5 text-xs font-bold disabled:opacity-50" style={{ background: isDark ? 'rgb(var(--n-800))' : '#fff', color: isDark ? 'rgb(var(--brand-300))' : 'rgb(var(--brand-700))' }}>{bt("apply")}</button>
                     </div>
                     <textarea rows={3} value={refineText} onChange={(event) => setRefineText(event.target.value)} className="w-full rounded-lg border px-3 py-2 text-sm" style={bookInputStyle} />
                   </div>
@@ -710,7 +710,7 @@ export function BookConceptsExperience({
                   <p className="mt-1 text-sm" style={{ color: bookTextSecondary }}>{bt("marketingAssetsHelp")}</p>
                 </div>
                 <div className="flex gap-2">
-                  <button type="button" onClick={loadAssets} disabled={!book || loadingAssets} className="inline-flex h-11 items-center gap-2 rounded-xl border px-4 text-sm font-bold disabled:opacity-50" style={{ borderColor: isDark ? '#334155' : '#e5e7eb', color: bookTextSecondary }}>
+                  <button type="button" onClick={loadAssets} disabled={!book || loadingAssets} className="inline-flex h-11 items-center gap-2 rounded-xl border px-4 text-sm font-bold disabled:opacity-50" style={{ borderColor: isDark ? 'rgb(var(--n-700))' : '#e5e7eb', color: bookTextSecondary }}>
                     <RefreshIcon size={15} /> {bt("reload")}
                   </button>
                   <button type="button" onClick={regenerateAllAssets} disabled={!book || chapters.length === 0 || loading || Object.values(regenerateStatus || {}).includes("pending")} className="inline-flex h-11 items-center gap-2 rounded-xl bg-emerald-500 px-5 text-sm font-bold text-white hover:bg-emerald-600 disabled:opacity-50">
@@ -735,13 +735,13 @@ export function BookConceptsExperience({
                 </div>
               )}
               {loadingAssets ? (
-                <div className="rounded-xl border border-dashed py-12 text-center" style={{ borderColor: isDark ? '#334155' : '#e5e7eb' }}>
+                <div className="rounded-xl border border-dashed py-12 text-center" style={{ borderColor: isDark ? 'rgb(var(--n-700))' : '#e5e7eb' }}>
                   <div className="mx-auto h-6 w-6 animate-spin rounded-full border-2 border-indigo-200 border-t-indigo-600" />
                 </div>
               ) : (
                 <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
                   {marketingAssets.map((asset) => (
-                    <div key={asset.id || `${asset.badge}-${asset.title}`} className="rounded-2xl border p-5" style={{ borderColor: isDark ? '#334155' : '#f3f4f6' }}>
+                    <div key={asset.id || `${asset.badge}-${asset.title}`} className="rounded-2xl border p-5" style={{ borderColor: isDark ? 'rgb(var(--n-700))' : '#f3f4f6' }}>
                       <div className="mb-4 flex items-center justify-between">
                         <span className={`rounded-lg px-3 py-1 text-xs font-bold ${
                           asset.tone === "green" ? "bg-emerald-50 text-emerald-600" : asset.tone === "orange" ? "bg-orange-50 text-orange-600" : asset.tone === "purple" ? "bg-purple-50 text-purple-600" : "bg-indigo-50 text-indigo-600"
@@ -766,7 +766,7 @@ export function BookConceptsExperience({
                       ) : asset.type === "social_post" ? (
                         <div className="mt-3 space-y-2">
                           {(parseAssetJson(asset.body) || []).map((post, index) => (
-                            <div key={`${post.platform}-${index}`} className="rounded-xl border p-3" style={{ borderColor: isDark ? '#334155' : '#e5e7eb', background: isDark ? '#0F172A' : '#fff' }}>
+                            <div key={`${post.platform}-${index}`} className="rounded-xl border p-3" style={{ borderColor: isDark ? 'rgb(var(--n-700))' : '#e5e7eb', background: isDark ? 'rgb(var(--n-900))' : '#fff' }}>
                               <div className="mb-1.5 flex items-center justify-between gap-2">
                                 <span className="rounded-lg px-2 py-0.5 text-[11px] font-bold uppercase" style={{ background: isDark ? 'rgba(79,70,229,0.15)' : 'rgb(var(--brand-50))', color: isDark ? 'rgb(var(--brand-300))' : 'rgb(var(--brand-700))' }}>
                                   {post.platform}
@@ -789,7 +789,7 @@ export function BookConceptsExperience({
                                 </div>
                               )}
                               {(data.sections || []).map((section, index) => (
-                                <div key={index} className="rounded-xl border p-3" style={{ borderColor: isDark ? '#334155' : '#e5e7eb' }}>
+                                <div key={index} className="rounded-xl border p-3" style={{ borderColor: isDark ? 'rgb(var(--n-700))' : '#e5e7eb' }}>
                                   <div className="flex items-center justify-between gap-2">
                                     <p className="text-sm font-bold" style={{ color: bookTextPrimary }}>{section.heading}</p>
                                     {section.stat && <span className="text-sm font-black" style={{ color: 'rgb(var(--brand-700))' }}>{section.stat}</span>}
@@ -835,18 +835,18 @@ export function BookConceptsExperience({
 
       {previewOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-3 backdrop-blur-sm" style={{ background: 'rgba(0,0,0,0.75)' }}>
-          <div className="flex h-[86vh] w-full max-w-[1320px] flex-col overflow-hidden rounded-3xl shadow-2xl" style={{ background: isDark ? '#1E293B' : '#fff' }}>
-            <div className="flex items-center justify-between border-b px-[18px] py-3" style={{ borderColor: isDark ? '#334155' : '#f3f4f6' }}>
+          <div className="flex h-[86vh] w-full max-w-[1320px] flex-col overflow-hidden rounded-3xl shadow-2xl" style={{ background: isDark ? 'rgb(var(--n-800))' : '#fff' }}>
+            <div className="flex items-center justify-between border-b px-[18px] py-3" style={{ borderColor: isDark ? 'rgb(var(--n-700))' : '#f3f4f6' }}>
               <div className="flex items-center gap-3">
                 <EyeIcon size={20} className="text-indigo-600" />
                 <h3 className="text-[13.5px] font-black" style={{ color: bookTextPrimary }}>{bt("bookPreviewTitle")}</h3>
                 <span className="text-sm" style={{ color: bookTextSecondary }}>· {previewCount}/{previewChapters.length || form.chapterCount} {bt("withContent").toLowerCase()}</span>
               </div>
-              <button type="button" onClick={() => setPreviewOpen(false)} className="flex h-12 w-12 items-center justify-center rounded-xl" style={{ background: isDark ? '#334155' : '#f1f5f9', color: isDark ? '#F1F5F9' : '#64748b' }}>
+              <button type="button" onClick={() => setPreviewOpen(false)} className="flex h-12 w-12 items-center justify-center rounded-xl" style={{ background: isDark ? 'rgb(var(--n-700))' : '#f1f5f9', color: isDark ? '#F1F5F9' : '#64748b' }}>
                 <XIcon size={26} />
               </button>
             </div>
-            <div className="grid min-h-0 flex-1 grid-cols-[280px_1fr]" style={{ background: isDark ? '#0F172A' : '#f1f5f9' }}>
+            <div className="grid min-h-0 flex-1 grid-cols-[280px_1fr]" style={{ background: isDark ? 'rgb(var(--n-900))' : '#f1f5f9' }}>
               <aside className="overflow-y-auto px-[10px] py-[14px]" style={{ background: isDark ? 'rgba(30,41,59,0.7)' : 'rgba(255,255,255,0.7)' }}>
                 {previewItems.map((item, index) => {
                   const active = previewPage === index;
@@ -859,7 +859,7 @@ export function BookConceptsExperience({
                       style={active ? { background: isDark ? '#1E3A5F' : '#eef0fe', color: isDark ? '#F1F5F9' : 'rgb(var(--brand-700))' } : { color: bookTextSecondary }}
                     >
                       {item.type === "chapter" && (
-                        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-xs font-black" style={active ? { background: isDark ? 'rgb(var(--brand-800))' : 'rgb(var(--brand-700))', color: '#fff' } : { background: isDark ? '#334155' : '#f1f5f9', color: isDark ? '#94A3B8' : '#94a3b8' }}>
+                        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-xs font-black" style={active ? { background: isDark ? 'rgb(var(--brand-800))' : 'rgb(var(--brand-700))', color: '#fff' } : { background: isDark ? 'rgb(var(--n-700))' : '#f1f5f9', color: isDark ? '#94A3B8' : '#94a3b8' }}>
                           {item.index + 1}
                         </span>
                       )}
@@ -870,7 +870,7 @@ export function BookConceptsExperience({
               </aside>
               <main className="overflow-auto px-10 py-12">
                 {currentPreview?.type === "cover" && (
-                  <section className="mx-auto flex min-h-[700px] w-[560px] flex-col justify-center rounded-md bg-[#111827] px-16 py-16 text-white shadow-2xl shadow-slate-400/50">
+                  <section className="mx-auto flex min-h-[700px] w-[560px] flex-col justify-center rounded-md bg-slate-900 px-16 py-16 text-white shadow-2xl shadow-slate-400/50">
                     <p className="mb-36 text-center text-[13px] font-bold uppercase tracking-[0.24em] text-emerald-300">NoonDalton · AI Marketing</p>
                     <h2 className="text-[44px] font-black leading-tight">{form.title}</h2>
                     <p className="mt-6 text-[15.5px] leading-8 text-slate-300">{form.description}</p>

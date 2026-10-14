@@ -77,7 +77,7 @@ export default function App() {
 
   const [page, setPage] = useState(() => PATH_TO_PAGE[window.location.pathname] || "dashboard");
   const [navigationState, setNavigationState] = useState({});
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState(() => typeof window !== "undefined" && window.innerWidth < 1024);
   const PageComp = PAGES[page]?.visible === false ? DashboardPage : (PAGES[page]?.component || DashboardPage);
 
   useEffect(() => {

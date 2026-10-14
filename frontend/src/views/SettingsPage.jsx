@@ -586,7 +586,7 @@ export function SettingsPage({ navigationState = {} }) {
 
                 {socialModal.l === "Facebook" && (
                   <>
-                    <div className={`p-2 rounded-xl border ${isDark ? "bg-[#0F172A] border-white/10" : "bg-blue-50 border-blue-100"}`}>
+                    <div className={`p-2 rounded-xl border ${isDark ? "bg-slate-900 border-white/10" : "bg-blue-50 border-blue-100"}`}>
                       <div className="flex items-start gap-1">
                         <ShieldIcon size={14} className="text-blue-500 mt-0.5 shrink-0" />
                         <div className="text-xs text-blue-700">
@@ -605,7 +605,7 @@ export function SettingsPage({ navigationState = {} }) {
 
                 {["facebook", "linkedin", "twitter"].includes(socialModal.platform) && (
                   <div className="space-y-1.5">
-                    <div className={`p-2 rounded-xl border text-xs ${isDark ? "bg-[#0F172A] border-white/10 text-slate-300" : "bg-gray-50 border-gray-100 text-gray-600"}`}>
+                    <div className={`p-2 rounded-xl border text-xs ${isDark ? "bg-slate-900 border-white/10 text-slate-300" : "bg-gray-50 border-gray-100 text-gray-600"}`}>
                       Add an email/handle to enable publishing from generated social posts. If you have a provider token, you can store it here; tokens are never shown back in the UI.
                     </div>
                     <Field label="Account email">
@@ -637,20 +637,20 @@ export function SettingsPage({ navigationState = {} }) {
                 )}
 
                 {socialModal.l === "Instagram" && (
-                  <div className={`p-2 rounded-xl border text-xs ${isDark ? "bg-[#0F172A] border-white/10 text-slate-300" : "bg-gray-50 border-gray-100 text-gray-600"}`}>
+                  <div className={`p-2 rounded-xl border text-xs ${isDark ? "bg-slate-900 border-white/10 text-slate-300" : "bg-gray-50 border-gray-100 text-gray-600"}`}>
                     {t("settings.socialInstagramHint")}
                   </div>
                 )}
 
                 {socialModal.comingSoon && (
-                  <div className={`p-2 rounded-xl border text-xs ${isDark ? "bg-[#0F172A] border-white/10 text-slate-300" : "bg-gray-50 border-gray-100 text-gray-600"}`}>
+                  <div className={`p-2 rounded-xl border text-xs ${isDark ? "bg-slate-900 border-white/10 text-slate-300" : "bg-gray-50 border-gray-100 text-gray-600"}`}>
                     {t("settings.socialComingSoon")}
                   </div>
                 )}
               </div>
 
               {/* Footer */}
-              <div className={`flex items-center justify-between p-3 border-t rounded-b-2xl ${isDark ? "border-white/10 bg-[#0F172A]" : "border-gray-100 bg-gray-50"}`}>
+              <div className={`flex items-center justify-between p-3 border-t rounded-b-2xl ${isDark ? "border-white/10 bg-slate-900" : "border-gray-100 bg-gray-50"}`}>
                 <div>
                   {socialModal.l === "Facebook" && socialModal.ok && (
                     <Btn variant="ghost" className="text-red-500 hover:text-red-700 hover:bg-red-50" icon={<TrashIcon size={12} />} onClick={() => disconnectSocialPlatform("facebook")} disabled={socialBusy}>
@@ -818,12 +818,12 @@ export function SettingsPage({ navigationState = {} }) {
                   )}
                 </>
               ) : (
-                <div className={`p-2 rounded-xl border text-xs ${isDark ? "bg-[#0F172A] border-white/10 text-slate-300" : "bg-gray-50 border-gray-100 text-gray-600"}`}>
+                <div className={`p-2 rounded-xl border text-xs ${isDark ? "bg-slate-900 border-white/10 text-slate-300" : "bg-gray-50 border-gray-100 text-gray-600"}`}>
                   {socialModal.linkedToFacebook ? t("settings.socialInstagramHint") : t("settings.socialComingSoon")}
                 </div>
               )}
             </div>
-            <div className={`flex items-center justify-between p-3 border-t rounded-b-2xl ${isDark ? "border-white/10 bg-[#0F172A]" : "border-gray-100 bg-gray-50"}`}>
+            <div className={`flex items-center justify-between p-3 border-t rounded-b-2xl ${isDark ? "border-white/10 bg-slate-900" : "border-gray-100 bg-gray-50"}`}>
               <div>
                 {socialModal.platform && socialModal.ok && (
                   <Btn variant="ghost" className="text-red-500 hover:text-red-700 hover:bg-red-50" icon={<TrashIcon size={12} />} onClick={() => disconnectSocialPlatform(socialModal.platform)} disabled={socialBusy}>
@@ -878,7 +878,7 @@ export function SettingsPage({ navigationState = {} }) {
                 <span style={{ color: "#dc2626", fontSize: 13, fontWeight: 600 }}>✗ {crmTestMessage}</span>
               )}
             </div>
-            <div className={`flex items-center justify-between p-3 border-t rounded-b-2xl ${isDark ? "border-white/10 bg-[#0F172A]" : "border-gray-100 bg-gray-50"}`}>
+            <div className={`flex items-center justify-between p-3 border-t rounded-b-2xl ${isDark ? "border-white/10 bg-slate-900" : "border-gray-100 bg-gray-50"}`}>
               <div>
                 {crmModal.ok && (
                   <Btn variant="ghost" className="text-red-500 hover:text-red-700 hover:bg-red-50" icon={<TrashIcon size={12} />} onClick={() => disconnectCrmProvider()} disabled={crmSaving}>

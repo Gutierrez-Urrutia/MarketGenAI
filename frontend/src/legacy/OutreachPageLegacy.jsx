@@ -98,11 +98,11 @@ export function OutreachPageLegacy({ navigationState = {} }) {
               </div>
             </div>
             <div className="flex gap-3 mb-3">
-              <div className={`flex-1 p-2 rounded-lg ${isDark ? "bg-[#0F172A] border border-white/10" : "bg-gray-50"}`}>
+              <div className={`flex-1 p-2 rounded-lg ${isDark ? "bg-slate-900 border border-white/10" : "bg-gray-50"}`}>
                 <p className="text-xs text-gray-500">{t("outreachPage.opportunity")}</p>
                 <p className="text-xs font-medium text-gray-800">{e.vacancy} @ {e.company}</p>
               </div>
-              <div className={`flex-1 p-2 rounded-lg ${isDark ? "bg-[#0F172A] border border-white/10" : "bg-indigo-50"}`}>
+              <div className={`flex-1 p-2 rounded-lg ${isDark ? "bg-slate-900 border border-white/10" : "bg-indigo-50"}`}>
                 <p className="text-xs text-indigo-400">{t("outreachPage.contentReferenced")}</p>
                 <p className="text-xs font-medium text-indigo-700 flex items-center gap-1"><LinkIcon size={10} />{e.contentRef}</p>
               </div>
@@ -111,7 +111,7 @@ export function OutreachPageLegacy({ navigationState = {} }) {
               <p className="text-xs text-gray-500 mb-1">{t("outreachPage.subject")}</p>
               <p className="text-xs font-semibold text-gray-900">{e.subject}</p>
             </div>
-            <div className={`mb-4 p-3 rounded-lg ${isDark ? "bg-[#0F172A] border border-white/10" : "bg-white border border-gray-200"}`}>
+            <div className={`mb-4 p-3 rounded-lg ${isDark ? "bg-slate-900 border border-white/10" : "bg-white border border-gray-200"}`}>
               <pre className={`text-xs whitespace-pre-wrap font-sans leading-relaxed ${isDark ? "text-slate-200" : "text-gray-700"}`}>{e.preview}</pre>
             </div>
             <div className="flex gap-2 justify-end">

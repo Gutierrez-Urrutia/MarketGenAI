@@ -185,7 +185,7 @@ export function OpportunitiesPage({ navigationState = {}, onNavigate = () => {},
                   )}
                   <td className="px-4 py-4">
                     <p className="font-medium text-gray-900">{o.company}</p>
-                    <div className="flex gap-1 mt-0.5">{o.kw.map(k => <span key={k} className={`px-1.5 py-0.5 rounded text-xs ${isDark ? "bg-[#0F172A] text-slate-300 border border-white/10" : "bg-indigo-50 text-indigo-600"}`}>{k}</span>)}</div>
+                    <div className="flex gap-1 mt-0.5">{o.kw.map(k => <span key={k} className={`px-1.5 py-0.5 rounded text-xs ${isDark ? "bg-slate-900 text-slate-300 border border-white/10" : "bg-indigo-50 text-indigo-600"}`}>{k}</span>)}</div>
                   </td>
                   <td className="px-4 py-4 text-indigo-600 font-medium">{o.job}</td>
                   <td className="px-4 py-4">

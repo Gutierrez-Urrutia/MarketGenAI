@@ -267,7 +267,7 @@ export function DashboardPage({ onNavigate, setCampaignFlow = () => {} }) {
             >
               <span className="w-5 text-gray-500">{f.icon}</span>
               <span className="text-xs text-gray-600 w-56 shrink-0">{f.label}</span>
-              <div className={`flex-1 h-5 rounded-full overflow-hidden ${isDark ? "bg-[#0F172A] border border-white/10" : "bg-gray-100"}`}><div className={`h-full ${f.color} rounded-full transition-all`} style={{width:f.w}} /></div>
+              <div className={`flex-1 h-5 rounded-full overflow-hidden ${isDark ? "bg-slate-900 border border-white/10" : "bg-gray-100"}`}><div className={`h-full ${f.color} rounded-full transition-all`} style={{width:f.w}} /></div>
               <span className="text-xs font-semibold text-gray-700 w-10 text-right">{f.val}</span>
             </button>
           ))}

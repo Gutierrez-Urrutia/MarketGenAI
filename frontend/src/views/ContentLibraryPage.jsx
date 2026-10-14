@@ -1972,7 +1972,7 @@ const filtered = allItems.filter((item) => {
 
       {/* Content grid */}
       {loadingLibrary ? (
-        <div style={{ background: isDark ? '#1E293B' : '#fff', borderRadius: 14, border: `1px solid ${isDark ? '#334155' : '#eaecf3'}`, padding: '48px 24px', textAlign: 'center' }}>
+        <div style={{ background: isDark ? 'rgb(var(--n-800))' : '#fff', borderRadius: 14, border: `1px solid ${isDark ? 'rgb(var(--n-700))' : '#eaecf3'}`, padding: '48px 24px', textAlign: 'center' }}>
           <p style={{ fontSize: 14, color: isDark ? '#64748B' : '#94a3b8', fontWeight: 500, margin: 0 }}>{t("contentLibrary.loading")}</p>
         </div>
       ) : filtered.length === 0 ? (
@@ -2028,7 +2028,7 @@ const filtered = allItems.filter((item) => {
               {item.type === "Proposal" && (
                 <div className={`mb-1.5 rounded-lg border px-3 py-4 text-xs ${
                   isDark
-                    ? "bg-[#0F172A] text-white border-white/10"
+                    ? "bg-slate-900 text-white border-white/10"
                     : "bg-slate-50 text-slate-500 border-transparent"
                 }`}>
                   {t("contentLibrary.totalAmount")}: <span className={`font-semibold ${isDark ? "text-white" : "text-slate-800"}`}>{item.formattedTotal || calculateProposalTotal(item).formattedTotal}</span>
@@ -2709,7 +2709,7 @@ const filtered = allItems.filter((item) => {
           dangerouslySetInnerHTML={{ __html: viewingContentItem.content || "" }}
         />
       </div>
-      <div className={`flex justify-end gap-1 border-t p-3 ${isDark ? "border-white/10 bg-[#0F172A]" : "border-gray-100 bg-gray-50"}`}>
+      <div className={`flex justify-end gap-1 border-t p-3 ${isDark ? "border-white/10 bg-slate-900" : "border-gray-100 bg-gray-50"}`}>
         <Btn variant="secondary" onClick={() => exportContentItemPdf(viewingContentItem)}>
           {t("contentLibrary.aiFields.exportPdf")}
         </Btn>
@@ -2761,7 +2761,7 @@ const filtered = allItems.filter((item) => {
             post.hashtags.join(" "),
           ].filter(Boolean).join("\n\n");
           return (
-            <div key={`${post.channel}-${index}`} className={`rounded-xl border p-3 ${isDark ? "border-white/10 bg-[#0F172A]" : "border-gray-200 bg-white"}`}>
+            <div key={`${post.channel}-${index}`} className={`rounded-xl border p-3 ${isDark ? "border-white/10 bg-slate-900" : "border-gray-200 bg-white"}`}>
               <div className="mb-1.5 flex items-start justify-between gap-1.5">
                 <div>
                   <Badge label={post.channel || t("contentLibrary.socialPost")} color={isDark ? "border border-indigo-400/20 bg-indigo-500/10 text-indigo-200" : "bg-indigo-50 text-indigo-700"} />
@@ -2812,7 +2812,7 @@ const filtered = allItems.filter((item) => {
           );
         })}
       </div>
-      <div className={`flex justify-end border-t p-3 ${isDark ? "border-white/10 bg-[#0F172A]" : "border-gray-100 bg-gray-50"}`}>
+      <div className={`flex justify-end border-t p-3 ${isDark ? "border-white/10 bg-slate-900" : "border-gray-100 bg-gray-50"}`}>
         <Btn variant="secondary" onClick={() => setViewingCampaignContent(null)}>
           {t("common.close")}
         </Btn>
@@ -2894,7 +2894,7 @@ const filtered = allItems.filter((item) => {
           />
         )}
       </div>
-      <div className={`flex justify-end gap-1 p-3 border-t rounded-b-2xl ${isDark ? "border-white/10 bg-[#0F172A]" : "border-gray-100 bg-gray-50"}`}>
+      <div className={`flex justify-end gap-1 p-3 border-t rounded-b-2xl ${isDark ? "border-white/10 bg-slate-900" : "border-gray-100 bg-gray-50"}`}>
         {editingProposal ? (
           <>
             <Btn variant="ghost" onClick={() => setEditingProposal(null)}>{t("common.cancel")}</Btn>

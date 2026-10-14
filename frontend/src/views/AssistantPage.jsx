@@ -173,11 +173,11 @@ export function AssistantPage({ navigationState = {}, onNavigate = () => {}, cam
           <SparkIcon size={16} className="text-indigo-600" />
           <h2 className="text-sm font-semibold text-gray-900">{t("chat.title")}</h2>
         </div>
-        <Badge label={t("chat.contextAware")} color={isDark ? "bg-[#0F172A] text-slate-300 border border-white/10" : "bg-indigo-100 text-indigo-700"} />
+        <Badge label={t("chat.contextAware")} color={isDark ? "bg-slate-900 text-slate-300 border border-white/10" : "bg-indigo-100 text-indigo-700"} />
       </div>
 
       <div className="flex-1 p-2 space-y-2 overflow-y-auto">
-        <div className={`rounded-xl p-2 ${isDark ? "bg-[#0F172A]/40 border border-white/10" : "bg-gray-50"}`}>
+        <div className={`rounded-xl p-2 ${isDark ? "bg-slate-900/40 border border-white/10" : "bg-gray-50"}`}>
           <p className="text-xs font-medium text-gray-500 mb-1">
             {t("chat.suggestedActions")}
           </p>
@@ -192,7 +192,7 @@ export function AssistantPage({ navigationState = {}, onNavigate = () => {}, cam
               }}
                 className={`flex items-center gap-1 p-2.5 rounded-lg border transition-colors text-left ${isDark ? "bg-slate-800 border-white/10 hover:bg-slate-700 hover:border-white/20" : "bg-white border-gray-100 hover:border-indigo-200"}`}
               >
-                <div className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 ${isDark ? `${s.color.replace(/\bbg-\S+/g, "bg-[#0F172A]")} border border-white/10` : s.color}`}>
+                <div className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 ${isDark ? `${s.color.replace(/\bbg-\S+/g, "bg-slate-900")} border border-white/10` : s.color}`}>
                   <s.icon size={12} />
                 </div>
                 <span className={`text-xs ${isDark ? "text-slate-200" : "text-gray-700"}`}>{s.text}</span>
@@ -202,7 +202,7 @@ export function AssistantPage({ navigationState = {}, onNavigate = () => {}, cam
         </div>
 
         <div className="flex gap-1 max-w-[80%]">
-          <div className={`w-7 h-7 rounded-full flex items-center justify-center shrink-0 ${isDark ? "bg-[#0F172A] border border-white/10" : "bg-indigo-100"}`}>
+          <div className={`w-7 h-7 rounded-full flex items-center justify-center shrink-0 ${isDark ? "bg-slate-900 border border-white/10" : "bg-indigo-100"}`}>
             <BotIcon size={13} className="text-indigo-600" />
           </div>
           <div className={`border rounded-2xl rounded-tl-sm p-2 text-xs ${isDark ? "bg-slate-800 border-white/10 text-slate-200" : "bg-white border-gray-200 text-gray-700"}`}>
@@ -250,7 +250,7 @@ export function AssistantPage({ navigationState = {}, onNavigate = () => {}, cam
 
         {assistantLoading && (
           <div className="flex gap-1 max-w-[80%]">
-            <div className={`w-7 h-7 rounded-full flex items-center justify-center shrink-0 ${isDark ? "bg-[#0F172A] border border-white/10" : "bg-indigo-100"}`}>
+            <div className={`w-7 h-7 rounded-full flex items-center justify-center shrink-0 ${isDark ? "bg-slate-900 border border-white/10" : "bg-indigo-100"}`}>
               <BotIcon size={13} className="text-indigo-600" />
             </div>
             <div className={`border rounded-2xl rounded-tl-sm p-2 text-xs ${isDark ? "bg-slate-800 border-white/10 text-slate-400" : "bg-white border-gray-200 text-gray-400"}`}>

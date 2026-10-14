@@ -65,6 +65,9 @@ html.dark .auth-card button.bg-\[\#fbfaf7\] { background: rgb(var(--n-800)); col
 
   h1, h2, h3 { letter-spacing: -0.01em; }
 
+  /* respuesta táctil sutil en botones */
+  button:not(:disabled):not([role="radio"]):active { transform: translateY(0.5px) scale(0.985); }
+
   @media (prefers-reduced-motion: reduce) {
     * { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
   }
@@ -1409,47 +1412,51 @@ html.dark .auth-card button.bg-\[\#fbfaf7\] { background: rgb(var(--n-800)); col
 ::-webkit-scrollbar-thumb { @apply bg-slate-300 rounded-full; }
 ::-webkit-scrollbar-thumb:hover { @apply bg-slate-400; }
 
+/* Tema oscuro global: antes usaba los slate de Tailwind en código duro; ahora toma los tokens del tema. */
 .theme-dark body {
-  background: #0f172a;
+  background-color: rgb(var(--surface-page));
 }
 
 .theme-dark .app-shell,
-.theme-dark main,
+.theme-dark main {
+  background-color: transparent !important;
+}
+
 .theme-dark .bg-gray-50,
 .theme-dark .bg-slate-50 {
-  background-color: #0f172a !important;
+  background-color: rgb(var(--n-900)) !important;
 }
 
 .theme-dark .bg-white {
-  background-color: #1e293b !important;
+  background-color: rgb(var(--surface-card)) !important;
 }
 
 .theme-dark .text-gray-900,
 .theme-dark .text-slate-900,
 .theme-dark .text-gray-800,
 .theme-dark .text-slate-800 {
-  color: #f8fafc !important;
+  color: rgb(var(--n-50)) !important;
 }
 
 .theme-dark .text-gray-700,
 .theme-dark .text-slate-700,
 .theme-dark .text-gray-600,
 .theme-dark .text-slate-600 {
-  color: #cbd5e1 !important;
+  color: rgb(var(--n-300)) !important;
 }
 
 .theme-dark .text-gray-500,
 .theme-dark .text-slate-500,
 .theme-dark .text-gray-400,
 .theme-dark .text-slate-400 {
-  color: #94a3b8 !important;
+  color: rgb(var(--n-400)) !important;
 }
 
 .theme-dark .border-gray-100,
 .theme-dark .border-gray-200,
 .theme-dark .border-slate-100,
 .theme-dark .border-slate-200 {
-  border-color: #334155 !important;
+  border-color: rgb(var(--n-700)) !important;
 }
 
 .theme-dark .shadow-sm,
@@ -1461,9 +1468,9 @@ html.dark .auth-card button.bg-\[\#fbfaf7\] { background: rgb(var(--n-800)); col
 .theme-dark input,
 .theme-dark textarea,
 .theme-dark select {
-  background-color: #0f172a !important;
-  border-color: #334155 !important;
-  color: #f8fafc !important;
+  background-color: rgb(var(--n-950)) !important;
+  border-color: rgb(var(--n-700)) !important;
+  color: rgb(var(--n-50)) !important;
 }
 
 .spinner {

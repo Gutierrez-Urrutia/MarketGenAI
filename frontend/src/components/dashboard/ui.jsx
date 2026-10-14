@@ -101,7 +101,7 @@ export const KpiCard = ({ icon: Ic, label, value, sub, color, onClick, ariaLabel
   const { theme } = useTheme();
   const isDark = theme === "dark" || (theme === "system" && window.matchMedia?.("(prefers-color-scheme: dark)").matches);
   const iconClass = isDark
-    ? `${color.replace(/\bbg-\S+/g, "bg-[#0F172A]")} border border-white/10`
+    ? `${color.replace(/\bbg-\S+/g, "bg-slate-900")} border border-white/10`
     : color;
   const content = (
     <div>
