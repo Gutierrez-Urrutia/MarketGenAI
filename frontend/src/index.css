@@ -616,6 +616,42 @@
   list-style: disc;
 }
 
+/* PDF: list markers are real text (see materializeListMarkers), at the text's
+   size and on its baseline instead of html2canvas' raised native markers. */
+.proposal-export-pdf .proposal-export-list {
+  list-style: none;
+  padding-left: 0;
+}
+
+.proposal-export-pdf .proposal-export-list > li {
+  padding-left: 1.8em;
+  position: relative;
+}
+
+.proposal-export-pdf .proposal-list-marker {
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  left: 0;
+  line-height: inherit;
+  position: absolute;
+  top: 0;
+}
+
+/* PDF: a section title and its first block move to the next page together. */
+.proposal-export-pdf .proposal-keep-with-next {
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+
+.proposal-export-pdf .proposal-split-head {
+  margin-bottom: 0;
+}
+
+.proposal-export-pdf .proposal-split-tail {
+  margin-top: 0;
+}
+
 .proposal-export-pdf .proposal-paper section {
   margin: 24px 0;
   padding-top: 0;

@@ -856,8 +856,10 @@ export function normalizeProposalDocument(proposal = {}) {
   return {
     title: structured.title || proposal.title || proposal.name || "AI Generated Proposal",
     client: structured.client || proposal.client || proposal.customerName || proposal.customer_name || proposal.clientName || "",
-    clientEmail: structured.clientEmail || proposal.clientEmail || proposal.client_email || "",
-    clientCompany: structured.clientCompany || proposal.clientCompany || proposal.client_company || "",
+    // The saved proposal field wins over the structuredContent snapshot, so an
+    // email/company edited after loading isn't replaced by the stale copy.
+    clientEmail: proposal.clientEmail || proposal.client_email || structured.clientEmail || "",
+    clientCompany: proposal.clientCompany || proposal.client_company || structured.clientCompany || "",
     contact: structured.contact || proposal.contact || proposal.opportunity?.contact || "",
     totalAmount: total.totalAmount,
     industry: structured.industry || proposal.industryName || proposal.opportunity?.industry || proposal.industry || "",
@@ -1236,6 +1238,15 @@ function downloadBlob(blob, filename) {
   window.URL.revokeObjectURL(url);
 }
 
+// html2pdf page geometry for the proposal PDF (A4; margins top, left, bottom,
+// right in mm), in CSS px the same way html2pdf computes it.
+const PROPOSAL_PDF_MARGIN_MM = [14, 8, 18, 8];
+const mmToCssPx = (mm) => Math.floor((mm / 25.4) * 96);
+const PROPOSAL_PDF_PAGE_PX = {
+  width: mmToCssPx(210 - PROPOSAL_PDF_MARGIN_MM[1] - PROPOSAL_PDF_MARGIN_MM[3]),
+  height: mmToCssPx(297 - PROPOSAL_PDF_MARGIN_MM[0] - PROPOSAL_PDF_MARGIN_MM[2]),
+};
+
 function createProposalExportClone(sourceElement) {
   if (!sourceElement) return null;
   const clone = sourceElement.cloneNode(true);
@@ -1259,9 +1270,9 @@ function createProposalExportClone(sourceElement) {
   wrapper.style.position = "fixed";
   wrapper.style.left = "-10000px";
   wrapper.style.top = "0";
-  wrapper.style.width = "794px";
+  // Same width as html2pdf's page container, so measurements match the PDF layout.
+  wrapper.style.width = `${PROPOSAL_PDF_PAGE_PX.width}px`;
   wrapper.style.background = "#ffffff";
-  wrapper.style.padding = "24px";
   wrapper.appendChild(clone);
   document.body.appendChild(wrapper);
   return { wrapper, clone };
@@ -1316,6 +1327,50 @@ function createTemporaryProposalPreview(proposal) {
 
 // Inlines the logo as a data URL so html2canvas always captures it; if the
 // logo can't be loaded, drops the <img> so the PDF is still generated.
+// html2canvas draws native list markers small and raised (like superscripts):
+// replace them with real text in the export clone.
+function materializeListMarkers(root) {
+  root.querySelectorAll("ol, ul").forEach((list) => {
+    const ordered = list.tagName === "OL";
+    let number = ordered ? Number(list.getAttribute("start")) || 1 : 1;
+    list.classList.add("proposal-export-list");
+    [...list.children].filter((child) => child.tagName === "LI").forEach((item) => {
+      if (item.firstElementChild?.classList.contains("proposal-list-marker")) return;
+      const marker = document.createElement("span");
+      marker.className = "proposal-list-marker";
+      marker.textContent = ordered ? `${number}.` : "•";
+      number += 1;
+      item.prepend(marker);
+    });
+  });
+}
+
+// html2pdf ignores "break-after: avoid", so a section title could end a page
+// alone. Group each <h2> with the first block after it in a wrapper that
+// html2pdf keeps on one page (it is in the pagebreak "avoid" list). For a long
+// list only its first item goes in the group, so the rest can still flow.
+function keepHeadingsWithNextBlock(root, pageHeightPx = PROPOSAL_PDF_PAGE_PX.height) {
+  root.querySelectorAll("h2").forEach((heading) => {
+    if (heading.parentElement?.classList.contains("proposal-keep-with-next")) return;
+    const next = heading.nextElementSibling;
+    if (!next) return;
+    const group = document.createElement("div");
+    group.className = "proposal-keep-with-next";
+    heading.before(group);
+    group.appendChild(heading);
+    const items = next.matches("ul, ol, .proposal-card-list") ? [...next.children] : [];
+    if (items.length > 1 && next.getBoundingClientRect().height > pageHeightPx / 2) {
+      const head = next.cloneNode(false);
+      head.classList.add("proposal-split-head");
+      next.classList.add("proposal-split-tail");
+      head.appendChild(items[0]);
+      group.appendChild(head);
+    } else {
+      group.appendChild(next);
+    }
+  });
+}
+
 async function prepareExportLogo(root) {
   const logo = await loadBrandLogo();
   const images = [...root.querySelectorAll(".proposal-logo")];
@@ -1347,6 +1402,8 @@ export async function renderProposalPdf(proposal, sourceElement) {
 
   try {
     await prepareExportLogo(exportNode.clone);
+    materializeListMarkers(exportNode.clone);
+    keepHeadingsWithNextBlock(exportNode.clone);
     const filename = `${sanitizeDownloadName(doc.title)}.pdf`;
     const buildWorker = () => html2pdf()
       .set({
@@ -1357,7 +1414,7 @@ export async function renderProposalPdf(proposal, sourceElement) {
         // get sliced in half across a page boundary. With that in place this
         // margin only needs to cover the page's breathing room, not also
         // fake a "fresh paragraph" feeling.
-        margin: [14, 8, 18, 8],
+        margin: PROPOSAL_PDF_MARGIN_MM,
         image: { type: "png", quality: 1 },
         html2canvas: {
           scale: 3,
@@ -1373,6 +1430,7 @@ export async function renderProposalPdf(proposal, sourceElement) {
         pagebreak: {
           mode: ["css", "legacy"],
           avoid: [
+            ".proposal-keep-with-next",
             ".proposal-cover",
             ".proposal-highlight-section",
             ".proposal-total-card",

@@ -87,6 +87,21 @@ describe('proposal DOCX export', () => {
     expect(xml).toContain('Errores de digitación: retrasan la facturación.')
   })
 
+  it('shows the saved client email, not an older copy left in structuredContent', async () => {
+    // Shape of a proposal loaded from the backend after the email was edited.
+    const loaded = {
+      ...proposal,
+      clientEmail: 'nuevo@acme.cl',
+      structuredContent: normalizeProposalDocument({ ...proposal, clientEmail: 'antiguo@acme.cl' }),
+    }
+
+    const { xml } = await docxParts(loaded)
+
+    expect(xml).toContain('Correo: nuevo@acme.cl')
+    expect(xml).not.toContain('antiguo@acme.cl')
+    expect(proposalDocumentToHtml(loaded)).toContain('Correo: nuevo@acme.cl')
+  })
+
   it('uses the DOCX font (Calibri), not the web font of the preview/PDF', async () => {
     const { xml } = await docxParts(proposal)
 
