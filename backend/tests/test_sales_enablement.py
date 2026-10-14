@@ -25,6 +25,11 @@ def _draft(**over):
 
 
 # ── servicio ─────────────────────────────────────────────────────────────────
+def test_prompt_protects_confidentiality_of_other_clients():
+    prompt = svc.build_prompt("objection", "precio", "Acme", "es", None, SOURCES)
+    assert "never name or identify a client that appears in the sources" in prompt
+
+
 def test_prompt_restricts_to_sources_and_marks_gaps():
     prompt = svc.build_prompt("case_study", "cobranza", "Acme", "es", None, SOURCES)
     assert "50 agentes" in prompt and "Propuesta Cobranza Banco Uno" in prompt

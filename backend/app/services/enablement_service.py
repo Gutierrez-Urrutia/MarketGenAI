@@ -92,6 +92,7 @@ STRICT RULES:
 - Do not present estimates or targets as achieved results.
 - Plain text only: no markdown, no #, no **, no HTML. Use short lines; start list items with "- ".
 - Do not include prices unless a source states them.
+- Confidentiality: the sources come from proposals written for other clients. In any text addressed to the prospect or client (the main body and the suggested response), never name or identify a client that appears in the sources; describe it generically (for example "un banco", "una cadena de retail"), unless that client is the one named in the "Client or prospect" field above. The "(Fuente: ...)" citations are internal verification notes and may keep the document title.
 
 REQUIRED STRUCTURE (section titles on their own line, in {_LANGUAGE_NAMES[lang]}):
 {_STRUCTURES[kind]}
