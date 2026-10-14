@@ -7,6 +7,7 @@ import {
   Document,
   Footer,
   HeadingLevel,
+  ImageRun,
   Packer,
   PageNumber,
   Paragraph,
@@ -38,7 +39,7 @@ import Modal from "./components/ui/Modal";
 import PipelineSettingsTab from "./pages/settings/PipelineSettingsTab";
 
 import ReactMarkdown from "react-markdown";
-import { BRAND, docxColor, rgbColor } from "./config/brand";
+import { BRAND, docxColor, loadBrandLogo, rgbColor } from "./config/brand";
 
 const PREF_KEYS = {
   language: "marketgen_language",
@@ -736,6 +737,7 @@ function proposalDocumentToHtml(proposal = {}) {
     <article class="proposal-preview-document">
       <div class="proposal-paper">
         <header class="proposal-cover">
+          <img class="proposal-logo" src="${escapeHtml(BRAND.logoPath)}" alt="${escapeHtml(BRAND.name)}" onerror="this.remove()" />
           <p class="proposal-eyebrow">${escapeHtml(copy.preparedBy)}</p>
           <h1>${escapeHtml(doc.title)}</h1>
           <p class="proposal-subtitle">${escapeHtml(copy.proposalEyebrow)} · ${escapeHtml(copy.preparedFor)} ${escapeHtml(doc.client)}</p>
@@ -825,6 +827,12 @@ function ProposalDocumentPreview({ proposal, className = "", exportRef = null })
     <article ref={exportRef} className={`proposal-preview-document ${className}`}>
       <div className="proposal-paper">
         <header className="proposal-cover">
+          <img
+            className="proposal-logo"
+            src={BRAND.logoPath}
+            alt={BRAND.name}
+            onError={(event) => { event.currentTarget.style.display = "none"; }}
+          />
           <p className="proposal-eyebrow">{copy.preparedBy}</p>
           <h1>{doc.title}</h1>
           <p className="proposal-subtitle">{copy.proposalEyebrow} · {copy.preparedFor} {doc.client}</p>
@@ -983,6 +991,26 @@ function createTemporaryProposalPreview(proposal) {
   return { wrapper, element: wrapper.querySelector(".proposal-preview-document") };
 }
 
+// Inlines the logo as a data URL so html2canvas always captures it; if the
+// logo can't be loaded, drops the <img> so the PDF is still generated.
+async function prepareExportLogo(root) {
+  const logo = await loadBrandLogo();
+  const images = [...root.querySelectorAll(".proposal-logo")];
+  await Promise.all(images.map(async (img) => {
+    if (!logo) {
+      img.remove();
+      return;
+    }
+    img.style.display = "";
+    img.src = logo.dataUrl;
+    try {
+      await img.decode?.();
+    } catch {
+      img.remove();
+    }
+  }));
+}
+
 async function exportProposalPdf(proposal, sourceElement) {
   const doc = normalizeProposalDocument(proposal);
   const temporary = sourceElement ? null : createTemporaryProposalPreview(proposal);
@@ -990,6 +1018,7 @@ async function exportProposalPdf(proposal, sourceElement) {
   if (!exportNode) throw new Error("Proposal preview is not available for PDF export.");
 
   try {
+    await prepareExportLogo(exportNode.clone);
     const filename = `${sanitizeDownloadName(doc.title)}.pdf`;
     const buildWorker = () => html2pdf()
       .set({
@@ -1236,11 +1265,29 @@ function docxSignatureCell(label) {
   });
 }
 
-async function exportProposalDocx(proposal, sourceElement) {
+// Logo paragraph for the DOCX cover, or null when the logo isn't available.
+function docxLogoParagraph(logo) {
+  if (!logo) return null;
+  const maxWidth = 180;
+  const maxHeight = 56;
+  const scale = Math.min(maxWidth / logo.width, maxHeight / logo.height, 1);
+  return new Paragraph({
+    spacing: { after: 240 },
+    children: [new ImageRun({
+      type: logo.type,
+      data: logo.bytes,
+      transformation: { width: Math.round(logo.width * scale), height: Math.round(logo.height * scale) },
+      altText: { name: BRAND.name, title: BRAND.name, description: `${BRAND.name} logo` },
+    })],
+  });
+}
+
+export async function buildProposalDocx(proposal, sourceElement) {
   const temporary = sourceElement ? null : createTemporaryProposalPreview(proposal);
   try {
     const doc = extractProposalDocumentFromDom(sourceElement || temporary?.element, proposal);
     const copy = getProposalCopy(doc.language);
+    const logoParagraph = docxLogoParagraph(await loadBrandLogo());
     // Mirror the PDF/preview fallbacks: a Table built from a zero-length rows
     // array throws (docx tries to Array(Math.max(...[])) internally), so an
     // empty list must never reach docxTechnologyRows/docxRowsFromLineItems.
@@ -1334,6 +1381,7 @@ async function exportProposalDocx(proposal, sourceElement) {
           }),
         },
         children: [
+          ...(logoParagraph ? [logoParagraph] : []),
           new Paragraph({
             children: [docxText(copy.preparedBy.toUpperCase(), { bold: true, color: DOCX_COLORS.primary, size: 22 })],
             border: { top: { style: BorderStyle.SINGLE, size: 18, color: DOCX_COLORS.primary } },
@@ -1377,11 +1425,16 @@ async function exportProposalDocx(proposal, sourceElement) {
       },
     });
 
-    const blob = await Packer.toBlob(proposalDoc);
-    downloadBlob(blob, `${sanitizeDownloadName(doc.title)}.docx`);
+    return { proposalDoc, filename: `${sanitizeDownloadName(doc.title)}.docx` };
   } finally {
     temporary?.wrapper.remove();
   }
+}
+
+async function exportProposalDocx(proposal, sourceElement) {
+  const { proposalDoc, filename } = await buildProposalDocx(proposal, sourceElement);
+  const blob = await Packer.toBlob(proposalDoc);
+  downloadBlob(blob, filename);
 }
 
 async function exportProposalDocument(proposal, format, sourceElement) {

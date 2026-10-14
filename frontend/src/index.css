@@ -713,6 +713,17 @@
   color: var(--proposal-brand-text);
 }
 
+.proposal-preview-document .proposal-logo {
+  align-self: flex-start;
+  display: block;
+  height: auto;
+  margin: 0 0 18px;
+  max-height: 56px;
+  max-width: 200px;
+  object-fit: contain;
+  object-position: left center;
+}
+
 .proposal-preview-document h1,
 .theme-dark .proposal-preview-document:not(.proposal-export-pdf) h1 {
   color: var(--proposal-navy-deep);

@@ -87,3 +87,65 @@ export function applyBrandCssVariables(target = typeof document !== "undefined" 
   if (!target) return;
   Object.entries(brandCssVariables()).forEach(([name, value]) => target.style.setProperty(name, value));
 }
+
+/** Reads width/height from PNG or JPEG bytes (no DOM needed). */
+export function readImageSize(bytes) {
+  const data = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  const isPng = data[0] === 0x89 && data[1] === 0x50 && data[2] === 0x4e && data[3] === 0x47;
+  if (isPng && data.length >= 24) {
+    const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+    return { type: "png", width: view.getUint32(16), height: view.getUint32(20) };
+  }
+  const isJpeg = data[0] === 0xff && data[1] === 0xd8;
+  if (isJpeg) {
+    let offset = 2;
+    while (offset + 9 < data.length) {
+      if (data[offset] !== 0xff) { offset += 1; continue; }
+      const marker = data[offset + 1];
+      const length = (data[offset + 2] << 8) + data[offset + 3];
+      if (marker >= 0xc0 && marker <= 0xcf && ![0xc4, 0xc8, 0xcc].includes(marker)) {
+        return {
+          type: "jpg",
+          height: (data[offset + 5] << 8) + data[offset + 6],
+          width: (data[offset + 7] << 8) + data[offset + 8],
+        };
+      }
+      offset += 2 + length;
+    }
+  }
+  return null;
+}
+
+function bytesToDataUrl(bytes, type) {
+  let binary = "";
+  const chunk = 0x8000;
+  for (let index = 0; index < bytes.length; index += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + chunk));
+  }
+  return `data:image/${type === "jpg" ? "jpeg" : type};base64,${btoa(binary)}`;
+}
+
+let logoPromise = null;
+
+/**
+ * Loads the brand logo once. Resolves to { bytes, dataUrl, type, width, height },
+ * or null when the file is missing or not a PNG/JPEG, so exports never break on it.
+ */
+export function loadBrandLogo({ force = false } = {}) {
+  if (logoPromise && !force) return logoPromise;
+  logoPromise = (async () => {
+    try {
+      const response = await fetch(BRAND.logoPath);
+      if (!response.ok) return null;
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      const size = readImageSize(bytes);
+      if (!size || !size.width || !size.height) return null;
+      return { bytes, dataUrl: bytesToDataUrl(bytes, size.type), ...size };
+    } catch {
+      return null;
+    }
+  })();
+  // Don't cache a failure: a later export retries the download.
+  logoPromise.then((logo) => { if (!logo) logoPromise = null; });
+  return logoPromise;
+}
