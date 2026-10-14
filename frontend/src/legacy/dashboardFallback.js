@@ -2,7 +2,7 @@ import { DEMO_OPPORTUNITIES, DEMO_OUTREACH_HISTORY, DEMO_REVIEW_EMAILS } from "@
 import { createEmptyDashboardState } from "@/features/dashboard/dashboardSnapshot";
 import { normalizeStageName, selectOpportunityMetrics } from "@/features/opportunities/opportunityHelpers";
 
-function hasPipelineSignals(state) {
+export function hasPipelineSignals(state) {
   if (!state || typeof state !== "object") return false;
   const kpiTotal = ["detected", "researched", "contacted", "pendingReview", "replied", "won"]
     .reduce((sum, key) => sum + (Number(state.metrics?.[key]) || 0), 0);
@@ -14,7 +14,7 @@ function hasPipelineSignals(state) {
   return kpiTotal + funnelTotal + relevantTotal > 0;
 }
 
-function hasFunnelSignals(state) {
+export function hasFunnelSignals(state) {
   if (!state || typeof state !== "object") return false;
   const funnelTotal = ["scanned", "contactsEnriched", "contentMatched", "emailsSent", "repliesReceived", "dealsWon"]
     .reduce((sum, key) => sum + (Number(state.funnel?.[key]) || 0), 0);
@@ -24,7 +24,7 @@ function hasFunnelSignals(state) {
   return funnelTotal + relevantTotal > 0;
 }
 
-function buildLocalPipelineFallbackSnapshot(snapshot = createEmptyDashboardState()) {
+export function buildLocalPipelineFallbackSnapshot(snapshot = createEmptyDashboardState()) {
   const opportunities = DEMO_OPPORTUNITIES;
   const reviewEmails = DEMO_REVIEW_EMAILS;
   const outreachHistory = DEMO_OUTREACH_HISTORY;

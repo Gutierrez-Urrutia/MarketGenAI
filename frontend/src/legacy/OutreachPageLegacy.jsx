@@ -9,7 +9,7 @@ import { useTheme } from "@/context/ThemeContext";
 /* ═══════════════════════════════════════════════════════════════ */
 /*  PAGE: OUTREACH (merged Review Queue + Outreach History)        */
 /* ═══════════════════════════════════════════════════════════════ */
-function OutreachPageLegacy({ navigationState = {} }) {
+export function OutreachPageLegacy({ navigationState = {} }) {
   const { t } = useI18n();
   const { theme } = useTheme();
   const isDark = theme === "dark" || (theme === "system" && window.matchMedia?.("(prefers-color-scheme: dark)").matches);

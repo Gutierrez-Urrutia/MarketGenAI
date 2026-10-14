@@ -5,7 +5,7 @@ import { saveLocalCampaign } from "@/utils/localStore";
 import { useI18n } from "@/hooks/useI18n";
 import { useState } from "react";
 
-function CampaignModal({ onClose, onCreated }) {
+export function CampaignModal({ onClose, onCreated }) {
   const { t } = useI18n();
   const [form, setForm] = useState({
     name: "",
