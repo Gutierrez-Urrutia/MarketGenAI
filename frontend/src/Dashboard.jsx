@@ -1238,7 +1238,9 @@ function createProposalExportClone(sourceElement) {
   }
   clone.classList.remove("max-h-[55vh]", "max-h-[65vh]", "overflow-y-auto", "shadow-sm");
   clone.classList.add("proposal-export-pdf");
-  clone.style.width = "794px";
+  // html2pdf re-clones this node into a container as wide as the printable
+  // A4 area (~733px). A fixed 794px width overflowed it and clipped the right edge.
+  clone.style.width = "100%";
   clone.style.maxHeight = "none";
   clone.style.overflow = "visible";
   clone.style.boxShadow = "none";
@@ -1254,6 +1256,40 @@ function createProposalExportClone(sourceElement) {
   wrapper.appendChild(clone);
   document.body.appendChild(wrapper);
   return { wrapper, clone };
+}
+
+// Removes the blank strip at the bottom of the captured page image. html2pdf
+// adds a whole new PDF page for any leftover pixels, so a few px of trailing
+// padding produced an almost empty last page.
+function trimCanvasBottom(canvas, paddingPx = 24) {
+  const context = canvas?.getContext?.("2d");
+  if (!context || !canvas.width || !canvas.height) return;
+  const { width, height } = canvas;
+  const isBlank = (data, index) => data[index] > 245 && data[index + 1] > 245 && data[index + 2] > 245;
+  const chunkRows = 64;
+  let lastContentRow = -1;
+  for (let bottom = height; bottom > 0 && lastContentRow < 0; bottom -= chunkRows) {
+    const top = Math.max(0, bottom - chunkRows);
+    const { data } = context.getImageData(0, top, width, bottom - top);
+    for (let row = bottom - top - 1; row >= 0 && lastContentRow < 0; row -= 1) {
+      const rowStart = row * width * 4;
+      for (let col = 0; col < width; col += 1) {
+        if (!isBlank(data, rowStart + col * 4)) {
+          lastContentRow = top + row;
+          break;
+        }
+      }
+    }
+  }
+  if (lastContentRow < 0) return;
+  const newHeight = Math.min(height, lastContentRow + 1 + paddingPx);
+  if (newHeight >= height) return;
+  const copy = document.createElement("canvas");
+  copy.width = width;
+  copy.height = newHeight;
+  copy.getContext("2d").drawImage(canvas, 0, 0);
+  canvas.height = newHeight;
+  canvas.getContext("2d").drawImage(copy, 0, 0);
 }
 
 function createTemporaryProposalPreview(proposal) {
@@ -1289,7 +1325,7 @@ async function prepareExportLogo(root) {
   }));
 }
 
-async function exportProposalPdf(proposal, sourceElement) {
+export async function renderProposalPdf(proposal, sourceElement) {
   const doc = normalizeProposalDocument(proposal);
   const temporary = sourceElement ? null : createTemporaryProposalPreview(proposal);
   const exportNode = createProposalExportClone(sourceElement || temporary?.element);
@@ -1316,6 +1352,8 @@ async function exportProposalPdf(proposal, sourceElement) {
           scrollX: 0,
           scrollY: 0,
           windowWidth: 940,
+          // Runs on the captured canvas before html2pdf slices it into pages.
+          onrendered: trimCanvasBottom,
         },
         jsPDF: { unit: "mm", format: "a4", orientation: "portrait", compress: true },
         pagebreak: {
@@ -1364,11 +1402,16 @@ async function exportProposalPdf(proposal, sourceElement) {
       pdf.setTextColor(...rgbColor(BRAND.colors.muted));
       pdf.text(`${BRAND.name} - ${page} / ${pageCount}`, pageWidth / 2, pageHeight - 8, { align: "center" });
     }
-    pdf.save(filename);
+    return { pdf, filename };
   } finally {
     exportNode.wrapper.remove();
     temporary?.wrapper.remove();
   }
+}
+
+async function exportProposalPdf(proposal, sourceElement) {
+  const { pdf, filename } = await renderProposalPdf(proposal, sourceElement);
+  pdf.save(filename);
 }
 
 function extractProposalDocumentFromDom(sourceElement, fallbackProposal = {}) {

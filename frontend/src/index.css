@@ -593,6 +593,34 @@
   padding: 26px 38px;
 }
 
+/* In the PDF the page itself is the paper: no card border, radius or bottom
+   padding (they spilled onto an extra, almost empty page). */
+.proposal-export-pdf .proposal-paper,
+.proposal-export-pdf.proposal-preview-document .proposal-paper {
+  border: 0;
+  border-radius: 0;
+  padding-bottom: 0;
+}
+
+.proposal-export-pdf .proposal-paper > :last-child {
+  margin-bottom: 0;
+}
+
+/* The export cover has no top padding; keep the logo clear of the brand bar. */
+.proposal-export-pdf .proposal-cover .proposal-logo {
+  margin-top: 14px;
+}
+
+/* Tailwind's preflight strips list markers; the document needs them
+   (e.g. numbered Next Steps). */
+.proposal-preview-document ol {
+  list-style: decimal;
+}
+
+.proposal-preview-document ul {
+  list-style: disc;
+}
+
 .proposal-export-pdf .proposal-paper section {
   margin: 24px 0;
   padding-top: 0;
