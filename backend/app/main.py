@@ -29,6 +29,7 @@ from app.routers import (
     proposals,
     publishing,
     reports,
+    sales_enablement,
     settings as settings_router,
     social,
     social_mock,
@@ -73,6 +74,7 @@ app.include_router(pipeline.router, prefix="/api/v1")
 app.include_router(leads.router, prefix="/api/v1")
 app.include_router(customers.router, prefix="/api/v1")
 app.include_router(knowledge.router, prefix="/api/v1")
+app.include_router(sales_enablement.router, prefix="/api/v1")
 app.include_router(templates.router, prefix="/api/v1")
 app.include_router(assets.router, prefix="/api/v1")
 app.include_router(jobs.router, prefix="/api/v1")

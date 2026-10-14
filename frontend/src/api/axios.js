@@ -407,6 +407,13 @@ export const knowledgeApi = {
   remove: (id) => api.delete(`/knowledge/documents/${id}`),
 }
 
+export const enablementApi = {
+  list: (type) => api.get('/sales-enablement/drafts', { params: type ? { type } : undefined }),
+  generate: (data) => api.post('/sales-enablement/drafts/generate', data, { timeout: 180_000 }),
+  update: (id, data) => api.put(`/sales-enablement/drafts/${id}`, data),
+  remove: (id) => api.delete(`/sales-enablement/drafts/${id}`),
+}
+
 export const customersApi = {
   list: (params) => api.get('/customers', { params }),
   create: (data) => api.post('/customers', data),
