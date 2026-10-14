@@ -35,7 +35,7 @@ _STRUCTURES = {
     ),
     "objection": (
         "Title (one line)\nThe objection (restated neutrally)\nWhat is behind it\n"
-        "Suggested response (short, conversational)\nSupporting evidence from the sources\nFollow-up question for the prospect"
+        "Suggested response (spoken words only, short and conversational: no citations, never mention the sources or gaps in the data, and no headcount, SLAs, penalties, prices or other terms taken from another client's proposal; speak about the company's general capabilities and ask questions instead)\nSupporting evidence from the sources\nFollow-up question for the prospect"
     ),
 }
 
@@ -88,7 +88,7 @@ Extra instruction: {instructions or "None"}
 STRICT RULES:
 - Use ONLY facts, figures, names and results that appear in the SOURCES. Never invent clients, numbers, certifications or outcomes.
 - If something needed is not in the SOURCES, write {PLACEHOLDER} what is missing] in its place instead of making it up. Keep the word COMPLETAR, but write the description of what is missing in the output language.
-- Mention which source supports each key claim, as (Fuente: document title).
+- Mention which source supports each key claim, as (Fuente: document title), but never inside the words a salesperson would say to the prospect; put citations in the evidence or notes sections only.
 - Do not present estimates or targets as achieved results.
 - Plain text only: no markdown, no #, no **, no HTML. Use short lines; start list items with "- ".
 - Do not include prices unless a source states them.
