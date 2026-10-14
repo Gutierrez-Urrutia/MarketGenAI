@@ -579,7 +579,7 @@
 }
 
 .proposal-export-pdf {
-  color: #111827;
+  color: var(--proposal-text);
   font-size: 13px;
   line-height: 1.56;
 }
@@ -591,6 +591,65 @@
   box-shadow: none;
   margin-top: 0;
   padding: 26px 38px;
+}
+
+/* In the PDF the page itself is the paper: no card border, radius or bottom
+   padding (they spilled onto an extra, almost empty page). */
+.proposal-export-pdf .proposal-paper,
+.proposal-export-pdf.proposal-preview-document .proposal-paper {
+  border: 0;
+  border-radius: 0;
+  padding-bottom: 0;
+}
+
+.proposal-export-pdf .proposal-paper > :last-child {
+  margin-bottom: 0;
+}
+
+/* Tailwind's preflight strips list markers; the document needs them
+   (e.g. numbered Next Steps). */
+.proposal-preview-document ol {
+  list-style: decimal;
+}
+
+.proposal-preview-document ul {
+  list-style: disc;
+}
+
+/* PDF: list markers are real text (see materializeListMarkers), at the text's
+   size and on its baseline instead of html2canvas' raised native markers. */
+.proposal-export-pdf .proposal-export-list {
+  list-style: none;
+  padding-left: 0;
+}
+
+.proposal-export-pdf .proposal-export-list > li {
+  padding-left: 1.8em;
+  position: relative;
+}
+
+.proposal-export-pdf .proposal-list-marker {
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  left: 0;
+  line-height: inherit;
+  position: absolute;
+  top: 0;
+}
+
+/* PDF: a section title and its first block move to the next page together. */
+.proposal-export-pdf .proposal-keep-with-next {
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+
+.proposal-export-pdf .proposal-split-head {
+  margin-bottom: 0;
+}
+
+.proposal-export-pdf .proposal-split-tail {
+  margin-top: 0;
 }
 
 .proposal-export-pdf .proposal-paper section {
@@ -664,18 +723,25 @@
   height: 1px;
 }
 
-/* Corporate proposal document: print-first navy, neutral gray, and restrained brand indigo. */
+/* Corporate proposal document. Colors come from src/config/brand.js
+   (applied as --brand-* variables on <html> by applyBrandCssVariables). */
 .proposal-preview-document {
-  --proposal-navy: #1a2b4a;
-  --proposal-navy-deep: #111c30;
-  --proposal-brand: #6366f1;
-  --proposal-brand-text: #4f46e5;
-  --proposal-brand-soft: #eef2ff;
-  --proposal-text: #1f2937;
-  --proposal-muted: #64748b;
-  --proposal-border: #d8dee8;
-  --proposal-surface: #f6f8fb;
+  /* "navy" = title color (primary); "brand" = primary fills; accent = lines only. */
+  --proposal-navy: var(--brand-primary);
+  --proposal-navy-deep: var(--brand-primary-deep);
+  --proposal-brand: var(--brand-primary);
+  --proposal-accent: var(--brand-accent);
+  --proposal-on-brand: var(--brand-on-primary);
+  --proposal-brand-text: var(--brand-primary);
+  --proposal-brand-soft: var(--brand-primary-soft);
+  --proposal-brand-tint: var(--brand-primary-tint);
+  --proposal-brand-line: var(--brand-primary-line);
+  --proposal-text: var(--brand-text);
+  --proposal-muted: var(--brand-muted);
+  --proposal-border: var(--brand-border);
+  --proposal-surface: var(--brand-surface);
   background: #ffffff;
+  font-family: var(--brand-font);
   color: var(--proposal-text);
 }
 
@@ -690,23 +756,82 @@
 .proposal-preview-document .proposal-cover,
 .theme-dark .proposal-preview-document:not(.proposal-export-pdf) .proposal-cover {
   border-bottom: 1px solid var(--proposal-border);
-  padding-top: 28px;
+  padding-top: 0;
   position: relative;
 }
 
-.proposal-preview-document .proposal-cover::before {
+/* Primary-color band at the top of the cover; the (white) logo sits inside it. */
+.proposal-preview-document .proposal-logo-band {
+  align-items: center;
   background: var(--proposal-brand);
-  content: "";
-  height: 5px;
-  left: 0;
-  position: absolute;
-  right: 0;
-  top: 0;
+  border-bottom: 4px solid var(--proposal-accent);
+  border-radius: 6px 6px 0 0;
+  display: flex;
+  margin: 0 0 24px;
+  min-height: 80px;
+  padding: 12px 20px;
+}
+
+.proposal-preview-document .proposal-logo-name {
+  color: var(--proposal-on-brand);
+  display: none;
+  font-size: 20px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+}
+
+/* Logo failed to load: show the brand name in the band instead. */
+.proposal-preview-document .proposal-logo-band.logo-missing .proposal-logo-name {
+  display: inline;
 }
 
 .proposal-preview-document .proposal-eyebrow,
 .theme-dark .proposal-preview-document:not(.proposal-export-pdf) .proposal-eyebrow {
   color: var(--proposal-brand-text);
+}
+
+.proposal-preview-document .proposal-logo {
+  display: block;
+  height: 56px;
+  margin: 0;
+  max-height: 56px;
+  max-width: 200px;
+  object-fit: contain;
+  object-position: left center;
+}
+
+.proposal-preview-document .proposal-client-details {
+  color: var(--proposal-navy);
+  font-size: 14px;
+  font-weight: 600;
+  margin: 8px 0 0;
+}
+
+.proposal-preview-document .proposal-intro {
+  margin-top: 12px;
+}
+
+.proposal-preview-document .proposal-intro p {
+  color: var(--proposal-muted);
+  margin-bottom: 6px;
+}
+
+.proposal-preview-document .proposal-adjustments {
+  margin: 12px 0 0 auto;
+  max-width: 320px;
+}
+
+.proposal-preview-document .proposal-adjustments div {
+  border-bottom: 1px solid var(--proposal-border);
+  color: var(--proposal-muted);
+  display: flex;
+  font-size: 13px;
+  justify-content: space-between;
+  padding: 6px 0;
+}
+
+.proposal-preview-document .proposal-adjustments strong {
+  color: var(--proposal-navy-deep);
 }
 
 .proposal-preview-document h1,
@@ -762,7 +887,7 @@
 
 .proposal-preview-document h2,
 .theme-dark .proposal-preview-document:not(.proposal-export-pdf) h2 {
-  border-bottom: 2px solid var(--proposal-brand);
+  border-bottom: 2px solid var(--proposal-accent);
   color: var(--proposal-navy);
   font-size: 21px;
   letter-spacing: -0.01em;
@@ -813,7 +938,7 @@
 .theme-dark .proposal-preview-document:not(.proposal-export-pdf) th {
   background: var(--proposal-brand-soft);
   border-color: var(--proposal-border);
-  border-top: 2px solid var(--proposal-brand);
+  border-top: 2px solid var(--proposal-accent);
   color: var(--proposal-navy-deep);
   padding: 14px;
 }
@@ -832,8 +957,8 @@
 .proposal-preview-document .proposal-total-card,
 .theme-dark .proposal-preview-document:not(.proposal-export-pdf) .proposal-total {
   background: var(--proposal-brand-soft);
-  border: 1px solid #c7d2fe;
-  border-left: 4px solid var(--proposal-brand);
+  border: 1px solid var(--proposal-brand-line);
+  border-left: 4px solid var(--proposal-accent);
   border-radius: 6px;
   color: var(--proposal-navy-deep);
 }
@@ -1073,7 +1198,7 @@
 .proposal-preview-document h2,
 .theme-dark .proposal-preview-document:not(.proposal-export-pdf) h2,
 .proposal-export-pdf .proposal-paper h2 {
-  border-bottom: 2px solid #6366F1;
+  border-bottom: 2px solid var(--proposal-accent);
   margin: 2.2em 0 0.8em;
   padding-bottom: 6px;
 }
@@ -1099,11 +1224,11 @@
 
 .proposal-preview-document .proposal-detail-card,
 .proposal-preview-document .proposal-insight-card {
-  background: #F8F8FF;
+  background: var(--proposal-brand-tint);
   border: 0;
-  border-left: 4px solid #6366F1;
+  border-left: 4px solid var(--proposal-accent);
   border-radius: 6px;
-  color: #334155;
+  color: var(--proposal-text);
   margin-bottom: 14px;
   padding: 12px 16px;
   break-inside: avoid;
@@ -1111,7 +1236,7 @@
 }
 
 .proposal-preview-document .proposal-detail-card strong {
-  color: #111827;
+  color: var(--proposal-navy-deep);
   display: block;
   font-weight: 800;
   margin-bottom: 5px;
@@ -1124,21 +1249,21 @@
 
 .proposal-preview-document th,
 .theme-dark .proposal-preview-document:not(.proposal-export-pdf) th {
-  background: #6366F1;
-  border-color: #6366F1;
-  color: #ffffff;
+  background: var(--proposal-brand);
+  border-color: var(--proposal-brand);
+  color: var(--proposal-on-brand);
 }
 
 .proposal-preview-document tbody tr:nth-child(even) td {
-  background: #F5F5FF;
+  background: var(--proposal-brand-tint);
 }
 
 .proposal-preview-document .proposal-total-card,
 .theme-dark .proposal-preview-document:not(.proposal-export-pdf) .proposal-total-card {
-  background: #6366F1;
+  background: var(--proposal-brand);
   border: 0;
   border-radius: 8px;
-  color: #ffffff;
+  color: var(--proposal-on-brand);
   padding: 16px;
 }
 
@@ -1146,7 +1271,7 @@
 .proposal-preview-document .proposal-total-card strong,
 .theme-dark .proposal-preview-document:not(.proposal-export-pdf) .proposal-total-card span,
 .theme-dark .proposal-preview-document:not(.proposal-export-pdf) .proposal-total-card strong {
-  color: #ffffff;
+  color: var(--proposal-on-brand);
 }
 
 .proposal-preview-document .proposal-total-card strong {
@@ -1155,10 +1280,10 @@
 }
 
 .proposal-preview-document .proposal-validity-note {
-  background: #F8F8FF;
-  border-left: 4px solid #6366F1;
+  background: var(--proposal-brand-tint);
+  border-left: 4px solid var(--proposal-accent);
   border-radius: 6px;
-  color: #475569;
+  color: var(--proposal-muted);
   font-size: 12px;
   margin: 14px 0 0;
   padding: 10px 14px;
@@ -1178,7 +1303,7 @@
 
 .proposal-preview-document .proposal-signature-line,
 .theme-dark .proposal-preview-document:not(.proposal-export-pdf) .proposal-signature-line {
-  border-bottom: 1px solid #333333;
+  border-bottom: 1px solid var(--proposal-text);
   min-height: 40px;
 }
 

@@ -127,3 +127,29 @@ async def test_export_endpoint_rejects_other_users_proposal(client):
     with patch("app.routers.proposals.proposals_repo.get", new_callable=AsyncMock, return_value=_proposal(userId="otro")):
         resp = await client.post(f"{API}/p1/export", json={"format": "pdf"})
     assert resp.status_code == 403
+
+
+def test_pdf_cover_has_brand_logo_and_label(tmp_path):
+    proposal = _proposal()
+    out = tmp_path / "p.pdf"
+    pr._build_proposal_pdf(out, "Propuesta", proposal["content"], pr._proposal_cover_fields(proposal))
+    first = PdfReader(str(out)).pages[0]
+    assert len(first.images) == 1  # logo de la banda de portada
+    assert "PROPUESTA COMERCIAL" in first.extract_text()
+
+
+def test_docx_cover_has_brand_logo_and_primary_band(tmp_path):
+    from docx import Document
+    from app.rendering import proposal_brand
+    proposal = _proposal()
+    out = tmp_path / "p.docx"
+    pr._build_proposal_docx(out, "Propuesta", proposal["content"], pr._proposal_cover_fields(proposal))
+    doc = Document(str(out))
+    assert len(doc.inline_shapes) == 1
+    assert proposal_brand.PRIMARY.lstrip("#") in doc.tables[0]._tbl.xml  # banda de color primario
+
+
+def test_brand_assets_exist():
+    from app.rendering import proposal_brand
+    assert proposal_brand.logo_available()
+    assert proposal_brand.PRIMARY == "#225258" and proposal_brand.ACCENT == "#FF5500"

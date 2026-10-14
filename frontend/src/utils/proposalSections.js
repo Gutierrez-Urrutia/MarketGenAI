@@ -19,6 +19,28 @@ function sanitizeGeneratedNode(node) {
   });
 }
 
+// Encabezados de la estructura BPO que genera el backend (SECTION_HEADINGS en proposal_tasks.py).
+// Solo el contenido que los usa se renderiza como «secciones libres»; el resto (formato antiguo,
+// títulos traducidos, secciones adicionales) sigue por splitProposalSections de Dashboard.jsx.
+const normalizeHeading = (text) => String(text || "")
+  .normalize("NFD")
+  .replace(/[\u0300-\u036f]/g, "")
+  .trim()
+  .toLowerCase();
+
+const BPO_HEADINGS = new Set([
+  "resumen ejecutivo", "quienes somos", "entendimiento de la necesidad", "alcance y objetivos",
+  "modelo operativo y niveles de servicio", "equipo y organizacion del trabajo", "plan de implementacion",
+  "precios y condiciones comerciales", "condiciones generales",
+  "executive summary", "about noondalton", "understanding of the need", "scope and objectives",
+  "operating model and service levels", "team and work organization", "implementation plan",
+  "pricing and commercial terms", "general terms",
+  "resumo executivo", "quem somos", "entendimento da necessidade", "escopo e objetivos",
+  "modelo operacional e niveis de servico", "equipe e organizacao do trabalho", "plano de implementacao",
+  "precos e condicoes comerciais", "condicoes gerais",
+]);
+const MIN_BPO_HEADINGS = 3;
+
 export function parseGeneratedSections(html = "") {
   if (!html || typeof DOMParser === "undefined" || !/<h2[\s>]/i.test(html)) return null;
   const root = new DOMParser().parseFromString(`<body>${html}</body>`, "text/html").body;
@@ -56,7 +78,9 @@ export function parseGeneratedSections(html = "") {
     });
     flush();
   }
-  return sections.length >= 3 ? { title, sections } : null;
+  if (wrapped) return sections.length >= 3 ? { title, sections } : null;
+  const bpoCount = sections.filter((section) => BPO_HEADINGS.has(normalizeHeading(section.title))).length;
+  return sections.length >= 3 && bpoCount >= MIN_BPO_HEADINGS ? { title, sections } : null;
 }
 
 export function generatedSectionsToHtml(doc, copy) {

@@ -7,6 +7,7 @@ import {
   Document,
   Footer,
   HeadingLevel,
+  ImageRun,
   Packer,
   PageNumber,
   Paragraph,
@@ -41,6 +42,7 @@ import KnowledgeBaseTab from "./pages/settings/KnowledgeBaseTab";
 import { parseGeneratedSections, generatedSectionsToHtml } from "./utils/proposalSections";
 
 import ReactMarkdown from "react-markdown";
+import { BRAND, docxColor, loadBrandLogo, rgbColor } from "./config/brand";
 
 const PREF_KEYS = {
   language: "marketgen_language",
@@ -408,12 +410,6 @@ function extractListItems(html = "") {
     .filter((line) => line.length > 2);
 }
 
-function extractParagraphs(html = "") {
-  const matches = [...cleanProposalHtml(html).matchAll(/<p[^>]*>([\s\S]*?)<\/p>/gi)];
-  const paragraphs = matches.map((match) => stripHtml(match[1])).filter(Boolean);
-  return paragraphs.length ? paragraphs.join("\n\n") : stripHtml(html);
-}
-
 function extractH1Text(html = "") {
   const match = cleanProposalHtml(html).match(/<h1[^>]*>([\s\S]*?)<\/h1>/i);
   return match ? stripHtml(match[1]).trim() : "";
@@ -437,6 +433,187 @@ function splitTextSection(text = "", headings = []) {
   ];
   const end = lines.findIndex((line, index) => index > start && known.includes(line.toLowerCase()));
   return lines.slice(start + 1, end < 0 ? undefined : end).join("\n");
+}
+
+// ── DOM-based reading of the proposal HTML ───────────────────────────────────
+// The regex helpers above only find English headings and drop anything that is
+// not a <p>. These keep every block (lists, tables, subheadings) and let the
+// exporter recognise translated/edited headings or keep unknown sections.
+
+const PROPOSAL_SECTION_KEYS = [
+  "executiveSummary",
+  "problemsIdentified",
+  "proposedSolution",
+  "technologiesUsed",
+  "implementationCosts",
+  "expectedROI",
+  "nextSteps",
+  "acceptance",
+];
+const PROPOSAL_SECTION_ALIASES = {
+  problemsIdentified: ["Client Problem"],
+  implementationCosts: ["Pricing Table"],
+  expectedROI: ["ROI / Expected Impact"],
+};
+const BLOCK_CONTAINER_TAGS = new Set(["BODY", "DIV", "SECTION", "ARTICLE", "HEADER", "MAIN", "FOOTER", "ASIDE", "NAV"]);
+const BLOCK_TAGS = new Set(["H1", "H2", "H3", "H4", "H5", "H6", "P", "UL", "OL", "TABLE", "BLOCKQUOTE", "PRE", "HR", "DL", "FIGURE"]);
+// Pieces of our own rendered preview (when a saved proposal embeds it) that
+// the exporter re-creates itself and must not be read back as content.
+const GENERATED_PREVIEW_SELECTORS = [
+  "style",
+  "script",
+  ".proposal-cover",
+  ".proposal-total-card",
+  ".proposal-validity-note",
+  ".proposal-adjustments",
+  ".proposal-acceptance",
+].join(", ");
+
+const normalizeHeadingText = (value = "") => String(value || "")
+  .normalize("NFD")
+  .replace(/[̀-ͯ]/g, "")
+  .toLowerCase()
+  .replace(/[^a-z0-9]+/g, " ")
+  .trim();
+
+function headingsForSection(key) {
+  return [...new Set([
+    ...Object.values(PROPOSAL_COPY).map((copy) => copy[key]).filter(Boolean),
+    ...(PROPOSAL_SECTION_ALIASES[key] || []),
+  ])];
+}
+
+function sectionKeyForHeading(heading = "") {
+  const normalized = normalizeHeadingText(heading);
+  if (!normalized) return null;
+  return PROPOSAL_SECTION_KEYS.find((key) => headingsForSection(key)
+    .some((candidate) => normalizeHeadingText(candidate) === normalized)) || null;
+}
+
+function nodeText(node) {
+  const clone = node.cloneNode(true);
+  clone.querySelectorAll?.("br").forEach((br) => br.replaceWith("\n"));
+  return clone.textContent.replace(/[ \t\r\f\v]+/g, " ").replace(/ *\n */g, "\n").trim();
+}
+
+const hasHtmlTags = (value = "") => /<[a-z][\s\S]*>/i.test(String(value || ""));
+
+function collectProposalBlocks(html = "") {
+  if (typeof DOMParser === "undefined" || !hasHtmlTags(html)) return [];
+  const parsed = new DOMParser().parseFromString(`<body>${cleanProposalHtml(html)}</body>`, "text/html");
+  parsed.body.querySelectorAll(GENERATED_PREVIEW_SELECTORS).forEach((node) => node.remove());
+  // Our preview renders list items as cards (<strong>title</strong><p>body</p>);
+  // turn them back into one <li> per card so they aren't split in two.
+  parsed.body.querySelectorAll(".proposal-card-list").forEach((list) => {
+    const ul = parsed.createElement("ul");
+    list.querySelectorAll(".proposal-detail-card").forEach((card) => {
+      const title = card.querySelector("strong") ? nodeText(card.querySelector("strong")) : "";
+      const body = [...card.querySelectorAll("p")].map(nodeText).filter(Boolean).join(" ");
+      const li = parsed.createElement("li");
+      li.textContent = [title, body].filter(Boolean).join(": ");
+      ul.appendChild(li);
+    });
+    list.replaceWith(ul);
+  });
+  const blocks = [];
+  let inline = parsed.createElement("p");
+  const flushInline = () => {
+    if (nodeText(inline)) blocks.push(inline);
+    inline = parsed.createElement("p");
+  };
+  const walk = (parent) => {
+    [...parent.childNodes].forEach((child) => {
+      if (child.nodeType === 3) {
+        inline.appendChild(child.cloneNode());
+        return;
+      }
+      if (child.nodeType !== 1) return;
+      if (BLOCK_CONTAINER_TAGS.has(child.tagName)) {
+        flushInline();
+        walk(child);
+        flushInline();
+      } else if (BLOCK_TAGS.has(child.tagName)) {
+        flushInline();
+        blocks.push(child);
+      } else {
+        inline.appendChild(child.cloneNode(true));
+      }
+    });
+  };
+  walk(parsed.body);
+  flushInline();
+  return blocks;
+}
+
+function blockToText(block) {
+  const tag = block.tagName;
+  if (tag === "UL" || tag === "OL") {
+    return [...block.children]
+      .filter((child) => child.tagName === "LI")
+      .map((li, index) => {
+        const text = nodeText(li);
+        return text ? `${tag === "OL" ? `${index + 1}.` : "•"} ${text}` : "";
+      })
+      .filter(Boolean)
+      .join("\n\n");
+  }
+  if (tag === "TABLE") {
+    return [...block.querySelectorAll("tr")]
+      .map((row) => [...row.children].map((cell) => nodeText(cell)).filter(Boolean).join(" | "))
+      .filter(Boolean)
+      .join("\n\n");
+  }
+  if (tag === "HR") return "";
+  return nodeText(block);
+}
+
+/** Section text with paragraphs AND lists/subheadings, as blocks separated by blank lines. */
+function extractTextBlocks(html = "", { exclude = [] } = {}) {
+  if (!hasHtmlTags(html)) return exclude.length ? "" : stripHtml(html);
+  return collectProposalBlocks(html)
+    .filter((block) => !exclude.includes(block.tagName))
+    .map(blockToText)
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+// A re-exported proposal already carries "Additional section: X" headings.
+function stripAdditionalSectionPrefix(heading = "") {
+  const label = Object.values(PROPOSAL_COPY)
+    .map((copy) => copy.additionalSection)
+    .find((candidate) => heading.toLowerCase().startsWith(`${candidate.toLowerCase()}:`));
+  return label ? heading.slice(label.length + 1).trim() : heading;
+}
+
+/** Splits the proposal HTML into the leading intro and its <h2> (or <h3>) sections. */
+function splitProposalSections(html = "") {
+  const blocks = collectProposalBlocks(html);
+  const boundaryTags = blocks.some((block) => block.tagName === "H2") ? ["H1", "H2"] : ["H1", "H2", "H3"];
+  const intro = [];
+  const sections = [];
+  let current = null;
+  let seenTitle = false;
+  blocks.forEach((block) => {
+    if (boundaryTags.includes(block.tagName)) {
+      if (block.tagName === "H1" && !seenTitle && !current) {
+        seenTitle = true;
+        return;
+      }
+      current = { heading: nodeText(block), nodes: [] };
+      sections.push(current);
+      return;
+    }
+    (current ? current.nodes : intro).push(block);
+  });
+  const toHtml = (nodes) => nodes.map((node) => node.outerHTML).join("");
+  return {
+    introHtml: toHtml(intro),
+    sections: sections.map((section) => ({
+      heading: section.heading,
+      key: sectionKeyForHeading(section.heading),
+      html: toHtml(section.nodes),
+    })),
+  };
 }
 
 function normalizeLineItem(row = {}) {
@@ -493,7 +670,7 @@ function detectProposalLanguageWithConfidence(text = "") {
 
 const PROPOSAL_COPY = {
   en: {
-    preparedBy: "Prepared by NoonDalton",
+    preparedBy: `Prepared by ${BRAND.name}`,
     client: "Client",
     contact: "Contact",
     total: "Total",
@@ -517,7 +694,7 @@ const PROPOSAL_COPY = {
     expectedROI: "Expected ROI",
     nextSteps: "Next Steps",
     noExecutiveSummary: "No executive summary has been provided yet.",
-    noSolution: "NoonDalton will configure a practical AI-enabled workflow around the confirmed scope, service units, and operating requirements.",
+    noSolution: `${BRAND.name} will configure a practical AI-enabled workflow around the confirmed scope, service units, and operating requirements.`,
     noProblems: "Discovery will confirm the highest-priority operating constraints.",
     noPricing: "Pricing will be finalized after confirming scope, volume assumptions, and implementation timeline.",
     noROI: "Expected impact will be measured through throughput, response time, quality indicators, and conversion progress.",
@@ -529,9 +706,14 @@ const PROPOSAL_COPY = {
     signatureRole: "Title / Role",
     signatureDate: "Date",
     signatureLine: "Signature",
+    company: "Company",
+    email: "Email",
+    discount: "Discount",
+    taxes: "Taxes",
+    additionalSection: "Additional section",
   },
   es: {
-    preparedBy: "Preparado por NoonDalton",
+    preparedBy: `Preparado por ${BRAND.name}`,
     client: "Cliente",
     contact: "Contacto",
     total: "Total",
@@ -555,7 +737,7 @@ const PROPOSAL_COPY = {
     expectedROI: "ROI Esperado",
     nextSteps: "Próximos Pasos",
     noExecutiveSummary: "Aún no se ha proporcionado un resumen ejecutivo.",
-    noSolution: "NoonDalton configurará un flujo práctico con IA según el alcance, los servicios y los requisitos operativos confirmados.",
+    noSolution: `${BRAND.name} configurará un flujo práctico con IA según el alcance, los servicios y los requisitos operativos confirmados.`,
     noProblems: "El levantamiento confirmará las restricciones operativas de mayor prioridad.",
     noPricing: "El precio se finalizará después de confirmar alcance, supuestos de volumen y calendario de implementación.",
     noROI: "El impacto esperado se medirá mediante tiempos de respuesta, calidad operativa, visibilidad y avance de conversión.",
@@ -567,9 +749,14 @@ const PROPOSAL_COPY = {
     signatureRole: "Cargo",
     signatureDate: "Fecha",
     signatureLine: "Firma",
+    company: "Empresa",
+    email: "Correo",
+    discount: "Descuento",
+    taxes: "Impuestos",
+    additionalSection: "Sección adicional",
   },
   pt: {
-    preparedBy: "Preparado por NoonDalton",
+    preparedBy: `Preparado por ${BRAND.name}`,
     client: "Cliente",
     contact: "Contato",
     total: "Total",
@@ -593,7 +780,7 @@ const PROPOSAL_COPY = {
     expectedROI: "ROI Esperado",
     nextSteps: "Próximos Passos",
     noExecutiveSummary: "Ainda não foi fornecido um resumo executivo.",
-    noSolution: "A NoonDalton configurará um fluxo prático com IA em torno do escopo, serviços e requisitos operacionais confirmados.",
+    noSolution: `A ${BRAND.name} configurará um fluxo prático com IA em torno do escopo, serviços e requisitos operacionais confirmados.`,
     noProblems: "A descoberta confirmará as restrições operacionais de maior prioridade.",
     noPricing: "O preço será finalizado após confirmar escopo, premissas de volume e cronograma de implementação.",
     noROI: "O impacto esperado será medido por produtividade, tempo de resposta, indicadores de qualidade e progresso de conversão.",
@@ -605,6 +792,11 @@ const PROPOSAL_COPY = {
     signatureRole: "Cargo",
     signatureDate: "Data",
     signatureLine: "Assinatura",
+    company: "Empresa",
+    email: "E-mail",
+    discount: "Desconto",
+    taxes: "Impostos",
+    additionalSection: "Seção adicional",
   },
 };
 
@@ -624,31 +816,43 @@ function getProposalIssuer() {
   return String(user.email || "").split("@")[0];
 }
 
-
-function normalizeProposalDocument(proposal = {}) {
+export function normalizeProposalDocument(proposal = {}) {
   const structured = proposal.structuredContent || proposal.document || proposal.proposalDocument || proposal.proposal_document || {};
   const content = unwrapEmbeddedProposalHtml(proposal.content || structured.content || proposal.industry || proposal.description || "");
   const text = stripHtml(content);
   const language = structured.language || proposal.language || detectProposalLanguage(proposal.proposalDescription || proposal.proposal_description || proposal.description || content);
-  const section = (names) => extractHtmlSection(content, names) || splitTextSection(text, names);
+  const parsedSections = splitProposalSections(content);
+  // Translated or reworded headings are matched by key; the English regex and
+  // plain-text splitters stay as fallbacks for older/plain-text content.
+  const section = (key, names) => parsedSections.sections
+    .filter((item) => item.key === key)
+    .map((item) => item.html)
+    .join("")
+    || extractHtmlSection(content, names)
+    || splitTextSection(text, names);
+  // Non-list text inside a list section (intro or closing paragraphs).
+  const listSectionNotes = (html) => (/<li[\s>]/i.test(html) ? extractTextBlocks(html, { exclude: ["UL", "OL"] }) : "");
   const total = calculateProposalTotal(proposal);
   const lineItems = [
     ...(structured.lineItems || structured.line_items || proposal.lineItems || proposal.pricingRows || proposal.pricing_rows || []),
   ].map(normalizeLineItem);
   const parsedLineItems = lineItems.length ? lineItems : parseLineItemsFromHtml(content);
-  const technologiesSection = section(["Technologies Used"]);
-  const problemsSection = section(["Problems Identified", "Client Problem"]);
-  const nextStepsSection = section(["Next Steps"]);
+  const technologiesSection = section("technologiesUsed", ["Technologies Used"]);
+  const problemsSection = section("problemsIdentified", ["Problems Identified", "Client Problem"]);
+  const nextStepsSection = section("nextSteps", ["Next Steps"]);
+  const costsSection = section("implementationCosts", ["Implementation Costs", "Pricing Table"]);
+  // Discount/tax breakdown over the rows actually shown in the pricing table.
+  const pricing = calculateProposalTotal({ ...proposal, lineItems: parsedLineItems });
   const structuredProblems = cleanStructuredList(structured.problemsIdentified || structured.problems_identified || proposal.problemsIdentified);
   const structuredTechnologies = cleanStructuredList(structured.technologiesUsed || structured.technologies_used || proposal.technologiesUsed);
   const structuredNextSteps = cleanStructuredList(structured.nextSteps || structured.next_steps || proposal.nextSteps);
   const executiveSummary = cleanStructuredText(structured.executiveSummary || structured.executive_summary || proposal.executiveSummary)
-    || extractParagraphs(section(["Executive Summary"]))
+    || extractTextBlocks(section("executiveSummary", ["Executive Summary"]))
     || cleanStructuredText(proposal.description)
     || text.split(/\n{2,}/)[0]
     || "";
   const proposedSolution = cleanStructuredText(structured.proposedSolution || structured.proposed_solution || proposal.proposedSolution)
-    || extractParagraphs(section(["Proposed AI Solution"]))
+    || extractTextBlocks(section("proposedSolution", ["Proposed AI Solution"]))
     || "";
   const generated = parseGeneratedSections(content);
   const parsedCreatedAt = proposal.createdAt ? new Date(proposal.createdAt) : null;
@@ -678,6 +882,10 @@ function normalizeProposalDocument(proposal = {}) {
   return {
     title: structured.title || proposal.title || proposal.name || generated?.title || "AI Generated Proposal",
     client: structured.client || proposal.client || proposal.customerName || proposal.customer_name || proposal.clientName || "",
+    // The saved proposal field wins over the structuredContent snapshot, so an
+    // email/company edited after loading isn't replaced by the stale copy.
+    clientEmail: proposal.clientEmail || proposal.client_email || structured.clientEmail || "",
+    clientCompany: proposal.clientCompany || proposal.client_company || structured.clientCompany || "",
     contact: structured.contact || proposal.contact || proposal.opportunity?.contact || "",
     totalAmount: total.totalAmount,
     industry: structured.industry || proposal.industryName || proposal.opportunity?.industry || proposal.industry || "",
@@ -688,8 +896,25 @@ function normalizeProposalDocument(proposal = {}) {
     proposedSolution,
     technologiesUsed: structuredTechnologies.length ? structuredTechnologies : extractListItems(technologiesSection),
     lineItems: parsedLineItems,
-    expectedROI: cleanStructuredText(structured.expectedROI || structured.expected_roi || proposal.expectedROI) || extractParagraphs(section(["Expected ROI", "ROI / Expected Impact"])) || "",
+    expectedROI: cleanStructuredText(structured.expectedROI || structured.expected_roi || proposal.expectedROI) || extractTextBlocks(section("expectedROI", ["Expected ROI", "ROI / Expected Impact"])) || "",
     nextSteps: structuredNextSteps.length ? structuredNextSteps : extractListItems(nextStepsSection),
+    introduction: extractTextBlocks(parsedSections.introHtml),
+    sectionNotes: {
+      problemsIdentified: listSectionNotes(problemsSection),
+      technologiesUsed: listSectionNotes(technologiesSection),
+      implementationCosts: extractTextBlocks(costsSection, { exclude: ["TABLE"] }),
+      nextSteps: listSectionNotes(nextStepsSection),
+    },
+    additionalSections: parsedSections.sections
+      .filter((item) => !item.key)
+      .map((item) => ({ heading: stripAdditionalSectionPrefix(item.heading), body: extractTextBlocks(item.html) }))
+      .filter((item) => item.heading || item.body),
+    pricingAdjustments: {
+      subtotal: pricing.subtotal,
+      discountAmount: pricing.discountAmount,
+      taxAmount: pricing.taxAmount,
+      show: pricing.discountAmount > 0 || pricing.taxAmount > 0,
+    },
     formattedTotal: total.formattedTotal,
     language,
     issuedOn: formatProposalDate(issuedOnDate, language),
@@ -721,7 +946,27 @@ p {
 }
 `.trim();
 
-function proposalDocumentToHtml(proposal = {}) {
+// Shared by the on-screen preview, the PDF (HTML) and the DOCX so all three show the same data.
+function proposalClientDetails(doc, copy) {
+  return [
+    doc.clientCompany ? `${copy.company}: ${doc.clientCompany}` : "",
+    doc.clientEmail ? `${copy.email}: ${doc.clientEmail}` : "",
+  ].filter(Boolean).join(" · ");
+}
+
+function proposalAdjustmentRows(doc, copy) {
+  const adjustments = doc.pricingAdjustments;
+  if (!adjustments?.show) return [];
+  return [
+    [copy.subtotal, formatUsd(adjustments.subtotal)],
+    adjustments.discountAmount > 0 ? [copy.discount, `- ${formatUsd(adjustments.discountAmount)}`] : null,
+    adjustments.taxAmount > 0 ? [copy.taxes, formatUsd(adjustments.taxAmount)] : null,
+  ].filter(Boolean);
+}
+
+const additionalSectionTitle = (heading, copy) => (heading ? `${copy.additionalSection}: ${heading}` : copy.additionalSection);
+
+export function proposalDocumentToHtml(proposal = {}) {
   const doc = normalizeProposalDocument(proposal);
   const copy = getProposalCopy(doc.language);
   const splitCardText = (value) => {
@@ -758,14 +1003,28 @@ function proposalDocumentToHtml(proposal = {}) {
       <td>${escapeHtml(formatUsd(item.subtotal))}</td>
     </tr>
   `).join("");
+  const clientDetails = proposalClientDetails(doc, copy);
+  const adjustmentsHtml = proposalAdjustmentRows(doc, copy)
+    .map(([label, value]) => `<div><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`)
+    .join("");
+  const notes = doc.sectionNotes || {};
+  const additionalHtml = (doc.additionalSections || [])
+    .map((item) => `<section class="proposal-additional-section"><h2>${escapeHtml(additionalSectionTitle(item.heading, copy))}</h2>${paragraphsToHtml(item.body)}</section>`)
+    .join("");
   return `
     <style data-proposal-pdf-page-breaks>${PROPOSAL_PDF_PAGE_BREAK_CSS}</style>
     <article class="proposal-preview-document"${doc.sections ? ' data-sections="generic"' : ""}>
       <div class="proposal-paper">
         <header class="proposal-cover">
+          <div class="proposal-logo-band">
+            <img class="proposal-logo" src="${escapeHtml(BRAND.logoPath)}" alt="${escapeHtml(BRAND.name)}" onerror="this.parentNode.classList.add('logo-missing');this.remove()" />
+            <span class="proposal-logo-name">${escapeHtml(BRAND.name)}</span>
+          </div>
           <p class="proposal-eyebrow">${escapeHtml(copy.preparedBy)}</p>
           <h1>${escapeHtml(doc.title)}</h1>
           <p class="proposal-subtitle">${escapeHtml(copy.proposalEyebrow)} · ${escapeHtml(copy.preparedFor)} ${escapeHtml(doc.client)}</p>
+          ${clientDetails ? `<p class="proposal-client-details">${escapeHtml(clientDetails)}</p>` : ""}
+          ${doc.introduction ? `<div class="proposal-intro">${paragraphsToHtml(doc.introduction)}</div>` : ""}
           <div class="proposal-meta">
             ${doc.industry ? `<span>${escapeHtml(doc.industry)}</span>` : ""}
             ${doc.contact ? `<span>${escapeHtml(doc.contact)}</span>` : ""}
@@ -780,13 +1039,14 @@ function proposalDocumentToHtml(proposal = {}) {
         </header>
         ${doc.sections ? generatedSectionsToHtml(doc, copy) : `
         <section><h2>${escapeHtml(copy.executiveSummary)}</h2>${paragraphsToHtml(doc.executiveSummary || copy.noExecutiveSummary)}</section>
-        <section><h2>${escapeHtml(copy.problemsIdentified)}</h2><div class="proposal-card-list">${cardsToHtml(doc.problemsIdentified.length ? doc.problemsIdentified : [copy.noProblems])}</div></section>
+        <section><h2>${escapeHtml(copy.problemsIdentified)}</h2>${paragraphsToHtml(notes.problemsIdentified)}<div class="proposal-card-list">${cardsToHtml(doc.problemsIdentified.length ? doc.problemsIdentified : [copy.noProblems])}</div></section>
         <section><h2>${escapeHtml(copy.proposedSolution)}</h2>${paragraphsToHtml(doc.proposedSolution || copy.noSolution)}</section>
-        <section><h2>${escapeHtml(copy.technologiesUsed)}</h2><div class="proposal-card-list">${cardsToHtml(doc.technologiesUsed.length ? doc.technologiesUsed : copy.defaultTechnologies)}</div></section>
-        <section><h2>${escapeHtml(copy.implementationCosts)}</h2><table><thead><tr><th>${escapeHtml(copy.serviceUnit)}</th><th>${escapeHtml(copy.description)}</th><th>${escapeHtml(copy.qty)}</th><th>${escapeHtml(copy.unitPrice)}</th><th>${escapeHtml(copy.subtotal)}</th></tr></thead><tbody>${rows || `<tr><td colspan="5">${escapeHtml(copy.noPricing)}</td></tr>`}</tbody></table><p class="proposal-validity-note">${escapeHtml(copy.validUntil)}: ${escapeHtml(doc.validUntil)}</p></section>
+        <section><h2>${escapeHtml(copy.technologiesUsed)}</h2>${paragraphsToHtml(notes.technologiesUsed)}<div class="proposal-card-list">${cardsToHtml(doc.technologiesUsed.length ? doc.technologiesUsed : copy.defaultTechnologies)}</div></section>
+        <section><h2>${escapeHtml(copy.implementationCosts)}</h2><table><thead><tr><th>${escapeHtml(copy.serviceUnit)}</th><th>${escapeHtml(copy.description)}</th><th>${escapeHtml(copy.qty)}</th><th>${escapeHtml(copy.unitPrice)}</th><th>${escapeHtml(copy.subtotal)}</th></tr></thead><tbody>${rows || `<tr><td colspan="5">${escapeHtml(copy.noPricing)}</td></tr>`}</tbody></table>${adjustmentsHtml ? `<div class="proposal-adjustments">${adjustmentsHtml}</div>` : ""}${paragraphsToHtml(notes.implementationCosts)}<p class="proposal-validity-note">${escapeHtml(copy.validUntil)}: ${escapeHtml(doc.validUntil)}</p></section>
         <div class="proposal-total-card"><span>${escapeHtml(copy.totalImplementationCost)}</span><strong>${escapeHtml(doc.formattedTotal)}</strong></div>
         <section><h2>${escapeHtml(copy.expectedROI)}</h2>${paragraphsToHtml(doc.expectedROI || copy.noROI)}</section>
-        <section><h2>${escapeHtml(copy.nextSteps)}</h2><ol>${(doc.nextSteps.length ? doc.nextSteps : copy.noNextSteps).map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ol></section>
+        <section><h2>${escapeHtml(copy.nextSteps)}</h2><ol>${(doc.nextSteps.length ? doc.nextSteps : copy.noNextSteps).map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ol>${paragraphsToHtml(notes.nextSteps)}</section>
+        ${additionalHtml}
         <section class="proposal-acceptance">
           <h2>${escapeHtml(copy.acceptance)}</h2>
           <p>${escapeHtml(copy.acceptanceIntro)}</p>
@@ -807,7 +1067,7 @@ function ProposalParagraphs({ text, fallback }) {
     .split(/\n{2,}|\n(?=[A-Z])/)
     .map((paragraph) => paragraph.trim())
     .filter(Boolean);
-  return paragraphs.map((paragraph) => <p key={paragraph}>{paragraph}</p>);
+  return paragraphs.map((paragraph, index) => <p key={`${index}-${paragraph}`}>{paragraph}</p>);
 }
 
 function splitProposalCardText(value) {
@@ -848,14 +1108,33 @@ function ProposalDocumentPreview({ proposal, className = "", exportRef = null })
   const problems = Array.isArray(doc.problemsIdentified) ? doc.problemsIdentified.filter(Boolean) : [];
   const technologies = Array.isArray(doc.technologiesUsed) ? doc.technologiesUsed.filter(Boolean) : [];
   const nextSteps = Array.isArray(doc.nextSteps) ? doc.nextSteps.filter(Boolean) : [];
+  const clientDetails = proposalClientDetails(doc, copy);
+  const adjustmentRows = proposalAdjustmentRows(doc, copy);
+  const notes = doc.sectionNotes || {};
 
   return (
     <article ref={exportRef} className={`proposal-preview-document ${className}`} data-sections={doc.sections ? "generic" : undefined}>
       <div className="proposal-paper">
         <header className="proposal-cover">
+          <div className="proposal-logo-band">
+            <img
+              className="proposal-logo"
+              src={BRAND.logoPath}
+              alt={BRAND.name}
+              onError={(event) => {
+                event.currentTarget.style.display = "none";
+                event.currentTarget.parentElement?.classList.add("logo-missing");
+              }}
+            />
+            <span className="proposal-logo-name">{BRAND.name}</span>
+          </div>
           <p className="proposal-eyebrow">{copy.preparedBy}</p>
           <h1>{doc.title}</h1>
           <p className="proposal-subtitle">{copy.proposalEyebrow} · {copy.preparedFor} {doc.client}</p>
+          {clientDetails && <p className="proposal-client-details">{clientDetails}</p>}
+          {doc.introduction && (
+            <div className="proposal-intro"><ProposalParagraphs text={doc.introduction} /></div>
+          )}
           <div className="proposal-meta">
             {doc.industry && <span>{doc.industry}</span>}
             {doc.contact && <span>{doc.contact}</span>}
@@ -879,6 +1158,7 @@ function ProposalDocumentPreview({ proposal, className = "", exportRef = null })
 
         <section>
           <h2>{copy.problemsIdentified}</h2>
+          <ProposalParagraphs text={notes.problemsIdentified} />
           <ProposalDetailCards items={problems.length ? problems : [copy.noProblems]} />
         </section>
 
@@ -889,6 +1169,7 @@ function ProposalDocumentPreview({ proposal, className = "", exportRef = null })
 
         <section>
           <h2>{copy.technologiesUsed}</h2>
+          <ProposalParagraphs text={notes.technologiesUsed} />
           <ProposalDetailCards items={technologies.length ? technologies : copy.defaultTechnologies} />
         </section>
 
@@ -920,6 +1201,14 @@ function ProposalDocumentPreview({ proposal, className = "", exportRef = null })
               </tbody>
             </table>
           </div>
+          {adjustmentRows.length > 0 && (
+            <div className="proposal-adjustments">
+              {adjustmentRows.map(([label, value]) => (
+                <div key={label}><span>{label}</span><strong>{value}</strong></div>
+              ))}
+            </div>
+          )}
+          <ProposalParagraphs text={notes.implementationCosts} />
           <p className="proposal-validity-note">{copy.validUntil}: {doc.validUntil}</p>
         </section>
 
@@ -940,7 +1229,15 @@ function ProposalDocumentPreview({ proposal, className = "", exportRef = null })
               <li key={step}>{step}</li>
             ))}
           </ol>
+          <ProposalParagraphs text={notes.nextSteps} />
         </section>
+
+        {(doc.additionalSections || []).map((item, index) => (
+          <section className="proposal-additional-section" key={`${index}-${item.heading}`}>
+            <h2>{additionalSectionTitle(item.heading, copy)}</h2>
+            <ProposalParagraphs text={item.body} />
+          </section>
+        ))}
 
         <section className="proposal-acceptance">
           <h2>{copy.acceptance}</h2>
@@ -973,6 +1270,15 @@ function downloadBlob(blob, filename) {
   window.URL.revokeObjectURL(url);
 }
 
+// html2pdf page geometry for the proposal PDF (A4; margins top, left, bottom,
+// right in mm), in CSS px the same way html2pdf computes it.
+const PROPOSAL_PDF_MARGIN_MM = [14, 8, 18, 8];
+const mmToCssPx = (mm) => Math.floor((mm / 25.4) * 96);
+const PROPOSAL_PDF_PAGE_PX = {
+  width: mmToCssPx(210 - PROPOSAL_PDF_MARGIN_MM[1] - PROPOSAL_PDF_MARGIN_MM[3]),
+  height: mmToCssPx(297 - PROPOSAL_PDF_MARGIN_MM[0] - PROPOSAL_PDF_MARGIN_MM[2]),
+};
+
 function createProposalExportClone(sourceElement) {
   if (!sourceElement) return null;
   const clone = sourceElement.cloneNode(true);
@@ -984,7 +1290,9 @@ function createProposalExportClone(sourceElement) {
   }
   clone.classList.remove("max-h-[55vh]", "max-h-[65vh]", "overflow-y-auto", "shadow-sm");
   clone.classList.add("proposal-export-pdf");
-  clone.style.width = "794px";
+  // html2pdf re-clones this node into a container as wide as the printable
+  // A4 area (~733px). A fixed 794px width overflowed it and clipped the right edge.
+  clone.style.width = "100%";
   clone.style.maxHeight = "none";
   clone.style.overflow = "visible";
   clone.style.boxShadow = "none";
@@ -994,12 +1302,46 @@ function createProposalExportClone(sourceElement) {
   wrapper.style.position = "fixed";
   wrapper.style.left = "-10000px";
   wrapper.style.top = "0";
-  wrapper.style.width = "794px";
+  // Same width as html2pdf's page container, so measurements match the PDF layout.
+  wrapper.style.width = `${PROPOSAL_PDF_PAGE_PX.width}px`;
   wrapper.style.background = "#ffffff";
-  wrapper.style.padding = "24px";
   wrapper.appendChild(clone);
   document.body.appendChild(wrapper);
   return { wrapper, clone };
+}
+
+// Removes the blank strip at the bottom of the captured page image. html2pdf
+// adds a whole new PDF page for any leftover pixels, so a few px of trailing
+// padding produced an almost empty last page.
+function trimCanvasBottom(canvas, paddingPx = 24) {
+  const context = canvas?.getContext?.("2d");
+  if (!context || !canvas.width || !canvas.height) return;
+  const { width, height } = canvas;
+  const isBlank = (data, index) => data[index] > 245 && data[index + 1] > 245 && data[index + 2] > 245;
+  const chunkRows = 64;
+  let lastContentRow = -1;
+  for (let bottom = height; bottom > 0 && lastContentRow < 0; bottom -= chunkRows) {
+    const top = Math.max(0, bottom - chunkRows);
+    const { data } = context.getImageData(0, top, width, bottom - top);
+    for (let row = bottom - top - 1; row >= 0 && lastContentRow < 0; row -= 1) {
+      const rowStart = row * width * 4;
+      for (let col = 0; col < width; col += 1) {
+        if (!isBlank(data, rowStart + col * 4)) {
+          lastContentRow = top + row;
+          break;
+        }
+      }
+    }
+  }
+  if (lastContentRow < 0) return;
+  const newHeight = Math.min(height, lastContentRow + 1 + paddingPx);
+  if (newHeight >= height) return;
+  const copy = document.createElement("canvas");
+  copy.width = width;
+  copy.height = newHeight;
+  copy.getContext("2d").drawImage(canvas, 0, 0);
+  canvas.height = newHeight;
+  canvas.getContext("2d").drawImage(copy, 0, 0);
 }
 
 function createTemporaryProposalPreview(proposal) {
@@ -1015,13 +1357,85 @@ function createTemporaryProposalPreview(proposal) {
   return { wrapper, element: wrapper.querySelector(".proposal-preview-document") };
 }
 
-async function exportProposalPdf(proposal, sourceElement) {
+// Inlines the logo as a data URL so html2canvas always captures it; if the
+// logo can't be loaded, drops the <img> so the PDF is still generated.
+// html2canvas draws native list markers small and raised (like superscripts):
+// replace them with real text in the export clone.
+function materializeListMarkers(root) {
+  root.querySelectorAll("ol, ul").forEach((list) => {
+    const ordered = list.tagName === "OL";
+    let number = ordered ? Number(list.getAttribute("start")) || 1 : 1;
+    list.classList.add("proposal-export-list");
+    [...list.children].filter((child) => child.tagName === "LI").forEach((item) => {
+      if (item.firstElementChild?.classList.contains("proposal-list-marker")) return;
+      const marker = document.createElement("span");
+      marker.className = "proposal-list-marker";
+      marker.textContent = ordered ? `${number}.` : "•";
+      number += 1;
+      item.prepend(marker);
+    });
+  });
+}
+
+// html2pdf ignores "break-after: avoid", so a section title could end a page
+// alone. Group each <h2> with the first block after it in a wrapper that
+// html2pdf keeps on one page (it is in the pagebreak "avoid" list). For a long
+// list only its first item goes in the group, so the rest can still flow.
+function keepHeadingsWithNextBlock(root, pageHeightPx = PROPOSAL_PDF_PAGE_PX.height) {
+  root.querySelectorAll("h2").forEach((heading) => {
+    if (heading.parentElement?.classList.contains("proposal-keep-with-next")) return;
+    const next = heading.nextElementSibling;
+    if (!next) return;
+    const group = document.createElement("div");
+    group.className = "proposal-keep-with-next";
+    heading.before(group);
+    group.appendChild(heading);
+    const items = next.matches("ul, ol, .proposal-card-list") ? [...next.children] : [];
+    if (items.length > 1 && next.getBoundingClientRect().height > pageHeightPx / 2) {
+      const head = next.cloneNode(false);
+      head.classList.add("proposal-split-head");
+      next.classList.add("proposal-split-tail");
+      head.appendChild(items[0]);
+      group.appendChild(head);
+    } else {
+      group.appendChild(next);
+    }
+  });
+}
+
+async function prepareExportLogo(root) {
+  const logo = await loadBrandLogo();
+  const images = [...root.querySelectorAll(".proposal-logo")];
+  await Promise.all(images.map(async (img) => {
+    const dropLogo = () => {
+      img.closest(".proposal-logo-band")?.classList.add("logo-missing");
+      img.remove();
+    };
+    if (!logo) {
+      dropLogo();
+      return;
+    }
+    img.style.display = "";
+    img.closest(".proposal-logo-band")?.classList.remove("logo-missing");
+    img.src = logo.dataUrl;
+    try {
+      await img.decode?.();
+    } catch {
+      dropLogo();
+    }
+  }));
+}
+
+export async function renderProposalPdf(proposal, sourceElement) {
   const doc = normalizeProposalDocument(proposal);
   const temporary = sourceElement ? null : createTemporaryProposalPreview(proposal);
   const exportNode = createProposalExportClone(sourceElement || temporary?.element);
   if (!exportNode) throw new Error("Proposal preview is not available for PDF export.");
 
   try {
+    await prepareExportLogo(exportNode.clone);
+    materializeListMarkers(exportNode.clone);
+    keepHeadingsWithNextBlock(exportNode.clone);
     const filename = `${sanitizeDownloadName(doc.title)}.pdf`;
     const buildWorker = () => html2pdf()
       .set({
@@ -1032,7 +1446,7 @@ async function exportProposalPdf(proposal, sourceElement) {
         // get sliced in half across a page boundary. With that in place this
         // margin only needs to cover the page's breathing room, not also
         // fake a "fresh paragraph" feeling.
-        margin: [14, 8, 18, 8],
+        margin: PROPOSAL_PDF_MARGIN_MM,
         image: { type: "png", quality: 1 },
         html2canvas: {
           scale: 3,
@@ -1041,11 +1455,14 @@ async function exportProposalPdf(proposal, sourceElement) {
           scrollX: 0,
           scrollY: 0,
           windowWidth: 940,
+          // Runs on the captured canvas before html2pdf slices it into pages.
+          onrendered: trimCanvasBottom,
         },
         jsPDF: { unit: "mm", format: "a4", orientation: "portrait", compress: true },
         pagebreak: {
           mode: ["css", "legacy"],
           avoid: [
+            ".proposal-keep-with-next",
             ".proposal-cover",
             ".proposal-highlight-section",
             ".proposal-total-card",
@@ -1086,14 +1503,19 @@ async function exportProposalPdf(proposal, sourceElement) {
     for (let page = 1; page <= pageCount; page += 1) {
       pdf.setPage(page);
       pdf.setFontSize(9);
-      pdf.setTextColor(148, 163, 184);
-      pdf.text(`NoonDalton - ${page} / ${pageCount}`, pageWidth / 2, pageHeight - 8, { align: "center" });
+      pdf.setTextColor(...rgbColor(BRAND.colors.muted));
+      pdf.text(`${BRAND.name} - ${page} / ${pageCount}`, pageWidth / 2, pageHeight - 8, { align: "center" });
     }
-    pdf.save(filename);
+    return { pdf, filename };
   } finally {
     exportNode.wrapper.remove();
     temporary?.wrapper.remove();
   }
+}
+
+async function exportProposalPdf(proposal, sourceElement) {
+  const { pdf, filename } = await renderProposalPdf(proposal, sourceElement);
+  pdf.save(filename);
 }
 
 function extractProposalDocumentFromDom(sourceElement, fallbackProposal = {}) {
@@ -1127,8 +1549,15 @@ function extractProposalDocumentFromDom(sourceElement, fallbackProposal = {}) {
   // as .proposal-detail-card divs, not <li> — keep this in sync with
   // proposalDocumentToHtml()/cardsToHtml(), otherwise these always extract
   // empty and the DOCX export throws when it builds a zero-row Table from them.
+  // A card is <strong>title</strong><p>body</p>: rejoin as "title: body"
+  // (plain textContent glued them together, e.g. "Costoalto.").
+  const cardText = (node) => {
+    const title = node.querySelector?.("strong")?.textContent.trim() || "";
+    const body = [...(node.querySelectorAll?.("p") || [])].map((p) => p.textContent.trim()).filter(Boolean).join(" ");
+    return title || body ? [title, body].filter(Boolean).join(": ") : node.textContent.trim();
+  };
   const sectionList = (key, selector = ".proposal-detail-card") => [...(findSection(key)?.querySelectorAll(selector) || [])]
-    .map((node) => node.textContent.trim())
+    .map(cardText)
     .filter(Boolean);
   const lineItems = [...(findSection("implementationCosts")?.querySelectorAll("tbody tr") || [])]
     .map((row) => [...row.querySelectorAll("td")].map((cell) => cell.textContent.trim()))
@@ -1156,29 +1585,37 @@ function extractProposalDocumentFromDom(sourceElement, fallbackProposal = {}) {
   };
 }
 
-const docxBorder = { style: BorderStyle.SINGLE, size: 4, color: "E5E7EB" };
+const DOCX_COLORS = Object.fromEntries(Object.entries(BRAND.colors).map(([key, value]) => [key, docxColor(value)]));
+
+const docxBorder = { style: BorderStyle.SINGLE, size: 4, color: DOCX_COLORS.border };
 const docxCellBorders = { top: docxBorder, bottom: docxBorder, left: docxBorder, right: docxBorder };
 
 function docxText(text, options = {}) {
-  return new TextRun({ text: String(text || ""), font: "Aptos", ...options });
+  return new TextRun({ text: String(text || ""), font: BRAND.docxFont, ...options });
 }
 
 function docxParagraph(text, options = {}) {
   return new Paragraph({
     spacing: { after: 260, line: 360 },
     keepLines: true,
-    children: [docxText(text, { color: "1F2937", ...(options.textOptions || {}) })],
+    children: [docxText(text, { color: DOCX_COLORS.text, ...(options.textOptions || {}) })],
     ...options,
   });
 }
 
+const docxParagraphs = (text, options) => String(text || "")
+  .split(/\n{2,}/)
+  .map((paragraph) => paragraph.trim())
+  .filter(Boolean)
+  .map((paragraph) => docxParagraph(paragraph, options));
+
 function docxHeading(text, level = HeadingLevel.HEADING_2, spacing = {}, pageBreakBefore = false) {
   return new Paragraph({
-    children: [docxText(text, { bold: true, color: "1A2B4A", size: 28 })],
+    children: [docxText(text, { bold: true, color: DOCX_COLORS.primary, size: 28 })],
     heading: level,
     keepNext: true,
     pageBreakBefore,
-    border: { bottom: { style: BorderStyle.SINGLE, size: 10, color: "6366F1", space: 4 } },
+    border: { bottom: { style: BorderStyle.SINGLE, size: 10, color: DOCX_COLORS.accent, space: 4 } },
     spacing: { before: 620, after: 260, ...spacing },
   });
 }
@@ -1197,8 +1634,8 @@ function docxRowsFromLineItems(lineItems = [], copy = PROPOSAL_COPY.en) {
     tableHeader: true,
     cantSplit: true,
     children: [copy.serviceUnit, copy.description, copy.qty, copy.unitPrice, copy.subtotal].map((label) =>
-      docxCell(new Paragraph({ children: [docxText(label, { bold: true, color: "1A2B4A" })] }), {
-        shading: { type: ShadingType.CLEAR, fill: "EEF2FF" },
+      docxCell(new Paragraph({ children: [docxText(label, { bold: true, color: DOCX_COLORS.onPrimary })] }), {
+        shading: { type: ShadingType.CLEAR, fill: DOCX_COLORS.primary },
       }),
     ),
   });
@@ -1210,8 +1647,8 @@ function docxRowsFromLineItems(lineItems = [], copy = PROPOSAL_COPY.en) {
       item.quantity,
       formatUsd(item.unitPrice),
       formatUsd(item.subtotal),
-    ].map((value) => docxCell(new Paragraph({ children: [docxText(value, { color: "1F2937" })] }), {
-      shading: { type: ShadingType.CLEAR, fill: index % 2 === 0 ? "FFFFFF" : "F6F8FB" },
+    ].map((value) => docxCell(new Paragraph({ children: [docxText(value, { color: DOCX_COLORS.text })] }), {
+      shading: { type: ShadingType.CLEAR, fill: index % 2 === 0 ? DOCX_COLORS.white : DOCX_COLORS.surface },
     })),
   }));
   return [header, ...rows];
@@ -1231,18 +1668,18 @@ function docxTechnologyRows(technologies = []) {
     children: chunk.map((technology) => docxCell(
       new Paragraph({
         alignment: AlignmentType.CENTER,
-        children: [docxText(technology, { bold: true, color: "1A2B4A" })],
+        children: [docxText(technology, { bold: true, color: DOCX_COLORS.primary })],
       }),
       {
-        shading: { type: ShadingType.CLEAR, fill: "F6F8FB" },
+        shading: { type: ShadingType.CLEAR, fill: DOCX_COLORS.surface },
         margins: { top: 120, bottom: 120, left: 160, right: 160 },
       },
     )).concat(Array.from({ length: Math.max(0, 3 - chunk.length) }, () => docxCell(new Paragraph({ children: [] }), {
       borders: {
-        top: { style: BorderStyle.SINGLE, size: 0, color: "FFFFFF" },
-        bottom: { style: BorderStyle.SINGLE, size: 0, color: "FFFFFF" },
-        left: { style: BorderStyle.SINGLE, size: 0, color: "FFFFFF" },
-        right: { style: BorderStyle.SINGLE, size: 0, color: "FFFFFF" },
+        top: { style: BorderStyle.SINGLE, size: 0, color: DOCX_COLORS.white },
+        bottom: { style: BorderStyle.SINGLE, size: 0, color: DOCX_COLORS.white },
+        left: { style: BorderStyle.SINGLE, size: 0, color: DOCX_COLORS.white },
+        right: { style: BorderStyle.SINGLE, size: 0, color: DOCX_COLORS.white },
       },
     }))),
   }));
@@ -1250,27 +1687,59 @@ function docxTechnologyRows(technologies = []) {
 
 function docxSignatureCell(label) {
   return docxCell([
-    new Paragraph({ children: [docxText(label, { color: "64748B", bold: true, size: 18 })], spacing: { after: 360 } }),
+    new Paragraph({ children: [docxText(label, { color: DOCX_COLORS.muted, bold: true, size: 18 })], spacing: { after: 360 } }),
     new Paragraph({
-      border: { bottom: { style: BorderStyle.SINGLE, size: 6, color: "CBD5E1" } },
+      border: { bottom: { style: BorderStyle.SINGLE, size: 6, color: DOCX_COLORS.border } },
       spacing: { after: 40 },
       children: [docxText(" ")],
     }),
   ], {
     borders: {
-      top: { style: BorderStyle.SINGLE, size: 0, color: "FFFFFF" },
-      bottom: { style: BorderStyle.SINGLE, size: 0, color: "FFFFFF" },
-      left: { style: BorderStyle.SINGLE, size: 0, color: "FFFFFF" },
-      right: { style: BorderStyle.SINGLE, size: 0, color: "FFFFFF" },
+      top: { style: BorderStyle.SINGLE, size: 0, color: DOCX_COLORS.white },
+      bottom: { style: BorderStyle.SINGLE, size: 0, color: DOCX_COLORS.white },
+      left: { style: BorderStyle.SINGLE, size: 0, color: DOCX_COLORS.white },
+      right: { style: BorderStyle.SINGLE, size: 0, color: DOCX_COLORS.white },
     },
   });
 }
 
-async function exportProposalDocx(proposal, sourceElement) {
+// Primary-color band at the top of the DOCX cover with the (white) logo inside;
+// shows the brand name in white when the logo isn't available.
+function docxLogoBand(logo) {
+  let content;
+  if (logo) {
+    const scale = Math.min(180 / logo.width, 56 / logo.height, 1);
+    content = new ImageRun({
+      type: logo.type,
+      data: logo.bytes,
+      transformation: { width: Math.round(logo.width * scale), height: Math.round(logo.height * scale) },
+      altText: { name: BRAND.name, title: BRAND.name, description: `${BRAND.name} logo` },
+    });
+  } else {
+    content = docxText(BRAND.name, { bold: true, color: DOCX_COLORS.onPrimary, size: 36 });
+  }
+  const none = { style: BorderStyle.NONE, size: 0, color: DOCX_COLORS.white };
+  return new Table({
+    width: { size: 100, type: WidthType.PERCENTAGE },
+    borders: { top: none, bottom: none, left: none, right: none, insideHorizontal: none, insideVertical: none },
+    rows: [new TableRow({
+      cantSplit: true,
+      children: [new TableCell({
+        shading: { type: ShadingType.CLEAR, fill: DOCX_COLORS.primary },
+        borders: { top: none, left: none, right: none, bottom: { style: BorderStyle.SINGLE, size: 24, color: DOCX_COLORS.accent } },
+        margins: { top: 200, bottom: 200, left: 280, right: 280 },
+        children: [new Paragraph({ children: [content] })],
+      })],
+    })],
+  });
+}
+
+export async function buildProposalDocx(proposal, sourceElement) {
   const temporary = sourceElement ? null : createTemporaryProposalPreview(proposal);
   try {
     const doc = extractProposalDocumentFromDom(sourceElement || temporary?.element, proposal);
     const copy = getProposalCopy(doc.language);
+    const logoBand = docxLogoBand(await loadBrandLogo());
     // Mirror the PDF/preview fallbacks: a Table built from a zero-length rows
     // array throws (docx tries to Array(Math.max(...[])) internally), so an
     // empty list must never reach docxTechnologyRows/docxRowsFromLineItems.
@@ -1286,9 +1755,9 @@ async function exportProposalDocx(proposal, sourceElement) {
             [copy.validUntil, doc.validUntil],
             [copy.preparedByPerson, doc.issuedBy || "—"],
           ].map(([label, value]) => docxCell([
-            new Paragraph({ children: [docxText(label, { color: "64748B", bold: true })] }),
-            new Paragraph({ children: [docxText(value, { color: "1A2B4A", bold: true })] }),
-          ], { shading: { type: ShadingType.CLEAR, fill: "F6F8FB" } })),
+            new Paragraph({ children: [docxText(label, { color: DOCX_COLORS.muted, bold: true })] }),
+            new Paragraph({ children: [docxText(value, { color: DOCX_COLORS.primary, bold: true })] }),
+          ], { shading: { type: ShadingType.CLEAR, fill: DOCX_COLORS.surface } })),
         }),
       ],
     });
@@ -1305,13 +1774,23 @@ async function exportProposalDocx(proposal, sourceElement) {
     });
     const borderlessCell = (children) => docxCell(children, {
       borders: {
-        top: { style: BorderStyle.SINGLE, size: 0, color: "FFFFFF" },
-        bottom: { style: BorderStyle.SINGLE, size: 0, color: "FFFFFF" },
-        left: { style: BorderStyle.SINGLE, size: 0, color: "FFFFFF" },
-        right: { style: BorderStyle.SINGLE, size: 0, color: "FFFFFF" },
+        top: { style: BorderStyle.SINGLE, size: 0, color: DOCX_COLORS.white },
+        bottom: { style: BorderStyle.SINGLE, size: 0, color: DOCX_COLORS.white },
+        left: { style: BorderStyle.SINGLE, size: 0, color: DOCX_COLORS.white },
+        right: { style: BorderStyle.SINGLE, size: 0, color: DOCX_COLORS.white },
       },
       margins: { top: 0, bottom: 0, left: 0, right: 0 },
     });
+    const notes = doc.sectionNotes || {};
+    const clientDetails = proposalClientDetails(doc, copy);
+    const adjustmentParagraphs = proposalAdjustmentRows(doc, copy).map(([label, value]) => new Paragraph({
+      alignment: AlignmentType.RIGHT,
+      spacing: { before: 60, after: 60 },
+      children: [
+        docxText(`${label}: `, { color: DOCX_COLORS.muted }),
+        docxText(value, { bold: true, color: DOCX_COLORS.primary }),
+      ],
+    }));
     const costSectionTable = new Table({
       width: { size: 100, type: WidthType.PERCENTAGE },
       rows: [new TableRow({
@@ -1319,10 +1798,11 @@ async function exportProposalDocx(proposal, sourceElement) {
         children: [borderlessCell([
           docxHeading(copy.implementationCosts),
           costTable,
+          ...adjustmentParagraphs,
           new Paragraph({
-            children: [docxText(`${copy.totalImplementationCost}: ${doc.formattedTotal}`, { bold: true, color: "1A2B4A", size: 28 })],
-            shading: { type: ShadingType.CLEAR, fill: "EEF2FF" },
-            border: { left: { style: BorderStyle.SINGLE, size: 18, color: "6366F1" } },
+            children: [docxText(`${copy.totalImplementationCost}: ${doc.formattedTotal}`, { bold: true, color: DOCX_COLORS.onPrimary, size: 28 })],
+            shading: { type: ShadingType.CLEAR, fill: DOCX_COLORS.primary },
+            border: { left: { style: BorderStyle.SINGLE, size: 18, color: DOCX_COLORS.accent } },
             spacing: { before: 240, after: 260 },
             alignment: AlignmentType.CENTER,
           }),
@@ -1343,7 +1823,7 @@ async function exportProposalDocx(proposal, sourceElement) {
     const proposalDoc = new Document({
       styles: {
         default: {
-          document: { run: { font: "Aptos" } },
+          document: { run: { font: BRAND.docxFont } },
         },
       },
       sections: [{
@@ -1354,42 +1834,52 @@ async function exportProposalDocx(proposal, sourceElement) {
               new Paragraph({
                 alignment: AlignmentType.CENTER,
                 children: [
-                  docxText("NoonDalton · ", { color: "94A3B8", size: 18 }),
-                  new TextRun({ children: [PageNumber.CURRENT], font: "Aptos", size: 18, color: "94A3B8" }),
-                  docxText(" / ", { color: "94A3B8", size: 18 }),
-                  new TextRun({ children: [PageNumber.TOTAL_PAGES], font: "Aptos", size: 18, color: "94A3B8" }),
+                  docxText(`${BRAND.name} · `, { color: DOCX_COLORS.muted, size: 18 }),
+                  new TextRun({ children: [PageNumber.CURRENT], font: BRAND.docxFont, size: 18, color: DOCX_COLORS.muted }),
+                  docxText(" / ", { color: DOCX_COLORS.muted, size: 18 }),
+                  new TextRun({ children: [PageNumber.TOTAL_PAGES], font: BRAND.docxFont, size: 18, color: DOCX_COLORS.muted }),
                 ],
               }),
             ],
           }),
         },
         children: [
+          logoBand,
           new Paragraph({
-            children: [docxText(copy.preparedBy.toUpperCase(), { bold: true, color: "4F46E5", size: 22 })],
-            border: { top: { style: BorderStyle.SINGLE, size: 18, color: "6366F1" } },
+            children: [docxText(copy.preparedBy.toUpperCase(), { bold: true, color: DOCX_COLORS.primary, size: 22 })],
             spacing: { before: 360, after: 220 },
           }),
-          new Paragraph({ children: [docxText(doc.title, { bold: true, color: "111C30", size: 42 })], spacing: { after: 260, line: 360 } }),
-          docxParagraph(`${copy.proposalEyebrow} - ${copy.preparedFor} ${doc.client}`, { spacing: { after: 360, line: 360 }, textOptions: { color: "475569", size: 24 } }),
-          docxParagraph([doc.industry, doc.contact, doc.serviceLine].filter(Boolean).join("   "), { spacing: { after: 420, line: 320 }, textOptions: { color: "334155", bold: true } }),
+          new Paragraph({ children: [docxText(doc.title, { bold: true, color: DOCX_COLORS.primaryDeep, size: 42 })], spacing: { after: 260, line: 360 } }),
+          docxParagraph(`${copy.proposalEyebrow} - ${copy.preparedFor} ${doc.client}`, { spacing: { after: clientDetails || doc.introduction ? 160 : 360, line: 360 }, textOptions: { color: DOCX_COLORS.muted, size: 24 } }),
+          ...(clientDetails ? [docxParagraph(clientDetails, { spacing: { after: 240, line: 320 }, textOptions: { color: DOCX_COLORS.primary, bold: true } })] : []),
+          ...docxParagraphs(doc.introduction, { spacing: { after: 200, line: 320 }, textOptions: { color: DOCX_COLORS.muted } }),
+          docxParagraph([doc.industry, doc.contact, doc.serviceLine].filter(Boolean).join("   "), { spacing: { after: 420, line: 320 }, textOptions: { color: DOCX_COLORS.text, bold: true } }),
           coverInfoTable,
           new Paragraph({ children: [docxText(" ")], spacing: { after: 420 } }),
           docxHeading(copy.executiveSummary, HeadingLevel.HEADING_2),
           ...String(doc.executiveSummary || "").split(/\n{2,}/).filter(Boolean).map((text) => docxParagraph(text)),
           docxHeading(copy.problemsIdentified),
+          ...docxParagraphs(notes.problemsIdentified),
           ...problemsForDocx.map((item) => new Paragraph({ text: item, bullet: { level: 0 }, keepLines: true, spacing: { after: 140 } })),
           docxHeading(copy.proposedSolution),
           ...String(doc.proposedSolution || "").split(/\n{2,}/).filter(Boolean).map((text) => docxParagraph(text)),
           docxHeading(copy.technologiesUsed),
+          ...docxParagraphs(notes.technologiesUsed),
           new Table({
             width: { size: 100, type: WidthType.PERCENTAGE },
             rows: docxTechnologyRows(technologiesForDocx),
           }),
           costSectionTable,
+          ...docxParagraphs(notes.implementationCosts),
           docxHeading(copy.expectedROI),
           ...String(doc.expectedROI || "").split(/\n{2,}/).filter(Boolean).map((text) => docxParagraph(text)),
           docxHeading(copy.nextSteps),
           ...doc.nextSteps.map((item) => new Paragraph({ text: item, numbering: { reference: "next-steps", level: 0 }, keepLines: true, spacing: { after: 140 } })),
+          ...docxParagraphs(notes.nextSteps),
+          ...(doc.additionalSections || []).flatMap((item) => [
+            docxHeading(additionalSectionTitle(item.heading, copy)),
+            ...docxParagraphs(item.body),
+          ]),
           acceptanceSectionTable,
         ],
       }],
@@ -1407,8 +1897,7 @@ async function exportProposalDocx(proposal, sourceElement) {
       },
     });
 
-    const blob = await Packer.toBlob(proposalDoc);
-    downloadBlob(blob, `${sanitizeDownloadName(doc.title)}.docx`);
+    return { proposalDoc, filename: `${sanitizeDownloadName(doc.title)}.docx` };
   } finally {
     temporary?.wrapper.remove();
   }
@@ -1422,6 +1911,12 @@ async function exportProposalViaBackend(proposal, format) {
     issuedBy: doc.issuedBy || undefined,
   });
   downloadBlob(response.data, `${sanitizeDownloadName(doc.title)}.${format}`);
+}
+
+async function exportProposalDocx(proposal, sourceElement) {
+  const { proposalDoc, filename } = await buildProposalDocx(proposal, sourceElement);
+  const blob = await Packer.toBlob(proposalDoc);
+  downloadBlob(blob, filename);
 }
 
 async function exportProposalDocument(proposal, format, sourceElement) {

@@ -887,6 +887,9 @@ export const translations = {
       columnStatus: "Status",
       columnSource: "Source",
       columnFound: "Found",
+      showing: "Showing {from}–{to} of {total}",
+      pageOf: "Page {page} of {pages}",
+      limitReached: "There are more than {limit}; showing the {limit} most recent.",
       status: {
         new: "New",
         researching: "Researching",
@@ -1785,6 +1788,9 @@ export const translations = {
       columnStatus: "Estado",
       columnSource: "Fuente",
       columnFound: "Encontrado",
+      showing: "Mostrando {from}–{to} de {total}",
+      pageOf: "Página {page} de {pages}",
+      limitReached: "Hay más de {limit}; se muestran los {limit} más recientes.",
       status: {
         new: "Nuevo",
         researching: "Investigando",
@@ -2719,6 +2725,9 @@ export const translations = {
       columnStatus: "Status",
       columnSource: "Fonte",
       columnFound: "Encontrado",
+      showing: "Mostrando {from}–{to} de {total}",
+      pageOf: "Página {page} de {pages}",
+      limitReached: "Há mais de {limit}; são exibidos os {limit} mais recentes.",
       status: {
         new: "Novo",
         researching: "Pesquisando",

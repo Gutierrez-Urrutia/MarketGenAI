@@ -18,8 +18,8 @@ const flush = () => act(async () => { await Promise.resolve(); });
 
 const lead = (overrides) => ({ id: "l1", job_title: "Dev", relevance_score: 0.9, status: "new", ...overrides });
 
-// "Found" is the 5th (last) column of the leads table.
-const foundCell = (jobTitle) => screen.getByText(jobTitle).closest("tr").querySelectorAll("td")[4];
+// "Found" is the 6th (last) column of the leads table.
+const foundCell = (jobTitle) => screen.getByText(jobTitle).closest("tr").querySelectorAll("td")[5];
 
 // 47 seconds: a value that must not show up in the time line.
 const CREATED_AT = "2026-09-30T23:11:47Z";

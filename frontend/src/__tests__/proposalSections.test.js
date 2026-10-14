@@ -38,9 +38,15 @@ describe("parseGeneratedSections", () => {
     expect(parseGeneratedSections("solo texto")).toBeNull();
   });
 
+  it("leaves legacy english-heading proposals to the classic renderer", () => {
+    const legacy =
+      "<h2>Executive Summary</h2><p>a</p><h2>Problems Identified</h2><p>b</p><h2>Implementation Costs</h2><p>c</p><h2>Next Steps</h2><p>d</p>";
+    expect(parseGeneratedSections(legacy)).toBeNull();
+  });
+
   it("strips scripts, event handlers, styles and unknown tags", () => {
     const parsed = parseGeneratedSections(
-      '<h2>A</h2><p onclick="x()" style="color:red">hola<script>alert(1)</script></p><h2>B</h2><div><a href="javascript:x">link</a></div><h2>C</h2><p>c</p>',
+      '<h2>Resumen Ejecutivo</h2><p onclick="x()" style="color:red">hola<script>alert(1)</script></p><h2>Alcance y Objetivos</h2><div><a href="javascript:x">link</a></div><h2>Condiciones Generales</h2><p>c</p>',
     );
     const html = parsed.sections.map((s) => s.html).join("");
     expect(html).not.toMatch(/script|onclick|style=|href|<div|<a /i);

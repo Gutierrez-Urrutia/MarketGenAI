@@ -18,6 +18,11 @@ const STATUS_OPTIONS = [
 const POLL_INTERVAL_MS = 2000;
 const POLL_MAX_ATTEMPTS = 150; // ~5 minutes
 
+// Paging happens in the browser over one response. GET /leads caps at 200
+// (most recent first), so a full response means older leads were left out.
+const LEADS_LIMIT = 200;
+const PAGE_SIZE = 10;
+
 // Only render a lead's job_url as a clickable link if it's http(s). The
 // backend already drops non-http(s) schemes before persisting a Lead
 // (job_scout_service._sanitize_job_url), but a pre-existing record from
@@ -59,6 +64,15 @@ function FoundAtCell({ value }) {
   );
 }
 
+// Derived on every render (no effect): when the list shrinks under the page
+// being shown, that page is clamped to the last one that still exists.
+export function paginate(items, page, pageSize = PAGE_SIZE) {
+  const pageCount = Math.max(1, Math.ceil(items.length / pageSize));
+  const currentPage = Math.min(Math.max(1, page), pageCount);
+  const firstIndex = (currentPage - 1) * pageSize;
+  return { pageCount, currentPage, firstIndex, pageItems: items.slice(firstIndex, firstIndex + pageSize) };
+}
+
 function getApiErrorMessage(error, fallback) {
   const detail = error?.response?.data?.detail;
   if (typeof detail === "string" && detail.trim()) return detail;
@@ -91,6 +105,7 @@ export default function LeadList() {
   const [loadError, setLoadError] = useState(null);
   const [statusFilter, setStatusFilter] = useState("");
   const [minScore, setMinScore] = useState("");
+  const [page, setPage] = useState(1);
   const pollRef = useRef(null);
   const mountedRef = useRef(true);
   // The poll outlives renders, so it must read the *current* filters, not the
@@ -106,7 +121,7 @@ export default function LeadList() {
     setLoadError(null);
     try {
       const { statusFilter: status, minScore: score } = filtersRef.current;
-      const params = {};
+      const params = { limit: LEADS_LIMIT };
       if (status) params.status = status;
       if (score) params.min_score = Number(score);
       const { data } = await leadsApi.list(params);
@@ -196,6 +211,8 @@ export default function LeadList() {
         } else {
           toast.error(t("leads.scanFailed"));
         }
+        // New leads land at the top, i.e. on page 1.
+        setPage(1);
         // Stay disabled until the refreshed list is on screen, so the button
         // only comes back once the new results are visible.
         await fetchLeads();
@@ -232,6 +249,8 @@ export default function LeadList() {
     }
   };
 
+  const { pageCount, currentPage, firstIndex, pageItems: pageLeads } = paginate(leads, page);
+
   return (
     <div className="space-y-4">
       <div className="flex items-start justify-between">
@@ -256,7 +275,7 @@ export default function LeadList() {
           <label className="block text-xs font-medium text-gray-600 mb-1">{t("leads.filterStatus")}</label>
           <select
             value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value)}
+            onChange={(e) => { setStatusFilter(e.target.value); setPage(1); }}
             className="border border-gray-300 rounded-lg text-xs px-2.5 py-1.5"
           >
             <option value="">{t("leads.allStatuses")}</option>
@@ -270,7 +289,7 @@ export default function LeadList() {
           <input
             type="number" min="0" max="1" step="0.1"
             value={minScore}
-            onChange={(e) => setMinScore(e.target.value)}
+            onChange={(e) => { setMinScore(e.target.value); setPage(1); }}
             className="border border-gray-300 rounded-lg text-xs px-2.5 py-1.5 w-24"
           />
         </div>
@@ -295,6 +314,7 @@ export default function LeadList() {
           <table className="min-w-full text-sm">
             <thead>
               <tr className="text-left text-xs text-gray-500 border-b border-gray-100">
+                <th className="px-4 py-3 text-right">#</th>
                 <th className="px-4 py-3">{t("leads.columnTitle")}</th>
                 <th className="px-4 py-3">{t("leads.columnCompany")}</th>
                 <th className="px-4 py-3">{t("leads.columnScore")}</th>
@@ -303,8 +323,9 @@ export default function LeadList() {
               </tr>
             </thead>
             <tbody>
-              {leads.map((lead) => (
+              {pageLeads.map((lead, i) => (
                 <tr key={lead.id} className="border-b border-gray-50 hover:bg-gray-50">
+                  <td className="px-4 py-3 text-right text-xs text-gray-400 tabular-nums">{firstIndex + i + 1}</td>
                   <td className="px-4 py-3 font-medium text-gray-900">
                     {isSafeHttpUrl(lead.job_url) ? (
                       <a href={lead.job_url} target="_blank" rel="noopener noreferrer" className="hover:underline">
@@ -327,6 +348,44 @@ export default function LeadList() {
               ))}
             </tbody>
           </table>
+        )}
+        {!loading && !loadError && leads.length > 0 && (
+          <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 border-t border-gray-100 bg-gray-50">
+            <div>
+              <span className="text-xs text-gray-400">
+                {t("leads.showing")
+                  .replace("{from}", firstIndex + 1)
+                  .replace("{to}", firstIndex + pageLeads.length)
+                  .replace("{total}", leads.length)}
+              </span>
+              {leads.length >= LEADS_LIMIT && (
+                <p className="text-xs text-amber-600">
+                  {t("leads.limitReached").replace(/\{limit\}/g, LEADS_LIMIT)}
+                </p>
+              )}
+            </div>
+            {pageCount > 1 && (
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-gray-500">
+                  {t("leads.pageOf").replace("{page}", currentPage).replace("{pages}", pageCount)}
+                </span>
+                <button
+                  onClick={() => setPage(currentPage - 1)}
+                  disabled={currentPage <= 1}
+                  className="px-3 py-1.5 rounded-lg text-xs font-medium border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50"
+                >
+                  {t("common.previous")}
+                </button>
+                <button
+                  onClick={() => setPage(currentPage + 1)}
+                  disabled={currentPage >= pageCount}
+                  className="px-3 py-1.5 rounded-lg text-xs font-medium border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50"
+                >
+                  {t("common.next")}
+                </button>
+              </div>
+            )}
+          </div>
         )}
       </Card>
     </div>

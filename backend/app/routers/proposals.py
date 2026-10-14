@@ -51,15 +51,16 @@ from app.services.crm_service import (
     CrmProviderError,
     CrmTimeoutError,
 )
-from app.rendering.brand_styles import (
-    BRAND_BORDER,
-    BRAND_DEEP_NAVY as BRAND_NAVY_DEEP,
-    BRAND_MUTED,
-    BRAND_NAVY,
-    BRAND_PRIMARY_INDIGO as BRAND_INDIGO,
-    BRAND_SOFT_INDIGO_SURFACE as BRAND_INDIGO_SOFT,
-    BRAND_SURFACE,
-    BRAND_TEXT,
+from app.rendering import proposal_brand
+from app.rendering.proposal_brand import (
+    ACCENT as BRAND_ACCENT,
+    BORDER as BRAND_BORDER,
+    MUTED as BRAND_MUTED,
+    PRIMARY as BRAND_PRIMARY,
+    PRIMARY_DEEP as BRAND_PRIMARY_DEEP,
+    PRIMARY_SOFT as BRAND_PRIMARY_SOFT,
+    SURFACE as BRAND_SURFACE,
+    TEXT as BRAND_TEXT,
 )
 from app.workers.tasks.proposal_tasks import (
     _output_dir,
@@ -111,21 +112,21 @@ async def _get_proposal_for_user(proposal_id: str, user_id: str) -> dict:
 
 _EXPORT_LABELS = {
     "es": {
-        "total": "TOTAL", "issued": "FECHA DE EMISIÓN", "valid": "VÁLIDA HASTA", "prepared": "PREPARADO POR",
+        "proposal": "PROPUESTA COMERCIAL", "total": "TOTAL", "issued": "FECHA DE EMISIÓN", "valid": "VÁLIDA HASTA", "prepared": "PREPARADO POR",
         "total_cost": "Total de la propuesta", "page": "Página", "not_calculated": "No calculado",
         "accept": "Aceptación", "confidential": "Documento confidencial",
         "accept_intro": "Para aceptar esta propuesta, firme y devuelva este documento, o confirme su aceptación por correo electrónico.",
         "sig": ["Nombre", "Cargo", "Fecha", "Firma"], "default_title": "Propuesta Comercial",
     },
     "en": {
-        "total": "TOTAL", "issued": "ISSUED ON", "valid": "VALID UNTIL", "prepared": "PREPARED BY",
+        "proposal": "COMMERCIAL PROPOSAL", "total": "TOTAL", "issued": "ISSUED ON", "valid": "VALID UNTIL", "prepared": "PREPARED BY",
         "total_cost": "Proposal total", "page": "Page", "not_calculated": "Not calculated",
         "accept": "Acceptance", "confidential": "Confidential document",
         "accept_intro": "To accept this proposal, sign and return this document, or confirm your acceptance by email.",
         "sig": ["Name", "Title", "Date", "Signature"], "default_title": "Commercial Proposal",
     },
     "pt": {
-        "total": "TOTAL", "issued": "DATA DE EMISSÃO", "valid": "VÁLIDA ATÉ", "prepared": "PREPARADO POR",
+        "proposal": "PROPOSTA COMERCIAL", "total": "TOTAL", "issued": "DATA DE EMISSÃO", "valid": "VÁLIDA ATÉ", "prepared": "PREPARADO POR",
         "total_cost": "Total da proposta", "page": "Página", "not_calculated": "Não calculado",
         "accept": "Aceitação", "confidential": "Documento confidencial",
         "accept_intro": "Para aceitar esta proposta, assine e devolva este documento, ou confirme a aceitação por e-mail.",
@@ -341,8 +342,8 @@ def _pdf_table(table_tag, styles) -> list:
     ]
     start_row = 0
     if header_cells:
-        style_commands.append(("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(BRAND_INDIGO_SOFT)))
-        style_commands.append(("LINEBELOW", (0, 0), (-1, 0), 1.4, colors.HexColor(BRAND_INDIGO)))
+        style_commands.append(("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(BRAND_PRIMARY)))
+        style_commands.append(("LINEBELOW", (0, 0), (-1, 0), 1.4, colors.HexColor(BRAND_ACCENT)))
         start_row = 1
     for row_index in range(start_row, len(data)):
         if (row_index - start_row) % 2 == 1:
@@ -361,8 +362,8 @@ def _pdf_total_highlight(total_display: str, styles, label: str = "Total Impleme
         colWidths=[usable_width * 0.6, usable_width * 0.4],
     )
     table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor(BRAND_INDIGO_SOFT)),
-        ("LINEBEFORE", (0, 0), (0, -1), 3, colors.HexColor(BRAND_INDIGO)),
+        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor(BRAND_PRIMARY_SOFT)),
+        ("LINEBEFORE", (0, 0), (0, -1), 3, colors.HexColor(BRAND_ACCENT)),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
         ("LEFTPADDING", (0, 0), (-1, -1), 14),
         ("RIGHTPADDING", (0, 0), (-1, -1), 14),
@@ -380,12 +381,13 @@ def _pdf_body_flowables(body_tags, styles, total_display: str, total_label: str 
         nonlocal pending_bullets
         if pending_bullets:
             story.append(ListFlowable(
-                [ListItem(Paragraph(escape(item), styles["body"]), leftIndent=6) for item in pending_bullets],
+                [ListItem(Paragraph(escape(item), styles["body"]), leftIndent=14) for item in pending_bullets],
                 bulletType="bullet",
                 start="circle",
                 leftIndent=16,
+                bulletDedent=11,  # la viñeta queda dentro del margen del texto
                 bulletFontSize=7,
-                bulletColor=colors.HexColor(BRAND_INDIGO),
+                bulletColor=colors.HexColor(BRAND_ACCENT),
             ))
             story.append(Spacer(1, 6))
             pending_bullets = None
@@ -395,7 +397,7 @@ def _pdf_body_flowables(body_tags, styles, total_display: str, total_label: str 
         if name == "h2":
             flush_bullets()
             heading_para = Paragraph(escape(tag.get_text(" ", strip=True)), styles["h2"])
-            heading_rule = HRFlowable(width="100%", thickness=1.4, color=colors.HexColor(BRAND_INDIGO), spaceAfter=10, hAlign="LEFT")
+            heading_rule = HRFlowable(width="100%", thickness=1.4, color=colors.HexColor(BRAND_ACCENT), spaceAfter=10, hAlign="LEFT")
             heading_para.keepWithNext = True
             heading_rule.keepWithNext = True
             story.append(heading_para)
@@ -417,7 +419,7 @@ def _pdf_body_flowables(body_tags, styles, total_display: str, total_label: str 
                     bulletType="1",
                     leftIndent=16,
                     bulletFontSize=9,
-                    bulletColor=colors.HexColor(BRAND_NAVY),
+                    bulletColor=colors.HexColor(BRAND_PRIMARY),
                 ))
                 story.append(Spacer(1, 6))
         elif name == "table":
@@ -460,7 +462,7 @@ def _pdf_acceptance_block(styles, labels: dict, usable_width: float) -> list:
         ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
     ]))
     heading = Paragraph(escape(labels["accept"]), styles["h2"])
-    rule = HRFlowable(width="100%", thickness=1.4, color=colors.HexColor(BRAND_INDIGO), spaceAfter=10, hAlign="LEFT")
+    rule = HRFlowable(width="100%", thickness=1.4, color=colors.HexColor(BRAND_ACCENT), spaceAfter=10, hAlign="LEFT")
     return [
         Spacer(1, 18),
         KeepTogether([
@@ -473,10 +475,35 @@ def _pdf_acceptance_block(styles, labels: dict, usable_width: float) -> list:
     ]
 
 
+def _pdf_logo_band(styles, labels: dict, usable_width: float):
+    """Banda de color primario con el logo (blanco) a la izquierda y la etiqueta del documento a la derecha."""
+    from reportlab.lib.utils import ImageReader
+    from reportlab.platypus import Image
+
+    if proposal_brand.logo_available():
+        width, height = ImageReader(str(proposal_brand.LOGO_PATH)).getSize()
+        logo_h = 30
+        left = Image(str(proposal_brand.LOGO_PATH), width=logo_h * width / height, height=logo_h)
+    else:
+        left = Paragraph(escape(proposal_brand.NAME), styles["band_name"])
+    right = Paragraph(escape(labels["proposal"]), styles["band_label"])
+    band = Table([[left, right]], colWidths=[usable_width * 0.5, usable_width * 0.5])
+    band.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor(BRAND_PRIMARY)),
+        ("LINEBELOW", (0, 0), (-1, -1), 3, colors.HexColor(BRAND_ACCENT)),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 16),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 16),
+        ("TOPPADDING", (0, 0), (-1, -1), 14),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 14),
+    ]))
+    return band
+
+
 def _build_proposal_pdf(file_path: Path, record_title: str, html_content: str, cover: dict) -> None:
-    navy = colors.HexColor(BRAND_NAVY)
-    navy_deep = colors.HexColor(BRAND_NAVY_DEEP)
-    indigo = colors.HexColor(BRAND_INDIGO)
+    navy = colors.HexColor(BRAND_PRIMARY)
+    navy_deep = colors.HexColor(BRAND_PRIMARY_DEEP)
+    accent = colors.HexColor(BRAND_ACCENT)
     muted = colors.HexColor(BRAND_MUTED)
     border = colors.HexColor(BRAND_BORDER)
     text_color = colors.HexColor(BRAND_TEXT)
@@ -488,10 +515,12 @@ def _build_proposal_pdf(file_path: Path, record_title: str, html_content: str, c
         "meta": ParagraphStyle("ProposalMeta", parent=base["Normal"], fontName="Helvetica-Bold", fontSize=9, leading=13, textColor=navy, spaceAfter=2),
         "h2": ParagraphStyle("ProposalH2", parent=base["Heading2"], fontName="Helvetica-Bold", fontSize=13.5, leading=16, textColor=navy, spaceBefore=16, spaceAfter=4),
         "body": ParagraphStyle("ProposalBody", parent=base["BodyText"], fontSize=10, leading=15, textColor=text_color, spaceAfter=8),
-        "th": ParagraphStyle("ProposalTh", parent=base["Normal"], fontName="Helvetica-Bold", fontSize=9, textColor=navy_deep),
+        "th": ParagraphStyle("ProposalTh", parent=base["Normal"], fontName="Helvetica-Bold", fontSize=9, textColor=colors.white),
         "td": ParagraphStyle("ProposalTd", parent=base["Normal"], fontSize=9, textColor=text_color),
         "info_label": ParagraphStyle("ProposalInfoLabel", parent=base["Normal"], fontName="Helvetica-Bold", fontSize=7.5, textColor=muted, spaceAfter=2),
         "info_value": ParagraphStyle("ProposalInfoValue", parent=base["Normal"], fontSize=10, textColor=text_color),
+        "band_name": ParagraphStyle("ProposalBandName", parent=base["Normal"], fontName="Helvetica-Bold", fontSize=16, textColor=colors.white),
+        "band_label": ParagraphStyle("ProposalBandLabel", parent=base["Normal"], fontName="Helvetica-Bold", fontSize=8.5, textColor=colors.white, alignment=2),
         "total_label": ParagraphStyle("ProposalTotalLabel", parent=base["Normal"], fontSize=10.5, textColor=navy_deep),
         "total_value": ParagraphStyle("ProposalTotalValue", parent=base["Normal"], fontName="Helvetica-Bold", fontSize=13, textColor=navy_deep, alignment=2),
     }
@@ -500,7 +529,8 @@ def _build_proposal_pdf(file_path: Path, record_title: str, html_content: str, c
     usable_width = LETTER[0] - 108
 
     story = [
-        HRFlowable(width="100%", thickness=3.5, color=indigo, spaceAfter=16),
+        _pdf_logo_band(styles, cover["labels"], usable_width),
+        Spacer(1, 18),
         Paragraph(escape(content_title or record_title or cover["labels"]["default_title"]), styles["title"]),
     ]
     if subtitle:
@@ -600,11 +630,11 @@ def _add_docx_pricing_table(doc: Document, table_tag) -> None:
         for col, text in enumerate(header_cells):
             cell = header_row.cells[col]
             cell.text = text
-            _shade_cell(cell, BRAND_INDIGO_SOFT)
+            _shade_cell(cell, BRAND_PRIMARY)
             for run in cell.paragraphs[0].runs:
                 run.bold = True
                 run.font.size = Pt(9.5)
-                _set_run_color(run, BRAND_NAVY_DEEP)
+                _set_run_color(run, "FFFFFF")
 
     for row_index, row_values in enumerate(body_rows):
         row = table.add_row()
@@ -641,18 +671,18 @@ def _add_docx_total_highlight(doc: Document, total_display: str, label: str = "T
     value_cell.text = total_display
 
     for cell in (label_cell, value_cell):
-        _shade_cell(cell, BRAND_INDIGO_SOFT)
-    label_cell._tc.get_or_add_tcPr().append(_left_border_element(BRAND_INDIGO))
+        _shade_cell(cell, BRAND_PRIMARY_SOFT)
+    label_cell._tc.get_or_add_tcPr().append(_left_border_element(BRAND_ACCENT))
 
     for run in label_cell.paragraphs[0].runs:
         run.font.size = Pt(10.5)
-        _set_run_color(run, BRAND_NAVY_DEEP)
+        _set_run_color(run, BRAND_PRIMARY_DEEP)
 
     value_cell.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.RIGHT
     for run in value_cell.paragraphs[0].runs:
         run.bold = True
         run.font.size = Pt(13)
-        _set_run_color(run, BRAND_NAVY_DEEP)
+        _set_run_color(run, BRAND_PRIMARY_DEEP)
 
     doc.add_paragraph()
 
@@ -701,6 +731,45 @@ def _add_docx_signature_grid(doc: Document, names: list) -> None:
         row.cells[2].width = Pt(215)
 
 
+def _add_docx_logo_band(doc: Document, labels: dict) -> None:
+    """Primera tabla del documento: banda de color primario con el logo y la etiqueta del documento."""
+    table = doc.add_table(rows=1, cols=2)
+    table.alignment = WD_TABLE_ALIGNMENT.CENTER
+    table.autofit = False
+    left, right = table.rows[0].cells
+    for cell in (left, right):
+        _shade_cell(cell, BRAND_PRIMARY)
+        cell.width = Pt(234)
+    left_par = left.paragraphs[0]
+    left_par.paragraph_format.space_before = Pt(6)
+    left_par.paragraph_format.space_after = Pt(6)
+    if proposal_brand.logo_available():
+        left_par.add_run().add_picture(str(proposal_brand.LOGO_PATH), height=Pt(30))
+    else:
+        run = left_par.add_run(proposal_brand.NAME)
+        run.bold = True
+        run.font.size = Pt(16)
+        _set_run_color(run, "FFFFFF")
+    right_par = right.paragraphs[0]
+    right_par.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    right_par.paragraph_format.space_before = Pt(12)
+    run = right_par.add_run(labels["proposal"])
+    run.bold = True
+    run.font.size = Pt(8.5)
+    _set_run_color(run, "FFFFFF")
+    # línea de acento bajo la banda
+    for cell in (left, right):
+        tc_pr = cell._tc.get_or_add_tcPr()
+        borders = OxmlElement("w:tcBorders")
+        bottom = OxmlElement("w:bottom")
+        bottom.set(qn("w:val"), "single")
+        bottom.set(qn("w:sz"), "24")
+        bottom.set(qn("w:color"), BRAND_ACCENT.lstrip("#"))
+        borders.append(bottom)
+        tc_pr.append(borders)
+    doc.add_paragraph()
+
+
 def _add_docx_footer(doc: Document, labels: dict) -> None:
     paragraph = doc.sections[0].footer.paragraphs[0]
     paragraph.text = f"NoonDalton · {labels['confidential']}\t\t{labels['page']} "
@@ -729,11 +798,16 @@ def _build_proposal_docx(file_path: Path, record_title: str, html_content: str, 
     base_style.font.color.rgb = RGBColor.from_string(BRAND_TEXT.lstrip("#"))
 
     labels = cover["labels"]
+    title_borders = doc.styles["Title"].element.find(".//" + qn("w:pBdr"))
+    if title_borders is not None:  # la línea bajo el título trae el azul por defecto de Word
+        for edge in title_borders:
+            edge.set(qn("w:color"), BRAND_ACCENT.lstrip("#"))
     _add_docx_footer(doc, labels)
+    _add_docx_logo_band(doc, labels)
     title_paragraph = doc.add_heading(content_title or record_title or labels["default_title"], level=0)
     for run in title_paragraph.runs:
         run.font.name = "Calibri"
-        _set_run_color(run, BRAND_NAVY_DEEP)
+        _set_run_color(run, BRAND_PRIMARY_DEEP)
 
     if subtitle:
         subtitle_paragraph = doc.add_paragraph(subtitle)
@@ -747,7 +821,7 @@ def _build_proposal_docx(file_path: Path, record_title: str, html_content: str, 
         for run in meta_paragraph.runs:
             run.bold = True
             run.font.size = Pt(9)
-            _set_run_color(run, BRAND_NAVY)
+            _set_run_color(run, BRAND_PRIMARY)
 
     doc.add_paragraph()
 
@@ -784,8 +858,8 @@ def _build_proposal_docx(file_path: Path, record_title: str, html_content: str, 
             for run in heading.runs:
                 run.font.name = "Calibri"
                 run.font.size = Pt(13)
-                _set_run_color(run, BRAND_NAVY)
-            _add_heading_rule(heading, BRAND_INDIGO)
+                _set_run_color(run, BRAND_PRIMARY)
+            _add_heading_rule(heading, BRAND_ACCENT)
         elif name == "p":
             text = tag.get_text(" ", strip=True)
             if text:
@@ -809,8 +883,8 @@ def _build_proposal_docx(file_path: Path, record_title: str, html_content: str, 
     for run in heading.runs:
         run.font.name = "Calibri"
         run.font.size = Pt(13)
-        _set_run_color(run, BRAND_NAVY)
-    _add_heading_rule(heading, BRAND_INDIGO)
+        _set_run_color(run, BRAND_PRIMARY)
+    _add_heading_rule(heading, BRAND_ACCENT)
     doc.add_paragraph(labels["accept_intro"])
     _add_docx_signature_grid(doc, labels["sig"])
 

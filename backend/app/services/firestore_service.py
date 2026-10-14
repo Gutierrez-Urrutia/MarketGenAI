@@ -37,6 +37,7 @@ from google.cloud.firestore_v1.async_client import AsyncClient
 from google.cloud.firestore_v1 import AsyncDocumentReference
 
 from app.config import settings
+from app.schemas.contact import ContactCreate
 
 logger = logging.getLogger("marketgen.firestore")
 
@@ -449,6 +450,26 @@ class LeadsRepo(FirestoreRepo):
 
 class ContactsRepo(FirestoreRepo):
     collection = "contacts"
+
+    async def list_by_lead(self, lead_id: str, user_id: str, limit: int = 100) -> List[Dict[str, Any]]:
+        """A lead's contacts, best match first. Scoped by user_id like leads
+        (snake_case field, not the userId of list_by_user)."""
+        return await self.list(
+            filters=[("user_id", "==", user_id), ("lead_id", "==", lead_id)],
+            order_by="confidence_score",
+            order_direction="DESCENDING",
+            limit=limit,
+        )
+
+    async def create_for_lead(self, lead_id: str, user_id: str, contact: ContactCreate) -> Dict[str, Any]:
+        """Persist a contact under `lead_id` for `user_id`. Both ids come from
+        the caller (session / researched lead) and are written last, so nothing
+        in the contact payload can override them.
+
+        The caller must verify beforehand that `lead_id` belongs to `user_id`;
+        this method does not check it."""
+        data = contact.model_dump(mode="json")
+        return await self.create({**data, "lead_id": lead_id, "user_id": user_id})
 
 
 class OutreachEmailsRepo(FirestoreRepo):

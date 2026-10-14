@@ -18,8 +18,8 @@ const flush = () => act(async () => { await Promise.resolve(); });
 
 const lead = (overrides) => ({ id: "l1", job_title: "Dev", relevance_score: 0.9, status: "new", ...overrides });
 
-// Company is the 2nd column of the leads table.
-const companyCell = (jobTitle) => screen.getByText(jobTitle).closest("tr").querySelectorAll("td")[1];
+// Company is the 3rd column of the leads table (after "#" and title).
+const companyCell = (jobTitle) => screen.getByText(jobTitle).closest("tr").querySelectorAll("td")[2];
 
 beforeEach(() => {
   vi.clearAllMocks();
