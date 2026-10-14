@@ -38,6 +38,7 @@ import Modal from "./components/ui/Modal";
 import PipelineSettingsTab from "./pages/settings/PipelineSettingsTab";
 
 import ReactMarkdown from "react-markdown";
+import { BRAND, docxColor, rgbColor } from "./config/brand";
 
 const PREF_KEYS = {
   language: "marketgen_language",
@@ -490,7 +491,7 @@ function detectProposalLanguageWithConfidence(text = "") {
 
 const PROPOSAL_COPY = {
   en: {
-    preparedBy: "Prepared by NoonDalton",
+    preparedBy: `Prepared by ${BRAND.name}`,
     client: "Client",
     contact: "Contact",
     total: "Total",
@@ -513,7 +514,7 @@ const PROPOSAL_COPY = {
     expectedROI: "Expected ROI",
     nextSteps: "Next Steps",
     noExecutiveSummary: "No executive summary has been provided yet.",
-    noSolution: "NoonDalton will configure a practical AI-enabled workflow around the confirmed scope, service units, and operating requirements.",
+    noSolution: `${BRAND.name} will configure a practical AI-enabled workflow around the confirmed scope, service units, and operating requirements.`,
     noProblems: "Discovery will confirm the highest-priority operating constraints.",
     noPricing: "Pricing will be finalized after confirming scope, volume assumptions, and implementation timeline.",
     noROI: "Expected impact will be measured through throughput, response time, quality indicators, and conversion progress.",
@@ -527,7 +528,7 @@ const PROPOSAL_COPY = {
     signatureLine: "Signature",
   },
   es: {
-    preparedBy: "Preparado por NoonDalton",
+    preparedBy: `Preparado por ${BRAND.name}`,
     client: "Cliente",
     contact: "Contacto",
     total: "Total",
@@ -550,7 +551,7 @@ const PROPOSAL_COPY = {
     expectedROI: "ROI Esperado",
     nextSteps: "Próximos Pasos",
     noExecutiveSummary: "Aún no se ha proporcionado un resumen ejecutivo.",
-    noSolution: "NoonDalton configurará un flujo práctico con IA según el alcance, los servicios y los requisitos operativos confirmados.",
+    noSolution: `${BRAND.name} configurará un flujo práctico con IA según el alcance, los servicios y los requisitos operativos confirmados.`,
     noProblems: "El levantamiento confirmará las restricciones operativas de mayor prioridad.",
     noPricing: "El precio se finalizará después de confirmar alcance, supuestos de volumen y calendario de implementación.",
     noROI: "El impacto esperado se medirá mediante tiempos de respuesta, calidad operativa, visibilidad y avance de conversión.",
@@ -564,7 +565,7 @@ const PROPOSAL_COPY = {
     signatureLine: "Firma",
   },
   pt: {
-    preparedBy: "Preparado por NoonDalton",
+    preparedBy: `Preparado por ${BRAND.name}`,
     client: "Cliente",
     contact: "Contato",
     total: "Total",
@@ -587,7 +588,7 @@ const PROPOSAL_COPY = {
     expectedROI: "ROI Esperado",
     nextSteps: "Próximos Passos",
     noExecutiveSummary: "Ainda não foi fornecido um resumo executivo.",
-    noSolution: "A NoonDalton configurará um fluxo prático com IA em torno do escopo, serviços e requisitos operacionais confirmados.",
+    noSolution: `A ${BRAND.name} configurará um fluxo prático com IA em torno do escopo, serviços e requisitos operacionais confirmados.`,
     noProblems: "A descoberta confirmará as restrições operacionais de maior prioridade.",
     noPricing: "O preço será finalizado após confirmar escopo, premissas de volume e cronograma de implementação.",
     noROI: "O impacto esperado será medido por produtividade, tempo de resposta, indicadores de qualidade e progresso de conversão.",
@@ -1053,8 +1054,8 @@ async function exportProposalPdf(proposal, sourceElement) {
     for (let page = 1; page <= pageCount; page += 1) {
       pdf.setPage(page);
       pdf.setFontSize(9);
-      pdf.setTextColor(148, 163, 184);
-      pdf.text(`NoonDalton - ${page} / ${pageCount}`, pageWidth / 2, pageHeight - 8, { align: "center" });
+      pdf.setTextColor(...rgbColor(BRAND.colors.muted));
+      pdf.text(`${BRAND.name} - ${page} / ${pageCount}`, pageWidth / 2, pageHeight - 8, { align: "center" });
     }
     pdf.save(filename);
   } finally {
@@ -1123,29 +1124,31 @@ function extractProposalDocumentFromDom(sourceElement, fallbackProposal = {}) {
   };
 }
 
-const docxBorder = { style: BorderStyle.SINGLE, size: 4, color: "E5E7EB" };
+const DOCX_COLORS = Object.fromEntries(Object.entries(BRAND.colors).map(([key, value]) => [key, docxColor(value)]));
+
+const docxBorder = { style: BorderStyle.SINGLE, size: 4, color: DOCX_COLORS.border };
 const docxCellBorders = { top: docxBorder, bottom: docxBorder, left: docxBorder, right: docxBorder };
 
 function docxText(text, options = {}) {
-  return new TextRun({ text: String(text || ""), font: "Aptos", ...options });
+  return new TextRun({ text: String(text || ""), font: BRAND.font, ...options });
 }
 
 function docxParagraph(text, options = {}) {
   return new Paragraph({
     spacing: { after: 260, line: 360 },
     keepLines: true,
-    children: [docxText(text, { color: "1F2937", ...(options.textOptions || {}) })],
+    children: [docxText(text, { color: DOCX_COLORS.text, ...(options.textOptions || {}) })],
     ...options,
   });
 }
 
 function docxHeading(text, level = HeadingLevel.HEADING_2, spacing = {}, pageBreakBefore = false) {
   return new Paragraph({
-    children: [docxText(text, { bold: true, color: "1A2B4A", size: 28 })],
+    children: [docxText(text, { bold: true, color: DOCX_COLORS.secondary, size: 28 })],
     heading: level,
     keepNext: true,
     pageBreakBefore,
-    border: { bottom: { style: BorderStyle.SINGLE, size: 10, color: "6366F1", space: 4 } },
+    border: { bottom: { style: BorderStyle.SINGLE, size: 10, color: DOCX_COLORS.primary, space: 4 } },
     spacing: { before: 620, after: 260, ...spacing },
   });
 }
@@ -1164,8 +1167,8 @@ function docxRowsFromLineItems(lineItems = [], copy = PROPOSAL_COPY.en) {
     tableHeader: true,
     cantSplit: true,
     children: [copy.serviceUnit, copy.description, copy.qty, copy.unitPrice, copy.subtotal].map((label) =>
-      docxCell(new Paragraph({ children: [docxText(label, { bold: true, color: "1A2B4A" })] }), {
-        shading: { type: ShadingType.CLEAR, fill: "EEF2FF" },
+      docxCell(new Paragraph({ children: [docxText(label, { bold: true, color: DOCX_COLORS.secondary })] }), {
+        shading: { type: ShadingType.CLEAR, fill: DOCX_COLORS.primarySoft },
       }),
     ),
   });
@@ -1177,8 +1180,8 @@ function docxRowsFromLineItems(lineItems = [], copy = PROPOSAL_COPY.en) {
       item.quantity,
       formatUsd(item.unitPrice),
       formatUsd(item.subtotal),
-    ].map((value) => docxCell(new Paragraph({ children: [docxText(value, { color: "1F2937" })] }), {
-      shading: { type: ShadingType.CLEAR, fill: index % 2 === 0 ? "FFFFFF" : "F6F8FB" },
+    ].map((value) => docxCell(new Paragraph({ children: [docxText(value, { color: DOCX_COLORS.text })] }), {
+      shading: { type: ShadingType.CLEAR, fill: index % 2 === 0 ? DOCX_COLORS.white : DOCX_COLORS.surface },
     })),
   }));
   return [header, ...rows];
@@ -1198,18 +1201,18 @@ function docxTechnologyRows(technologies = []) {
     children: chunk.map((technology) => docxCell(
       new Paragraph({
         alignment: AlignmentType.CENTER,
-        children: [docxText(technology, { bold: true, color: "1A2B4A" })],
+        children: [docxText(technology, { bold: true, color: DOCX_COLORS.secondary })],
       }),
       {
-        shading: { type: ShadingType.CLEAR, fill: "F6F8FB" },
+        shading: { type: ShadingType.CLEAR, fill: DOCX_COLORS.surface },
         margins: { top: 120, bottom: 120, left: 160, right: 160 },
       },
     )).concat(Array.from({ length: Math.max(0, 3 - chunk.length) }, () => docxCell(new Paragraph({ children: [] }), {
       borders: {
-        top: { style: BorderStyle.SINGLE, size: 0, color: "FFFFFF" },
-        bottom: { style: BorderStyle.SINGLE, size: 0, color: "FFFFFF" },
-        left: { style: BorderStyle.SINGLE, size: 0, color: "FFFFFF" },
-        right: { style: BorderStyle.SINGLE, size: 0, color: "FFFFFF" },
+        top: { style: BorderStyle.SINGLE, size: 0, color: DOCX_COLORS.white },
+        bottom: { style: BorderStyle.SINGLE, size: 0, color: DOCX_COLORS.white },
+        left: { style: BorderStyle.SINGLE, size: 0, color: DOCX_COLORS.white },
+        right: { style: BorderStyle.SINGLE, size: 0, color: DOCX_COLORS.white },
       },
     }))),
   }));
@@ -1217,18 +1220,18 @@ function docxTechnologyRows(technologies = []) {
 
 function docxSignatureCell(label) {
   return docxCell([
-    new Paragraph({ children: [docxText(label, { color: "64748B", bold: true, size: 18 })], spacing: { after: 360 } }),
+    new Paragraph({ children: [docxText(label, { color: DOCX_COLORS.muted, bold: true, size: 18 })], spacing: { after: 360 } }),
     new Paragraph({
-      border: { bottom: { style: BorderStyle.SINGLE, size: 6, color: "CBD5E1" } },
+      border: { bottom: { style: BorderStyle.SINGLE, size: 6, color: DOCX_COLORS.border } },
       spacing: { after: 40 },
       children: [docxText(" ")],
     }),
   ], {
     borders: {
-      top: { style: BorderStyle.SINGLE, size: 0, color: "FFFFFF" },
-      bottom: { style: BorderStyle.SINGLE, size: 0, color: "FFFFFF" },
-      left: { style: BorderStyle.SINGLE, size: 0, color: "FFFFFF" },
-      right: { style: BorderStyle.SINGLE, size: 0, color: "FFFFFF" },
+      top: { style: BorderStyle.SINGLE, size: 0, color: DOCX_COLORS.white },
+      bottom: { style: BorderStyle.SINGLE, size: 0, color: DOCX_COLORS.white },
+      left: { style: BorderStyle.SINGLE, size: 0, color: DOCX_COLORS.white },
+      right: { style: BorderStyle.SINGLE, size: 0, color: DOCX_COLORS.white },
     },
   });
 }
@@ -1253,9 +1256,9 @@ async function exportProposalDocx(proposal, sourceElement) {
             [copy.validUntil, doc.validUntil],
             [copy.preparedByPerson, doc.issuedBy || "—"],
           ].map(([label, value]) => docxCell([
-            new Paragraph({ children: [docxText(label, { color: "64748B", bold: true })] }),
-            new Paragraph({ children: [docxText(value, { color: "1A2B4A", bold: true })] }),
-          ], { shading: { type: ShadingType.CLEAR, fill: "F6F8FB" } })),
+            new Paragraph({ children: [docxText(label, { color: DOCX_COLORS.muted, bold: true })] }),
+            new Paragraph({ children: [docxText(value, { color: DOCX_COLORS.secondary, bold: true })] }),
+          ], { shading: { type: ShadingType.CLEAR, fill: DOCX_COLORS.surface } })),
         }),
       ],
     });
@@ -1272,10 +1275,10 @@ async function exportProposalDocx(proposal, sourceElement) {
     });
     const borderlessCell = (children) => docxCell(children, {
       borders: {
-        top: { style: BorderStyle.SINGLE, size: 0, color: "FFFFFF" },
-        bottom: { style: BorderStyle.SINGLE, size: 0, color: "FFFFFF" },
-        left: { style: BorderStyle.SINGLE, size: 0, color: "FFFFFF" },
-        right: { style: BorderStyle.SINGLE, size: 0, color: "FFFFFF" },
+        top: { style: BorderStyle.SINGLE, size: 0, color: DOCX_COLORS.white },
+        bottom: { style: BorderStyle.SINGLE, size: 0, color: DOCX_COLORS.white },
+        left: { style: BorderStyle.SINGLE, size: 0, color: DOCX_COLORS.white },
+        right: { style: BorderStyle.SINGLE, size: 0, color: DOCX_COLORS.white },
       },
       margins: { top: 0, bottom: 0, left: 0, right: 0 },
     });
@@ -1287,9 +1290,9 @@ async function exportProposalDocx(proposal, sourceElement) {
           docxHeading(copy.implementationCosts),
           costTable,
           new Paragraph({
-            children: [docxText(`${copy.totalImplementationCost}: ${doc.formattedTotal}`, { bold: true, color: "1A2B4A", size: 28 })],
-            shading: { type: ShadingType.CLEAR, fill: "EEF2FF" },
-            border: { left: { style: BorderStyle.SINGLE, size: 18, color: "6366F1" } },
+            children: [docxText(`${copy.totalImplementationCost}: ${doc.formattedTotal}`, { bold: true, color: DOCX_COLORS.secondary, size: 28 })],
+            shading: { type: ShadingType.CLEAR, fill: DOCX_COLORS.primarySoft },
+            border: { left: { style: BorderStyle.SINGLE, size: 18, color: DOCX_COLORS.primary } },
             spacing: { before: 240, after: 260 },
             alignment: AlignmentType.CENTER,
           }),
@@ -1310,7 +1313,7 @@ async function exportProposalDocx(proposal, sourceElement) {
     const proposalDoc = new Document({
       styles: {
         default: {
-          document: { run: { font: "Aptos" } },
+          document: { run: { font: BRAND.font } },
         },
       },
       sections: [{
@@ -1321,10 +1324,10 @@ async function exportProposalDocx(proposal, sourceElement) {
               new Paragraph({
                 alignment: AlignmentType.CENTER,
                 children: [
-                  docxText("NoonDalton · ", { color: "94A3B8", size: 18 }),
-                  new TextRun({ children: [PageNumber.CURRENT], font: "Aptos", size: 18, color: "94A3B8" }),
-                  docxText(" / ", { color: "94A3B8", size: 18 }),
-                  new TextRun({ children: [PageNumber.TOTAL_PAGES], font: "Aptos", size: 18, color: "94A3B8" }),
+                  docxText(`${BRAND.name} · `, { color: DOCX_COLORS.muted, size: 18 }),
+                  new TextRun({ children: [PageNumber.CURRENT], font: BRAND.font, size: 18, color: DOCX_COLORS.muted }),
+                  docxText(" / ", { color: DOCX_COLORS.muted, size: 18 }),
+                  new TextRun({ children: [PageNumber.TOTAL_PAGES], font: BRAND.font, size: 18, color: DOCX_COLORS.muted }),
                 ],
               }),
             ],
@@ -1332,13 +1335,13 @@ async function exportProposalDocx(proposal, sourceElement) {
         },
         children: [
           new Paragraph({
-            children: [docxText(copy.preparedBy.toUpperCase(), { bold: true, color: "4F46E5", size: 22 })],
-            border: { top: { style: BorderStyle.SINGLE, size: 18, color: "6366F1" } },
+            children: [docxText(copy.preparedBy.toUpperCase(), { bold: true, color: DOCX_COLORS.primary, size: 22 })],
+            border: { top: { style: BorderStyle.SINGLE, size: 18, color: DOCX_COLORS.primary } },
             spacing: { before: 360, after: 220 },
           }),
-          new Paragraph({ children: [docxText(doc.title, { bold: true, color: "111C30", size: 42 })], spacing: { after: 260, line: 360 } }),
-          docxParagraph(`${copy.proposalEyebrow} - ${copy.preparedFor} ${doc.client}`, { spacing: { after: 360, line: 360 }, textOptions: { color: "475569", size: 24 } }),
-          docxParagraph([doc.industry, doc.contact, doc.serviceLine].filter(Boolean).join("   "), { spacing: { after: 420, line: 320 }, textOptions: { color: "334155", bold: true } }),
+          new Paragraph({ children: [docxText(doc.title, { bold: true, color: DOCX_COLORS.secondaryDeep, size: 42 })], spacing: { after: 260, line: 360 } }),
+          docxParagraph(`${copy.proposalEyebrow} - ${copy.preparedFor} ${doc.client}`, { spacing: { after: 360, line: 360 }, textOptions: { color: DOCX_COLORS.muted, size: 24 } }),
+          docxParagraph([doc.industry, doc.contact, doc.serviceLine].filter(Boolean).join("   "), { spacing: { after: 420, line: 320 }, textOptions: { color: DOCX_COLORS.text, bold: true } }),
           coverInfoTable,
           new Paragraph({ children: [docxText(" ")], spacing: { after: 420 } }),
           docxHeading(copy.executiveSummary, HeadingLevel.HEADING_2),
