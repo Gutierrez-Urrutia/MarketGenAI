@@ -7,7 +7,9 @@ import { useTheme } from "./context/ThemeContext";
 
 import LeadList from "./pages/pipeline/LeadList";
 
-import { ArrowRightIcon, BookIcon, ChartIcon, FolderIcon, GearIcon, GridIcon, LogOutIcon, RadarIcon, SendIcon, ShieldIcon, SparkIcon, TargetIcon, XIcon } from "./components/dashboard/icons";
+import { BookIcon, ChartIcon, FolderIcon, GearIcon, GridIcon, RadarIcon, SendIcon, ShieldIcon, SparkIcon, TargetIcon } from "./components/dashboard/icons";
+import { AppSidebar } from "./components/shell/AppSidebar";
+import { AppTopbar } from "./components/shell/AppTopbar";
 
 import { CAMPAIGN_FLOW_STEPS } from "./utils/campaignContent";
 import { fetchOptional } from "./utils/dashboardData";
@@ -108,65 +110,35 @@ export default function App() {
     }
   };
 
-  const navLink = (key) => {
-    const p = PAGES[key];
-    if (!p || p.visible === false) return null;
-    const active = page === key;
-    return (
-      <button key={key} onClick={() => goToPage(key)}
-        className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-medium transition-colors ${
-          active ? "bg-indigo-600 text-white" : "text-slate-300 hover:bg-slate-700 hover:text-white"
-        } ${collapsed ? "justify-center" : ""}`}
-        title={collapsed ? p.label : undefined}>
-        <p.icon size={16} className="shrink-0" />
-        {!collapsed && (
-          <span className="flex-1 text-left">{p.label}</span>
-        )}
-        {!collapsed && p.badge && (
-          <span className="bg-amber-500 text-white text-xs font-bold px-1.5 py-0.5 rounded-full leading-none">{p.badge}</span>
-        )}
-      </button>
-    );
+  const navItem = (key) => {
+    const entry = PAGES[key];
+    if (!entry || entry.visible === false) return null;
+    return { key, label: entry.label, icon: entry.icon, badge: entry.badge };
+  };
+  const mainItems = MAIN_NAV.map(navItem).filter(Boolean);
+  const bottomItems = BOTTOM_NAV.map(navItem).filter(Boolean);
+  const handleLogout = async () => {
+    await authApi.logout();
+    window.location.assign("/login");
   };
 
   return (
-    <div className="app-shell flex h-screen bg-gray-50 rounded-xl overflow-hidden border border-gray-200" style={{ fontFamily: "'Inter', system-ui, sans-serif" }}>
-      {/* Sidebar */}
-      <aside className={`${collapsed ? "w-14" : "w-52"} bg-slate-800 flex flex-col h-full shrink-0 transition-all duration-200 rounded-l-xl`}>
-        <div className={`flex items-center h-14 px-3 border-b border-slate-700 ${collapsed ? "justify-center" : "justify-between"}`}>
-          {!collapsed && <div><p className="text-white font-bold text-sm leading-tight">NoonDalton</p><p className="text-teal-400 text-xs">AI Marketing Suite</p></div>}
-          <button onClick={() => setCollapsed(!collapsed)} className="p-1 rounded text-slate-400 hover:text-white hover:bg-slate-700">
-            {collapsed ? <ArrowRightIcon size={14} /> : <XIcon size={14} />}
-          </button>
-        </div>
+    <div className="app-shell flex h-screen overflow-hidden bg-page" style={{ fontFamily: "'Inter', system-ui, sans-serif" }}>
+      <AppSidebar
+        mainItems={mainItems}
+        bottomItems={bottomItems}
+        activeKey={page}
+        collapsed={collapsed}
+        onToggle={() => setCollapsed(!collapsed)}
+        onNavigate={(key) => goToPage(key)}
+        user={{ name: displayName, email: displayEmail }}
+        logoutLabel={t("sidebar.logout")}
+        onLogout={handleLogout}
+      />
 
-        <nav className="flex-1 px-2 py-3 space-y-0.5 overflow-y-auto">
-          {MAIN_NAV.map(navLink)}
-        </nav>
-
-        <div className="mx-2 border-t border-slate-700" />
-        <nav className="px-2 py-2 space-y-0.5">
-          {BOTTOM_NAV.map(navLink)}
-          <button
-            onClick={async () => {
-              await authApi.logout();
-              window.location.assign("/login");
-            }}
-            className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-medium text-slate-300 hover:bg-red-700/30 hover:text-red-300 ${collapsed ? "justify-center" : ""}`}
-          >
-            <LogOutIcon size={16} />{!collapsed && t("sidebar.logout")}
-          </button>
-        </nav>
-        {!collapsed && (
-          <div className="px-3 py-2.5 border-t border-slate-700">
-            <p className="text-white text-xs font-medium truncate">{displayName}</p>
-            {displayEmail && <p className="text-slate-400 text-xs truncate">{displayEmail}</p>}
-          </div>
-        )}
-      </aside>
-
-      {/* Main content */}
-      <main className="flex-1 overflow-y-auto p-5">
+      <div className="flex min-w-0 flex-1 flex-col">
+        <AppTopbar title={PAGES[page]?.label || ""} />
+        <main className="flex-1 overflow-y-auto px-6 py-6">
         {campaignFlow && (
           <div className="campaign-flow-bar">
             <div className="campaign-flow-bar-inner">
@@ -190,16 +162,17 @@ export default function App() {
             </div>
           </div>
         )}
-        <div className={page === "books" ? "mx-auto max-w-[1540px]" : "max-w-5xl mx-auto"}>
-          <PageComp
-            navigationState={navigationState}
-            onNavigate={goToPage}
-            onOutreachBadgeChange={setOutreachBadge}
-            campaignFlow={campaignFlow}
-            setCampaignFlow={setCampaignFlow}
-          />
-        </div>
-      </main>
+          <div className={page === "books" ? "mx-auto max-w-[1540px]" : "mx-auto max-w-[1280px]"}>
+            <PageComp
+              navigationState={navigationState}
+              onNavigate={goToPage}
+              onOutreachBadgeChange={setOutreachBadge}
+              campaignFlow={campaignFlow}
+              setCampaignFlow={setCampaignFlow}
+            />
+          </div>
+        </main>
+      </div>
     </div>
   );
 }

@@ -5,6 +5,8 @@ import { API_BASE_URL, authApi, authTokenStore, refreshAuthSession } from "./api
 import Dashboard from "./Dashboard";
 import { LanguageProvider, useLanguage } from "./context/LanguageContext";
 import { ThemeProvider } from "./context/ThemeContext";
+import { AuthBrandPanel } from "./components/shell/AuthBrandPanel";
+import { BrandLogo } from "./components/shell/BrandLogo";
 import { useI18n } from "./hooks/useI18n";
 
 // Without this, any render-phase exception anywhere in the tree (e.g. while
@@ -47,7 +49,7 @@ class ErrorBoundary extends Component {
             <button
               type="button"
               onClick={() => window.location.reload()}
-              className="h-10 rounded-lg bg-[#6366f1] px-4 text-sm font-semibold text-white hover:bg-[#5558e8]"
+              className="h-10 rounded-lg bg-brand-600 px-4 text-sm font-semibold text-white hover:bg-brand-700"
             >
               Recargar
             </button>
@@ -141,10 +143,10 @@ function clearLegacyLoginStorage() {
 }
 
 function fieldClass(hasError) {
-  return `w-full h-10 rounded-lg border px-4 text-sm outline-none transition focus:ring-2 ${
+  return `w-full h-11 rounded-xl border bg-white/80 px-4 text-sm outline-none transition focus:ring-2 ${
     hasError
       ? "border-red-300 focus:border-red-500 focus:ring-red-500/20"
-      : "border-neutral-300 focus:border-[#6366f1] focus:ring-[#6366f1]/20"
+      : "border-neutral-300 focus:border-brand-600 focus:ring-brand-600/20"
   }`;
 }
 
@@ -211,7 +213,7 @@ function ForgotPasswordModal({ copy, onClose }) {
           </button>
           <button
             type="submit"
-            className="h-10 rounded-lg bg-[#6366f1] px-4 text-sm font-semibold text-white hover:bg-[#5558e8] disabled:cursor-not-allowed disabled:opacity-70"
+            className="h-10 rounded-lg bg-brand-600 px-4 text-sm font-semibold text-white hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-70"
             disabled={loading}
           >
             {loading ? copy.sending : copy.sendReset}
@@ -569,7 +571,9 @@ function LoginScreen({ onLogin }) {
   };
 
   return (
-    <main className="min-h-screen bg-[#f7f6f2] text-neutral-900 flex items-center justify-center px-4 py-8" style={{ position: 'relative' }}>
+    <main className="auth-screen grid min-h-screen bg-page text-neutral-900 lg:grid-cols-[1.05fr_1fr]">
+      <AuthBrandPanel language={language} />
+      <div className="relative flex items-center justify-center px-4 py-10">
       <div style={{ position: 'absolute', top: 20, right: 24, zIndex: 50 }}>
         <button
           onClick={() => setLangOpen(prev => !prev)}
@@ -584,7 +588,7 @@ function LoginScreen({ onLogin }) {
             <button
               key={code}
               onClick={() => { changeLanguage(code); setLangOpen(false); }}
-              style={{ display: 'block', width: '100%', textAlign: 'left', padding: '10px 16px', background: language === code ? '#f1f3f8' : 'none', border: 'none', fontSize: 13.5, fontWeight: language === code ? 700 : 400, color: language === code ? '#6366f1' : '#475569', cursor: 'pointer' }}
+              style={{ display: 'block', width: '100%', textAlign: 'left', padding: '10px 16px', background: language === code ? '#f1f3f8' : 'none', border: 'none', fontSize: 13.5, fontWeight: language === code ? 700 : 400, color: language === code ? 'rgb(var(--brand-600))' : '#475569', cursor: 'pointer' }}
             >
               {label}
             </button>
@@ -593,15 +597,12 @@ function LoginScreen({ onLogin }) {
         )}
       </div>
       <section className="w-full max-w-[462px]">
-        <div className="flex flex-col items-center text-center mb-9">
-          <div className="h-14 w-14 rounded-2xl bg-[#6366f1] text-white flex items-center justify-center shadow-sm">
-            <Sparkles size={22} strokeWidth={2.2} />
-          </div>
-          <h1 className="mt-5 text-2xl font-semibold tracking-normal">NoonDalton</h1>
-          <p className="mt-1 text-base text-neutral-600">AI Marketing Suite</p>
+        <div className="mb-8 flex flex-col items-center text-center lg:hidden">
+          <span className="rounded-2xl bg-brand-700 px-5 py-3 shadow-md"><BrandLogo /></span>
+          <p className="mt-3 text-sm text-neutral-600">AI Marketing Suite</p>
         </div>
 
-        <form onSubmit={mode === "login" ? handleSubmit : handleRegisterSubmit} autoComplete="off" className="bg-white border border-neutral-200 rounded-xl shadow-sm px-9 py-8">
+        <form onSubmit={mode === "login" ? handleSubmit : handleRegisterSubmit} autoComplete="off" className="auth-card rounded-2xl border border-slate-200/70 bg-card px-9 py-8 shadow-lg">
           <div className="mb-7">
             <h2 className="text-xl font-semibold">{mode === "login" ? copy.signIn : copy.createAccountTitle}</h2>
             <p className="mt-2 text-sm text-neutral-600">{mode === "login" ? copy.helper : copy.createAccountHelper}</p>
@@ -671,7 +672,7 @@ function LoginScreen({ onLogin }) {
               <label className="flex items-center gap-2 text-neutral-600">
                 <input
                   ref={rememberInputRef}
-                  className="h-4 w-4 rounded border-neutral-300 text-[#6366f1] focus:ring-[#6366f1]"
+                  className="h-4 w-4 rounded border-neutral-300 text-brand-600 focus:ring-brand-600"
                   type="checkbox"
                   name="nd-login-remember"
                   autoComplete="off"
@@ -682,7 +683,7 @@ function LoginScreen({ onLogin }) {
               </label>
               <p className="mt-1 pl-6 text-xs text-neutral-500">{copy.rememberHint}</p>
             </div>
-            <button type="button" onClick={() => setForgotOpen(true)} className="text-[#6366f1] hover:text-[#4f46e5]">
+            <button type="button" onClick={() => setForgotOpen(true)} className="text-brand-600 hover:text-brand-700">
               {copy.forgot}
             </button>
           </div>
@@ -694,7 +695,7 @@ function LoginScreen({ onLogin }) {
           )}
 
           <button
-            className="w-full h-11 rounded-lg bg-[#6366f1] text-white font-semibold text-sm flex items-center justify-center gap-2 transition hover:bg-[#5558e8] focus:outline-none focus:ring-2 focus:ring-[#6366f1]/30 disabled:cursor-not-allowed disabled:opacity-70"
+            className="w-full h-11 rounded-lg bg-brand-600 text-white font-semibold text-sm flex items-center justify-center gap-2 transition hover:bg-brand-700 focus:outline-none focus:ring-2 focus:ring-brand-600/30 disabled:cursor-not-allowed disabled:opacity-70"
             type="submit"
             disabled={loading}
           >
@@ -733,7 +734,7 @@ function LoginScreen({ onLogin }) {
 
           <p className="mt-5 text-center text-sm text-neutral-600">
             {copy.noAccount}{" "}
-            <button type="button" onClick={showRegister} className="font-semibold text-[#6366f1] hover:text-[#4f46e5]">
+            <button type="button" onClick={showRegister} className="font-semibold text-brand-600 hover:text-brand-700">
               {copy.createAccount}
             </button>
           </p>
@@ -841,7 +842,7 @@ function LoginScreen({ onLogin }) {
             )}
 
             <button
-              className="mt-6 w-full h-11 rounded-lg bg-[#6366f1] text-white font-semibold text-sm flex items-center justify-center gap-2 transition hover:bg-[#5558e8] focus:outline-none focus:ring-2 focus:ring-[#6366f1]/30 disabled:cursor-not-allowed disabled:opacity-70"
+              className="mt-6 w-full h-11 rounded-lg bg-brand-600 text-white font-semibold text-sm flex items-center justify-center gap-2 transition hover:bg-brand-700 focus:outline-none focus:ring-2 focus:ring-brand-600/30 disabled:cursor-not-allowed disabled:opacity-70"
               type="submit"
               disabled={loading}
             >
@@ -880,7 +881,7 @@ function LoginScreen({ onLogin }) {
               {copy.microsoftSignUp}
             </button>
 
-            <button type="button" onClick={showLogin} className="mt-5 w-full text-center text-sm font-semibold text-[#6366f1] hover:text-[#4f46e5]">
+            <button type="button" onClick={showLogin} className="mt-5 w-full text-center text-sm font-semibold text-brand-600 hover:text-brand-700">
               {copy.backToSignIn}
             </button>
           </>
@@ -888,6 +889,7 @@ function LoginScreen({ onLogin }) {
         </form>
 
       </section>
+      </div>
 
       {forgotOpen && <ForgotPasswordModal copy={copy} onClose={() => setForgotOpen(false)} />}
     </main>
@@ -938,7 +940,7 @@ function ResetPasswordScreen({ onDone }) {
     <main className="min-h-screen bg-[#f7f6f2] text-neutral-900 flex items-center justify-center px-4 py-8">
       <form onSubmit={handleSubmit} className="w-full max-w-[420px] rounded-xl border border-neutral-200 bg-white px-8 py-7 shadow-sm">
         <div className="mb-6 text-center">
-          <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-[#6366f1] text-white">
+          <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-brand-600 text-white">
             <Lock size={20} />
           </div>
           <h1 className="text-xl font-semibold">Reset password</h1>
@@ -982,7 +984,7 @@ function ResetPasswordScreen({ onDone }) {
         <button
           type="submit"
           disabled={loading}
-          className="h-11 w-full rounded-lg bg-[#6366f1] text-sm font-semibold text-white hover:bg-[#5558e8] disabled:cursor-not-allowed disabled:opacity-70"
+          className="h-11 w-full rounded-lg bg-brand-600 text-sm font-semibold text-white hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-70"
         >
           {loading ? "Updating..." : "Update password"}
         </button>

@@ -1912,7 +1912,7 @@ const filtered = allItems.filter((item) => {
           <span>
             📁 Step 4: Select assets for this campaign
             {campaignFlow.selectedAssets?.length > 0 && (
-              <span style={{ marginLeft: 8, background: "#6366F1", color: "white", borderRadius: 12, padding: "2px 8px", fontSize: "0.8em" }}>
+              <span style={{ marginLeft: 8, background: "rgb(var(--brand-600))", color: "white", borderRadius: 12, padding: "2px 8px", fontSize: "0.8em" }}>
                 {campaignFlow.selectedAssets.length} selected
               </span>
             )}
@@ -1924,7 +1924,7 @@ const filtered = allItems.filter((item) => {
                 setCampaignFlow((prev) => completeCampaignFlowSteps(prev, [4], 5));
                 onNavigate("outreach");
               }}
-              style={{ background: "transparent", color: "#6366F1", border: "1px solid #6366F1", padding: "6px 14px", borderRadius: 6, cursor: "pointer", fontSize: "0.85em" }}
+              style={{ background: "transparent", color: "rgb(var(--brand-600))", border: "1px solid rgb(var(--brand-600))", padding: "6px 14px", borderRadius: 6, cursor: "pointer", fontSize: "0.85em" }}
             >
               Skip
             </button>
@@ -1960,7 +1960,7 @@ const filtered = allItems.filter((item) => {
           <button key={t} onClick={() => { setTypeFilter(t); setStatusFilter(""); }}
             className={`px-3 py-1.5 rounded-full border text-xs font-medium transition-colors ${
               typeFilter === t
-                ? "bg-[#4F46E5] text-white border-[#4F46E5]"
+                ? "bg-brand-700 text-white border-brand-700"
                 : isDark
                   ? "bg-slate-800 text-slate-300 border-white/10 hover:bg-slate-700"
                   : "bg-gray-100 text-gray-600 border-transparent hover:bg-gray-200"
@@ -1985,7 +1985,7 @@ const filtered = allItems.filter((item) => {
           const Ic = typeIcon(item.type);
           const isSelectedAsset = campaignFlow?.selectedAssets?.some((asset) => asset.id === item.id);
           const card = (
-            <Card className={`p-2 hover:border-indigo-200 cursor-pointer transition-colors group ${campaignAssetsStep && isSelectedAsset ? "!border-2 !border-[#6366F1] !bg-[#F5F3FF]" : ""}`}>
+            <Card className={`p-2 hover:border-indigo-200 cursor-pointer transition-colors group ${campaignAssetsStep && isSelectedAsset ? "!border-2 !border-brand-600 !bg-[#F5F3FF]" : ""}`}>
               <div className="flex items-center justify-between mb-1.5">
                 <div className="flex items-center gap-1">
                   <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${typeColor(item.type)}`}><Ic size={14} /></div>

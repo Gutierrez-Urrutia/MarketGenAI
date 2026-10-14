@@ -146,7 +146,7 @@ export function AssistantPage({ navigationState = {}, onNavigate = () => {}, cam
                   setCampaignFlow((prev) => completeCampaignFlowSteps(prev, [3], 4));
                   onNavigate("content");
                 }}
-                style={{ background: "transparent", color: "#6366F1", border: "1px solid #6366F1", padding: "6px 14px", borderRadius: 6, cursor: "pointer", fontSize: "0.85em" }}
+                style={{ background: "transparent", color: "rgb(var(--brand-600))", border: "1px solid rgb(var(--brand-600))", padding: "6px 14px", borderRadius: 6, cursor: "pointer", fontSize: "0.85em" }}
               >
                 Skip
               </button>
@@ -162,7 +162,7 @@ export function AssistantPage({ navigationState = {}, onNavigate = () => {}, cam
             </div>
           </div>
           {campaignFlow?.savedNotes?.length > 0 && (
-            <div style={{ fontSize: "0.8em", color: "#6366F1", marginBottom: 8 }}>
+            <div style={{ fontSize: "0.8em", color: "rgb(var(--brand-600))", marginBottom: 8 }}>
               ✓ {campaignFlow.savedNotes.length} note(s) saved for this campaign
             </div>
           )}

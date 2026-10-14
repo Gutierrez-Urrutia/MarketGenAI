@@ -288,7 +288,7 @@ export function DashboardPage({ onNavigate, setCampaignFlow = () => {} }) {
                 title={`Open ${row.label}`}
                 className="w-5 h-full flex items-end justify-center rounded hover:bg-white/60"
               >
-                <span className="w-2 rounded-t" style={{height: row.w, background: i % 2 === 0 ? "#818cf8" : "#2dd4bf"}} />
+                <span className="w-2 rounded-t" style={{height: row.w, background: i % 2 === 0 ? "rgb(var(--brand-400))" : "#2dd4bf"}} />
               </button>
             ))}
           </div>

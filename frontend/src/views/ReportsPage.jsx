@@ -120,7 +120,7 @@ export function ReportsPage({ onNavigate = () => {}, campaignFlow = null, setCam
     return translations[status]?.[lang] || status;
   };
   const statusColors = {
-    Generada: "#6366F1",
+    Generada: "rgb(var(--brand-600))",
     Entregada: "#3B82F6",
     "En Negociación": "#F59E0B",
     Cerrada: "#16A34A",
@@ -144,7 +144,7 @@ export function ReportsPage({ onNavigate = () => {}, campaignFlow = null, setCam
       name: translateProposalStatus(status, language),
       value,
       totalValue,
-      fill: statusColors[status] || "#6366F1",
+      fill: statusColors[status] || "rgb(var(--brand-600))",
     };
   }).filter((row) => row.value > 0 || rawProposalRows.length === 0);
   const totalProposalValue = rawProposalRows.reduce((sum, row) => sum + (Number(row.totalValue) || 0), 0);
@@ -220,13 +220,13 @@ export function ReportsPage({ onNavigate = () => {}, campaignFlow = null, setCam
           {/* Resumen de la campaña */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginTop: 20 }}>
             <div style={{ background: 'white', borderRadius: 8, padding: 16, textAlign: 'center', border: '1px solid #D1FAE5' }}>
-              <div style={{ fontSize: '1.8em', fontWeight: 700, color: '#6366F1' }}>
+              <div style={{ fontSize: '1.8em', fontWeight: 700, color: 'rgb(var(--brand-600))' }}>
                 {campaignFlow.selectedOpportunities?.length || 0}
               </div>
               <div style={{ fontSize: '0.8em', color: '#64748B', marginTop: 4 }}>Prospects targeted</div>
             </div>
             <div style={{ background: 'white', borderRadius: 8, padding: 16, textAlign: 'center', border: '1px solid #D1FAE5' }}>
-              <div style={{ fontSize: '1.8em', fontWeight: 700, color: '#6366F1' }}>
+              <div style={{ fontSize: '1.8em', fontWeight: 700, color: 'rgb(var(--brand-600))' }}>
                 {campaignFlow.selectedAssets?.length || 0}
               </div>
               <div style={{ fontSize: '0.8em', color: '#64748B', marginTop: 4 }}>Assets attached</div>

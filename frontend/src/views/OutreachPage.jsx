@@ -267,7 +267,7 @@ export function OutreachPage({ navigationState = {}, onNavigate = () => {}, onOu
             <button
               type="button"
               onClick={() => setCampaignFlow((prev) => completeCampaignFlowSteps(prev, [5], 6))}
-              style={{ background: "transparent", color: "#6366F1", border: "1px solid #6366F1", padding: "6px 14px", borderRadius: 6, cursor: "pointer", fontSize: "0.85em" }}
+              style={{ background: "transparent", color: "rgb(var(--brand-600))", border: "1px solid rgb(var(--brand-600))", padding: "6px 14px", borderRadius: 6, cursor: "pointer", fontSize: "0.85em" }}
             >
               Skip to Activate
             </button>
@@ -304,7 +304,7 @@ export function OutreachPage({ navigationState = {}, onNavigate = () => {}, onOu
           justifyContent: "center", gap: 16, zIndex: 10, borderRadius: 8,
         }}>
           <div className="spinner" style={{ width: 32, height: 32, borderWidth: 3 }} />
-          <p style={{ color: "#6366F1", fontWeight: 600 }}>
+          <p style={{ color: "rgb(var(--brand-600))", fontWeight: 600 }}>
             Generating personalized messages for {campaignFlow?.selectedOpportunities?.length} prospects...
           </p>
           <p style={{ color: "#94A3B8", fontSize: "0.85em" }}>

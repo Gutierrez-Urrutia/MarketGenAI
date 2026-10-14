@@ -378,7 +378,7 @@ export function BookConceptsExperience({
               className={`min-h-[88px] rounded-xl border px-5 py-4 text-left shadow-sm transition-colors ${step > 1 && !book?.id ? "cursor-not-allowed opacity-70" : ""}`}
               style={
                 active
-                  ? { borderColor: isDark ? '#3730A3' : '#c7d2fe', background: isDark ? 'rgba(55,48,163,0.18)' : '#eef2ff', color: isDark ? '#A5B4FC' : '#4f46e5' }
+                  ? { borderColor: isDark ? 'rgb(var(--brand-800))' : 'rgb(var(--brand-200))', background: isDark ? 'rgba(55,48,163,0.18)' : 'rgb(var(--brand-50))', color: isDark ? 'rgb(var(--brand-300))' : 'rgb(var(--brand-700))' }
                   : { borderColor: isDark ? '#334155' : '#f3f4f6', background: isDark ? '#1E293B' : '#fff', color: isDark ? '#94A3B8' : '#94a3b8' }
               }
             >
@@ -389,7 +389,7 @@ export function BookConceptsExperience({
                     done
                       ? { background: isDark ? 'rgba(16,185,129,0.15)' : '#ecfdf5', color: '#10b981' }
                       : active
-                        ? { background: isDark ? '#3730A3' : '#4f46e5', color: '#fff' }
+                        ? { background: isDark ? 'rgb(var(--brand-800))' : 'rgb(var(--brand-700))', color: '#fff' }
                         : { background: isDark ? '#334155' : '#f1f5f9', color: isDark ? '#94A3B8' : '#94a3b8' }
                   }
                 >
@@ -398,7 +398,7 @@ export function BookConceptsExperience({
                 <span>
                   <span
                     className="block text-base font-bold"
-                    style={{ color: active ? (isDark ? '#A5B4FC' : '#4f46e5') : done ? (isDark ? '#CBD5E1' : '#334155') : (isDark ? '#94A3B8' : '#94a3b8') }}
+                    style={{ color: active ? (isDark ? 'rgb(var(--brand-300))' : 'rgb(var(--brand-700))') : done ? (isDark ? '#CBD5E1' : '#334155') : (isDark ? '#94A3B8' : '#94a3b8') }}
                   >
                     {bt("step")} {step}
                   </span>
@@ -500,7 +500,7 @@ export function BookConceptsExperience({
                   {bt("defineConceptPrefix")} <strong style={{ color: bookTextPrimary }}>{bt("createBook")}</strong> {bt("defineConceptMiddle")} <strong style={{ color: bookTextPrimary }}>{bt("generateChapters")}</strong> {bt("defineConceptSuffix")}
                 </p>
                 {book?.id && (
-                  <div className="mt-4 flex items-center gap-3 rounded-xl px-5 py-3 text-sm font-bold" style={{ background: isDark ? 'rgba(79,70,229,0.15)' : '#eef2ff', color: isDark ? '#A5B4FC' : '#4338ca' }}>
+                  <div className="mt-4 flex items-center gap-3 rounded-xl px-5 py-3 text-sm font-bold" style={{ background: isDark ? 'rgba(79,70,229,0.15)' : 'rgb(var(--brand-50))', color: isDark ? 'rgb(var(--brand-300))' : 'rgb(var(--brand-800))' }}>
                     <CheckIcon size={18} />
                     {bt("savedMessage")}
                   </div>
@@ -508,12 +508,12 @@ export function BookConceptsExperience({
               </div>
               {(loading || (job && job.status !== 'completed' && job.status !== 'failed')) && (
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '12px 16px', background: '#eef0fe', border: '1px solid #dfe2fc', borderRadius: 11, marginBottom: 14 }}>
-                  <span style={{ width: 16, height: 16, border: '2.4px solid rgba(99,102,241,.3)', borderTopColor: '#6366f1', borderRadius: '50%', display: 'inline-block', animation: 'spin .7s linear infinite', flexShrink: 0 }} />
-                  <span style={{ fontSize: 13.5, fontWeight: 600, color: '#4f46e5' }}>
+                  <span style={{ width: 16, height: 16, border: '2.4px solid rgba(99,102,241,.3)', borderTopColor: 'rgb(var(--brand-600))', borderRadius: '50%', display: 'inline-block', animation: 'spin .7s linear infinite', flexShrink: 0 }} />
+                  <span style={{ fontSize: 13.5, fontWeight: 600, color: 'rgb(var(--brand-700))' }}>
                     {jobTitle || bt("processing")}
                   </span>
                   {job?.progress != null && job?.status !== 'completed' && job?.status !== 'failed' && (
-                    <span style={{ marginLeft: 'auto', fontSize: 12.5, color: '#6366f1', fontWeight: 600 }}>
+                    <span style={{ marginLeft: 'auto', fontSize: 12.5, color: 'rgb(var(--brand-600))', fontWeight: 600 }}>
                       {Math.round(job.progress)}%
                     </span>
                   )}
@@ -538,12 +538,12 @@ export function BookConceptsExperience({
             <div className="space-y-5">
               {(loading || (job && job.status !== 'completed' && job.status !== 'failed')) && (
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '12px 16px', background: '#eef0fe', border: '1px solid #dfe2fc', borderRadius: 11, marginBottom: 14 }}>
-                  <span style={{ width: 16, height: 16, border: '2.4px solid rgba(99,102,241,.3)', borderTopColor: '#6366f1', borderRadius: '50%', display: 'inline-block', animation: 'spin .7s linear infinite', flexShrink: 0 }} />
-                  <span style={{ fontSize: 13.5, fontWeight: 600, color: '#4f46e5' }}>
+                  <span style={{ width: 16, height: 16, border: '2.4px solid rgba(99,102,241,.3)', borderTopColor: 'rgb(var(--brand-600))', borderRadius: '50%', display: 'inline-block', animation: 'spin .7s linear infinite', flexShrink: 0 }} />
+                  <span style={{ fontSize: 13.5, fontWeight: 600, color: 'rgb(var(--brand-700))' }}>
                     {jobTitle || bt("processing")}
                   </span>
                   {job?.progress != null && job?.status !== 'completed' && job?.status !== 'failed' && (
-                    <span style={{ marginLeft: 'auto', fontSize: 12.5, color: '#6366f1', fontWeight: 600 }}>
+                    <span style={{ marginLeft: 'auto', fontSize: 12.5, color: 'rgb(var(--brand-600))', fontWeight: 600 }}>
                       {Math.round(job.progress)}%
                     </span>
                   )}
@@ -573,7 +573,7 @@ export function BookConceptsExperience({
                     <div key={chapter.id} className="grid grid-cols-[26px_1fr_34px] gap-3 rounded-2xl border p-4" style={{ borderColor: isDark ? '#334155' : '#f3f4f6' }}>
                       <div className="flex flex-col items-center gap-3 pt-1">
                         <span style={{ color: isDark ? '#475569' : '#cbd5e1' }}>::</span>
-                        <span className="flex h-7 w-7 items-center justify-center rounded-lg text-xs font-black" style={{ background: isDark ? 'rgba(79,70,229,0.15)' : '#eef2ff', color: isDark ? '#A5B4FC' : '#4f46e5' }}>{index + 1}</span>
+                        <span className="flex h-7 w-7 items-center justify-center rounded-lg text-xs font-black" style={{ background: isDark ? 'rgba(79,70,229,0.15)' : 'rgb(var(--brand-50))', color: isDark ? 'rgb(var(--brand-300))' : 'rgb(var(--brand-700))' }}>{index + 1}</span>
                       </div>
                       <div className="space-y-2">
                         <input
@@ -645,12 +645,12 @@ export function BookConceptsExperience({
               </div>
               {(loading || (job && job.status !== 'completed' && job.status !== 'failed')) && (
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '12px 16px', background: '#eef0fe', border: '1px solid #dfe2fc', borderRadius: 11, marginBottom: 14 }}>
-                  <span style={{ width: 16, height: 16, border: '2.4px solid rgba(99,102,241,.3)', borderTopColor: '#6366f1', borderRadius: '50%', display: 'inline-block', animation: 'spin .7s linear infinite', flexShrink: 0 }} />
-                  <span style={{ fontSize: 13.5, fontWeight: 600, color: '#4f46e5' }}>
+                  <span style={{ width: 16, height: 16, border: '2.4px solid rgba(99,102,241,.3)', borderTopColor: 'rgb(var(--brand-600))', borderRadius: '50%', display: 'inline-block', animation: 'spin .7s linear infinite', flexShrink: 0 }} />
+                  <span style={{ fontSize: 13.5, fontWeight: 600, color: 'rgb(var(--brand-700))' }}>
                     {jobTitle || bt("processing")}
                   </span>
                   {job?.progress != null && (
-                    <span style={{ marginLeft: 'auto', fontSize: 12.5, color: '#6366f1', fontWeight: 600 }}>
+                    <span style={{ marginLeft: 'auto', fontSize: 12.5, color: 'rgb(var(--brand-600))', fontWeight: 600 }}>
                       {Math.round(job.progress)}%
                     </span>
                   )}
@@ -666,7 +666,7 @@ export function BookConceptsExperience({
                         type="button"
                         onClick={() => setActiveChapterId(chapter.id)}
                         className="w-full rounded-lg px-3 py-2 text-left text-sm font-semibold transition-colors"
-                        style={selected ? { background: isDark ? '#1E3A5F' : '#eef0fe', color: isDark ? '#F1F5F9' : '#4338ca' } : { color: bookTextSecondary }}
+                        style={selected ? { background: isDark ? '#1E3A5F' : '#eef0fe', color: isDark ? '#F1F5F9' : 'rgb(var(--brand-800))' } : { color: bookTextSecondary }}
                       >
                         {index + 1}. {chapter.title}
                       </button>
@@ -690,10 +690,10 @@ export function BookConceptsExperience({
                       </div>
                     );
                   })}
-                  <div className="rounded-xl border p-4" style={{ borderColor: isDark ? 'rgba(99,102,241,0.3)' : '#e0e7ff', background: isDark ? 'rgba(99,102,241,0.1)' : '#eef2ff' }}>
+                  <div className="rounded-xl border p-4" style={{ borderColor: isDark ? 'rgba(99,102,241,0.3)' : 'rgb(var(--brand-100))', background: isDark ? 'rgba(99,102,241,0.1)' : 'rgb(var(--brand-50))' }}>
                     <div className="mb-2 flex items-center justify-between">
-                      <p className="text-sm font-bold" style={{ color: isDark ? '#A5B4FC' : '#312e81' }}>{bt("refineWithAi")}</p>
-                      <button type="button" onClick={refineActiveChapter} disabled={!refineText.trim()} className="rounded-lg px-3 py-1.5 text-xs font-bold disabled:opacity-50" style={{ background: isDark ? '#1E293B' : '#fff', color: isDark ? '#A5B4FC' : '#4f46e5' }}>{bt("apply")}</button>
+                      <p className="text-sm font-bold" style={{ color: isDark ? 'rgb(var(--brand-300))' : 'rgb(var(--brand-900))' }}>{bt("refineWithAi")}</p>
+                      <button type="button" onClick={refineActiveChapter} disabled={!refineText.trim()} className="rounded-lg px-3 py-1.5 text-xs font-bold disabled:opacity-50" style={{ background: isDark ? '#1E293B' : '#fff', color: isDark ? 'rgb(var(--brand-300))' : 'rgb(var(--brand-700))' }}>{bt("apply")}</button>
                     </div>
                     <textarea rows={3} value={refineText} onChange={(event) => setRefineText(event.target.value)} className="w-full rounded-lg border px-3 py-2 text-sm" style={bookInputStyle} />
                   </div>
@@ -724,7 +724,7 @@ export function BookConceptsExperience({
                     const status = regenerateStatus[asset.key];
                     const color = status === "success" ? { background: isDark ? 'rgba(16,185,129,0.15)' : '#ecfdf5', color: '#059669' }
                       : status === "error" ? { background: isDark ? 'rgba(239,68,68,0.15)' : '#fef2f2', color: '#dc2626' }
-                      : { background: isDark ? 'rgba(99,102,241,0.15)' : '#eef2ff', color: '#4f46e5' };
+                      : { background: isDark ? 'rgba(99,102,241,0.15)' : 'rgb(var(--brand-50))', color: 'rgb(var(--brand-700))' };
                     return (
                       <span key={asset.key} className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-bold" style={color}>
                         {status === "pending" && <span className="h-2.5 w-2.5 animate-spin rounded-full border-2 border-current border-t-transparent" />}
@@ -759,7 +759,7 @@ export function BookConceptsExperience({
                       <h4 className="text-lg font-black" style={{ color: bookTextPrimary }}>{asset.title}</h4>
                       {asset.isHtmlPreview ? (
                         <div
-                          className="mt-3 max-h-44 overflow-hidden text-sm leading-6 [&_blockquote]:mt-2 [&_blockquote]:border-l-2 [&_blockquote]:border-indigo-300 [&_blockquote]:pl-3 [&_h1]:text-base [&_h1]:font-black [&_h2]:mt-2 [&_h2]:text-sm [&_h2]:font-bold [&_h3]:mt-2 [&_h3]:text-sm [&_h3]:font-bold [&_li]:mt-1 [&_ol]:mt-2 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:mt-2 [&_ul]:mt-2 [&_ul]:list-disc [&_ul]:pl-5 [&_.cta]:mt-3 [&_.cta]:inline-block [&_.cta]:rounded-lg [&_.cta]:bg-[#4f46e5] [&_.cta]:px-3 [&_.cta]:py-2 [&_.cta]:font-bold [&_.cta]:text-white"
+                          className="mt-3 max-h-44 overflow-hidden text-sm leading-6 [&_blockquote]:mt-2 [&_blockquote]:border-l-2 [&_blockquote]:border-indigo-300 [&_blockquote]:pl-3 [&_h1]:text-base [&_h1]:font-black [&_h2]:mt-2 [&_h2]:text-sm [&_h2]:font-bold [&_h3]:mt-2 [&_h3]:text-sm [&_h3]:font-bold [&_li]:mt-1 [&_ol]:mt-2 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:mt-2 [&_ul]:mt-2 [&_ul]:list-disc [&_ul]:pl-5 [&_.cta]:mt-3 [&_.cta]:inline-block [&_.cta]:rounded-lg [&_.cta]:bg-brand-700 [&_.cta]:px-3 [&_.cta]:py-2 [&_.cta]:font-bold [&_.cta]:text-white"
                           style={{ color: bookTextSecondary }}
                           dangerouslySetInnerHTML={{ __html: asset.body }}
                         />
@@ -768,7 +768,7 @@ export function BookConceptsExperience({
                           {(parseAssetJson(asset.body) || []).map((post, index) => (
                             <div key={`${post.platform}-${index}`} className="rounded-xl border p-3" style={{ borderColor: isDark ? '#334155' : '#e5e7eb', background: isDark ? '#0F172A' : '#fff' }}>
                               <div className="mb-1.5 flex items-center justify-between gap-2">
-                                <span className="rounded-lg px-2 py-0.5 text-[11px] font-bold uppercase" style={{ background: isDark ? 'rgba(79,70,229,0.15)' : '#eef2ff', color: isDark ? '#A5B4FC' : '#4f46e5' }}>
+                                <span className="rounded-lg px-2 py-0.5 text-[11px] font-bold uppercase" style={{ background: isDark ? 'rgba(79,70,229,0.15)' : 'rgb(var(--brand-50))', color: isDark ? 'rgb(var(--brand-300))' : 'rgb(var(--brand-700))' }}>
                                   {post.platform}
                                 </span>
                                 <span className="text-[11px]" style={{ color: bookTextSecondary }}>{post.characterCount ?? (post.content || "").length} {bt("characters")}</span>
@@ -792,7 +792,7 @@ export function BookConceptsExperience({
                                 <div key={index} className="rounded-xl border p-3" style={{ borderColor: isDark ? '#334155' : '#e5e7eb' }}>
                                   <div className="flex items-center justify-between gap-2">
                                     <p className="text-sm font-bold" style={{ color: bookTextPrimary }}>{section.heading}</p>
-                                    {section.stat && <span className="text-sm font-black" style={{ color: '#4f46e5' }}>{section.stat}</span>}
+                                    {section.stat && <span className="text-sm font-black" style={{ color: 'rgb(var(--brand-700))' }}>{section.stat}</span>}
                                   </div>
                                   {section.description && <p className="mt-1 text-xs leading-5" style={{ color: bookTextSecondary }}>{section.description}</p>}
                                 </div>
@@ -803,7 +803,7 @@ export function BookConceptsExperience({
                                 </ul>
                               )}
                               {data.callToAction && (
-                                <p className="rounded-lg px-3 py-2 text-sm font-bold text-white" style={{ background: '#4f46e5' }}>
+                                <p className="rounded-lg px-3 py-2 text-sm font-bold text-white" style={{ background: 'rgb(var(--brand-700))' }}>
                                   {data.callToAction}
                                 </p>
                               )}
@@ -856,10 +856,10 @@ export function BookConceptsExperience({
                       type="button"
                       onClick={() => setPreviewPage(index)}
                       className="mb-2 flex w-full items-center gap-3 rounded-xl px-2 py-1.5 text-left text-[12.5px] font-bold"
-                      style={active ? { background: isDark ? '#1E3A5F' : '#eef0fe', color: isDark ? '#F1F5F9' : '#4f46e5' } : { color: bookTextSecondary }}
+                      style={active ? { background: isDark ? '#1E3A5F' : '#eef0fe', color: isDark ? '#F1F5F9' : 'rgb(var(--brand-700))' } : { color: bookTextSecondary }}
                     >
                       {item.type === "chapter" && (
-                        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-xs font-black" style={active ? { background: isDark ? '#3730A3' : '#4f46e5', color: '#fff' } : { background: isDark ? '#334155' : '#f1f5f9', color: isDark ? '#94A3B8' : '#94a3b8' }}>
+                        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-xs font-black" style={active ? { background: isDark ? 'rgb(var(--brand-800))' : 'rgb(var(--brand-700))', color: '#fff' } : { background: isDark ? '#334155' : '#f1f5f9', color: isDark ? '#94A3B8' : '#94a3b8' }}>
                           {item.index + 1}
                         </span>
                       )}

@@ -445,8 +445,8 @@ export function SettingsPage({ navigationState = {} }) {
       {tab === "general" && (<>
         <SettingsSection isDark={isDark} title={t("settings.appearance")} IconComp={SlidersIcon} desc={t("settings.appearanceDescription")}>
           <Field label={t("settings.theme")}>
-            <div className="grid grid-cols-3 gap-1">
-              {["light", "dark", "system"].map((option) => (
+            <div className="grid grid-cols-2 gap-1 sm:grid-cols-4">
+              {["light", "dark", "noon", "system"].map((option) => (
                 <button
                   key={option}
                   onClick={() => saveThemePreference(option)}

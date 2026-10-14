@@ -150,7 +150,7 @@ export function OpportunitiesPage({ navigationState = {}, onNavigate = () => {},
             <p className="text-sm font-medium text-gray-700">{t("opportunitiesPage.emptyFiltered")}</p>
           </div>
         ) : (
-          <table className="w-full text-xs">
+          <div className="overflow-x-auto"><table className="w-full text-xs">
             <thead><tr className="bg-slate-50 text-slate-600 uppercase">
               {campaignAudienceStep && <th className="w-10 px-4 py-2.5 text-left font-medium" />}
               <th className="px-4 py-2.5 text-left font-medium">{t("opportunitiesPage.columns.company")}</th>
@@ -214,7 +214,7 @@ export function OpportunitiesPage({ navigationState = {}, onNavigate = () => {},
                 );
               })}
             </tbody>
-          </table>
+          </table></div>
         )}
       </Card>
       <CreateOpportunityModal

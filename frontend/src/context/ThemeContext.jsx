@@ -1,6 +1,9 @@
 /**
  * context/ThemeContext.jsx
- * Manages theme preference globally (light, dark, system)
+ * Manages theme preference globally (light, dark, noon, system).
+ * "noon" es un tema claro cálido; "system" sigue al sistema operativo (claro u oscuro).
+ * El tema efectivo se publica en <html data-theme="..."> (tokens en styles/tokens.css) y,
+ * para el oscuro, también como clase .dark (variantes dark: de Tailwind).
  */
 import React, { createContext, useState, useEffect, useCallback } from "react";
 import { settingsApi } from "@/api/axios";
@@ -8,7 +11,7 @@ import { settingsApi } from "@/api/axios";
 export const ThemeContext = createContext();
 
 const STORAGE_KEY = "marketgen_theme";
-const SUPPORTED_THEMES = ["light", "dark", "system"];
+const SUPPORTED_THEMES = ["light", "dark", "noon", "system"];
 const DEFAULT_THEME = "system";
 
 export function ThemeProvider({ children }) {
@@ -32,6 +35,7 @@ export function ThemeProvider({ children }) {
       const effectiveTheme =
         currentTheme === "system" ? getSystemTheme() : currentTheme;
 
+      html.dataset.theme = effectiveTheme;
       if (effectiveTheme === "dark") {
         html.classList.add("dark");
       } else {
