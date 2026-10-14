@@ -7,7 +7,9 @@ import JSZip from 'jszip'
 // html2pdf needs a real canvas; these tests cover the DOCX and the HTML the PDF is captured from.
 vi.mock('html2pdf.js', () => ({ default: () => ({}) }))
 
-import { buildProposalDocx, normalizeProposalDocument, proposalDocumentToHtml } from '@/Dashboard'
+import { buildProposalDocx } from '@/features/proposals/proposalExport'
+import { normalizeProposalDocument } from '@/features/proposals/proposalDocument'
+import { proposalDocumentToHtml } from '@/features/proposals/proposalHtml'
 import { BRAND, docxColor, loadBrandLogo } from '@/config/brand'
 
 const logoBytes = readFileSync(path.resolve(__dirname, '../../public', `.${BRAND.logoPath}`))

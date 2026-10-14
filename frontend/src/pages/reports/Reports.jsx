@@ -16,7 +16,7 @@ import { reportsApi } from "@/api/axios";
 import { Spinner } from "@/components/ui/Spinner";
 import Button from "@/components/ui/Button";
 
-const COLORS = ["#6366f1", "#0d9488", "#f59e0b", "#ef4444", "#8b5cf6"];
+const COLORS = ["rgb(var(--brand-600))", "#0d9488", "#f59e0b", "#ef4444", "#8b5cf6"];
 
 // ── KPI Card ──────────────────────────────────────────────────────────────────
 function KpiCard({ icon: Icon, label, value, sub, color = "primary" }) {
@@ -127,8 +127,8 @@ export default function Reports() {
           <AreaChart data={activityData} margin={{ top: 5, right: 10, bottom: 0, left: -20 }}>
             <defs>
               <linearGradient id="gLibros" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="5%" stopColor="#6366f1" stopOpacity={0.2} />
-                <stop offset="95%" stopColor="#6366f1" stopOpacity={0} />
+                <stop offset="5%" stopColor="rgb(var(--brand-600))" stopOpacity={0.2} />
+                <stop offset="95%" stopColor="rgb(var(--brand-600))" stopOpacity={0} />
               </linearGradient>
               <linearGradient id="gCapitulos" x1="0" y1="0" x2="0" y2="1">
                 <stop offset="5%" stopColor="#0d9488" stopOpacity={0.2} />
@@ -139,7 +139,7 @@ export default function Reports() {
             <XAxis dataKey="date" tick={{ fontSize: 11, fill: "#94a3b8" }} />
             <YAxis tick={{ fontSize: 11, fill: "#94a3b8" }} />
             <Tooltip contentStyle={{ borderRadius: 8, border: "1px solid #e2e8f0", fontSize: 12 }} />
-            <Area type="monotone" dataKey="libros"    stroke="#6366f1" fill="url(#gLibros)"    strokeWidth={2} name="Libros" />
+            <Area type="monotone" dataKey="libros"    stroke="rgb(var(--brand-600))" fill="url(#gLibros)"    strokeWidth={2} name="Libros" />
             <Area type="monotone" dataKey="capítulos" stroke="#0d9488" fill="url(#gCapitulos)" strokeWidth={2} name="Capítulos" />
           </AreaChart>
         </ResponsiveContainer>
@@ -181,7 +181,7 @@ export default function Reports() {
               <XAxis type="number" tick={{ fontSize: 11, fill: "#94a3b8" }} />
               <YAxis dataKey="type" type="category" tick={{ fontSize: 11, fill: "#94a3b8" }} width={100} />
               <Tooltip contentStyle={{ borderRadius: 8, border: "1px solid #e2e8f0", fontSize: 12 }} />
-              <Bar dataKey="count" fill="#6366f1" radius={[0, 4, 4, 0]} name="Libros" />
+              <Bar dataKey="count" fill="rgb(var(--brand-600))" radius={[0, 4, 4, 0]} name="Libros" />
             </BarChart>
           </ResponsiveContainer>
         </ChartSection>
