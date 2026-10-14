@@ -21,7 +21,10 @@ const BRAND_BASE = {
   secondaryColor: "#FF5500",
   // Text on the logo band and on primary-color stripes/fills.
   textColor: "#FFFFFF",
+  // Preview and PDF (web font).
   font: "Inter",
+  // DOCX: a font installed with Word, so it isn't substituted on open.
+  docxFont: "Calibri",
 };
 
 // Neutral colors shared by all documents (not brand-specific).

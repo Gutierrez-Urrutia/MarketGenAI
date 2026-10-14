@@ -87,6 +87,13 @@ describe('proposal DOCX export', () => {
     expect(xml).toContain('Errores de digitación: retrasan la facturación.')
   })
 
+  it('uses the DOCX font (Calibri), not the web font of the preview/PDF', async () => {
+    const { xml } = await docxParts(proposal)
+
+    expect(xml).toContain(`w:ascii="${BRAND.docxFont}"`)
+    expect(xml).not.toContain(`w:ascii="${BRAND.font}"`)
+  })
+
   it('embeds the brand logo inside the primary-color band with the accent border', async () => {
     const { xml, media } = await docxParts(proposal)
     const band = coverBand(xml)

@@ -1501,7 +1501,7 @@ const docxBorder = { style: BorderStyle.SINGLE, size: 4, color: DOCX_COLORS.bord
 const docxCellBorders = { top: docxBorder, bottom: docxBorder, left: docxBorder, right: docxBorder };
 
 function docxText(text, options = {}) {
-  return new TextRun({ text: String(text || ""), font: BRAND.font, ...options });
+  return new TextRun({ text: String(text || ""), font: BRAND.docxFont, ...options });
 }
 
 function docxParagraph(text, options = {}) {
@@ -1733,7 +1733,7 @@ export async function buildProposalDocx(proposal, sourceElement) {
     const proposalDoc = new Document({
       styles: {
         default: {
-          document: { run: { font: BRAND.font } },
+          document: { run: { font: BRAND.docxFont } },
         },
       },
       sections: [{
@@ -1745,9 +1745,9 @@ export async function buildProposalDocx(proposal, sourceElement) {
                 alignment: AlignmentType.CENTER,
                 children: [
                   docxText(`${BRAND.name} · `, { color: DOCX_COLORS.muted, size: 18 }),
-                  new TextRun({ children: [PageNumber.CURRENT], font: BRAND.font, size: 18, color: DOCX_COLORS.muted }),
+                  new TextRun({ children: [PageNumber.CURRENT], font: BRAND.docxFont, size: 18, color: DOCX_COLORS.muted }),
                   docxText(" / ", { color: DOCX_COLORS.muted, size: 18 }),
-                  new TextRun({ children: [PageNumber.TOTAL_PAGES], font: BRAND.font, size: 18, color: DOCX_COLORS.muted }),
+                  new TextRun({ children: [PageNumber.TOTAL_PAGES], font: BRAND.docxFont, size: 18, color: DOCX_COLORS.muted }),
                 ],
               }),
             ],
