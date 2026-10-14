@@ -27,7 +27,7 @@ _STRUCTURES = {
     "case_study": (
         "Title (one line)\n"
         "Client and context\nChallenge\nSolution delivered\nResults\n"
-        "- Results: only figures that appear in the sources; otherwise write [COMPLETAR: result metric]."
+        "- Results: only figures that appear in the sources; for each missing result write [COMPLETAR: describe the missing metric], with the description in the output language."
     ),
     "comparison": (
         "Title (one line)\nSummary\nComparison (a list of criteria, each with the company's position "
@@ -87,7 +87,7 @@ Extra instruction: {instructions or "None"}
 
 STRICT RULES:
 - Use ONLY facts, figures, names and results that appear in the SOURCES. Never invent clients, numbers, certifications or outcomes.
-- If something needed is not in the SOURCES, write {PLACEHOLDER} what is missing] in its place instead of making it up.
+- If something needed is not in the SOURCES, write {PLACEHOLDER} what is missing] in its place instead of making it up. Keep the word COMPLETAR, but write the description of what is missing in the output language.
 - Mention which source supports each key claim, as (Fuente: document title).
 - Do not present estimates or targets as achieved results.
 - Plain text only: no markdown, no #, no **, no HTML. Use short lines; start list items with "- ".
