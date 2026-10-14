@@ -8,9 +8,14 @@ import JSZip from 'jszip'
 vi.mock('html2pdf.js', () => ({ default: () => ({}) }))
 
 import { buildProposalDocx, normalizeProposalDocument, proposalDocumentToHtml } from '@/Dashboard'
-import { loadBrandLogo } from '@/config/brand'
+import { BRAND, docxColor, loadBrandLogo } from '@/config/brand'
 
-const logoBytes = readFileSync(path.resolve(__dirname, '../../public/brand/logo-placeholder.png'))
+const logoBytes = readFileSync(path.resolve(__dirname, '../../public', `.${BRAND.logoPath}`))
+const PRIMARY = docxColor(BRAND.colors.primary)
+const ACCENT = docxColor(BRAND.colors.accent)
+
+// The cover band: first table in the body, filled with the primary color.
+const coverBand = (xml) => xml.slice(xml.indexOf('<w:body>'), xml.indexOf('</w:tbl>'))
 
 const content = `
 <h1>Automatización de Back Office</h1>
@@ -79,14 +84,18 @@ describe('proposal DOCX export', () => {
     expect(xml).toContain('Discovery')
     expect(xml).toContain('Bot RPA')
     expect(xml).toContain('$9,200 USD')
+    expect(xml).toContain('Errores de digitación: retrasan la facturación.')
   })
 
-  it('embeds the brand logo as an image', async () => {
+  it('embeds the brand logo inside the primary-color band with the accent border', async () => {
     const { xml, media } = await docxParts(proposal)
+    const band = coverBand(xml)
 
     expect(media).toHaveLength(1)
     expect(media[0]).toMatch(/\.png$/)
-    expect(xml).toContain('<w:drawing>')
+    expect(band).toContain(`w:fill="${PRIMARY}"`)
+    expect(band).toContain(`w:color="${ACCENT}"`)
+    expect(band).toContain('<w:drawing>')
   })
 
   it('still builds the document without a logo when it cannot be loaded', async () => {
@@ -97,6 +106,11 @@ describe('proposal DOCX export', () => {
 
     expect(media).toHaveLength(0)
     expect(xml).toContain('Juan Pérez')
+    // The band stays, with the brand name in white instead of the logo.
+    const band = coverBand(xml)
+    expect(band).toContain(`w:fill="${PRIMARY}"`)
+    expect(band).toContain(BRAND.name)
+    expect(band).toContain(`w:color w:val="${docxColor(BRAND.colors.onPrimary)}"`)
   })
 
   it('keeps a section outside the 7 fixed ones as an additional section', async () => {
@@ -112,7 +126,7 @@ describe('proposal HTML used for the PDF', () => {
     const html = proposalDocumentToHtml(proposal)
 
     expect(html).toContain('Empresa: ACME SpA · Correo: juan.perez@acme.cl')
-    expect(html).toContain('class="proposal-logo"')
+    expect(html).toMatch(/<div class="proposal-logo-band">\s*<img class="proposal-logo"/)
   })
 
   it('keeps lists inside a section that also has paragraphs', () => {

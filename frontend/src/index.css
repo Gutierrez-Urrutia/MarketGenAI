@@ -606,11 +606,6 @@
   margin-bottom: 0;
 }
 
-/* The export cover has no top padding; keep the logo clear of the brand bar. */
-.proposal-export-pdf .proposal-cover .proposal-logo {
-  margin-top: 14px;
-}
-
 /* Tailwind's preflight strips list markers; the document needs them
    (e.g. numbered Next Steps). */
 .proposal-preview-document ol {
@@ -695,9 +690,12 @@
 /* Corporate proposal document. Colors come from src/config/brand.js
    (applied as --brand-* variables on <html> by applyBrandCssVariables). */
 .proposal-preview-document {
-  --proposal-navy: var(--brand-secondary);
-  --proposal-navy-deep: var(--brand-secondary-deep);
+  /* "navy" = title color (primary); "brand" = primary fills; accent = lines only. */
+  --proposal-navy: var(--brand-primary);
+  --proposal-navy-deep: var(--brand-primary-deep);
   --proposal-brand: var(--brand-primary);
+  --proposal-accent: var(--brand-accent);
+  --proposal-on-brand: var(--brand-on-primary);
   --proposal-brand-text: var(--brand-primary);
   --proposal-brand-soft: var(--brand-primary-soft);
   --proposal-brand-tint: var(--brand-primary-tint);
@@ -722,18 +720,33 @@
 .proposal-preview-document .proposal-cover,
 .theme-dark .proposal-preview-document:not(.proposal-export-pdf) .proposal-cover {
   border-bottom: 1px solid var(--proposal-border);
-  padding-top: 28px;
+  padding-top: 0;
   position: relative;
 }
 
-.proposal-preview-document .proposal-cover::before {
+/* Primary-color band at the top of the cover; the (white) logo sits inside it. */
+.proposal-preview-document .proposal-logo-band {
+  align-items: center;
   background: var(--proposal-brand);
-  content: "";
-  height: 5px;
-  left: 0;
-  position: absolute;
-  right: 0;
-  top: 0;
+  border-bottom: 4px solid var(--proposal-accent);
+  border-radius: 6px 6px 0 0;
+  display: flex;
+  margin: 0 0 24px;
+  min-height: 80px;
+  padding: 12px 20px;
+}
+
+.proposal-preview-document .proposal-logo-name {
+  color: var(--proposal-on-brand);
+  display: none;
+  font-size: 20px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+}
+
+/* Logo failed to load: show the brand name in the band instead. */
+.proposal-preview-document .proposal-logo-band.logo-missing .proposal-logo-name {
+  display: inline;
 }
 
 .proposal-preview-document .proposal-eyebrow,
@@ -742,10 +755,9 @@
 }
 
 .proposal-preview-document .proposal-logo {
-  align-self: flex-start;
   display: block;
-  height: auto;
-  margin: 0 0 18px;
+  height: 56px;
+  margin: 0;
   max-height: 56px;
   max-width: 200px;
   object-fit: contain;
@@ -839,7 +851,7 @@
 
 .proposal-preview-document h2,
 .theme-dark .proposal-preview-document:not(.proposal-export-pdf) h2 {
-  border-bottom: 2px solid var(--proposal-brand);
+  border-bottom: 2px solid var(--proposal-accent);
   color: var(--proposal-navy);
   font-size: 21px;
   letter-spacing: -0.01em;
@@ -890,7 +902,7 @@
 .theme-dark .proposal-preview-document:not(.proposal-export-pdf) th {
   background: var(--proposal-brand-soft);
   border-color: var(--proposal-border);
-  border-top: 2px solid var(--proposal-brand);
+  border-top: 2px solid var(--proposal-accent);
   color: var(--proposal-navy-deep);
   padding: 14px;
 }
@@ -910,7 +922,7 @@
 .theme-dark .proposal-preview-document:not(.proposal-export-pdf) .proposal-total {
   background: var(--proposal-brand-soft);
   border: 1px solid var(--proposal-brand-line);
-  border-left: 4px solid var(--proposal-brand);
+  border-left: 4px solid var(--proposal-accent);
   border-radius: 6px;
   color: var(--proposal-navy-deep);
 }
@@ -1150,7 +1162,7 @@
 .proposal-preview-document h2,
 .theme-dark .proposal-preview-document:not(.proposal-export-pdf) h2,
 .proposal-export-pdf .proposal-paper h2 {
-  border-bottom: 2px solid var(--proposal-brand);
+  border-bottom: 2px solid var(--proposal-accent);
   margin: 2.2em 0 0.8em;
   padding-bottom: 6px;
 }
@@ -1178,7 +1190,7 @@
 .proposal-preview-document .proposal-insight-card {
   background: var(--proposal-brand-tint);
   border: 0;
-  border-left: 4px solid var(--proposal-brand);
+  border-left: 4px solid var(--proposal-accent);
   border-radius: 6px;
   color: var(--proposal-text);
   margin-bottom: 14px;
@@ -1203,7 +1215,7 @@
 .theme-dark .proposal-preview-document:not(.proposal-export-pdf) th {
   background: var(--proposal-brand);
   border-color: var(--proposal-brand);
-  color: #ffffff;
+  color: var(--proposal-on-brand);
 }
 
 .proposal-preview-document tbody tr:nth-child(even) td {
@@ -1215,7 +1227,7 @@
   background: var(--proposal-brand);
   border: 0;
   border-radius: 8px;
-  color: #ffffff;
+  color: var(--proposal-on-brand);
   padding: 16px;
 }
 
@@ -1223,7 +1235,7 @@
 .proposal-preview-document .proposal-total-card strong,
 .theme-dark .proposal-preview-document:not(.proposal-export-pdf) .proposal-total-card span,
 .theme-dark .proposal-preview-document:not(.proposal-export-pdf) .proposal-total-card strong {
-  color: #ffffff;
+  color: var(--proposal-on-brand);
 }
 
 .proposal-preview-document .proposal-total-card strong {
@@ -1233,7 +1245,7 @@
 
 .proposal-preview-document .proposal-validity-note {
   background: var(--proposal-brand-tint);
-  border-left: 4px solid var(--proposal-brand);
+  border-left: 4px solid var(--proposal-accent);
   border-radius: 6px;
   color: var(--proposal-muted);
   font-size: 12px;

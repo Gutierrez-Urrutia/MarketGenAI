@@ -987,7 +987,10 @@ export function proposalDocumentToHtml(proposal = {}) {
     <article class="proposal-preview-document">
       <div class="proposal-paper">
         <header class="proposal-cover">
-          <img class="proposal-logo" src="${escapeHtml(BRAND.logoPath)}" alt="${escapeHtml(BRAND.name)}" onerror="this.remove()" />
+          <div class="proposal-logo-band">
+            <img class="proposal-logo" src="${escapeHtml(BRAND.logoPath)}" alt="${escapeHtml(BRAND.name)}" onerror="this.parentNode.classList.add('logo-missing');this.remove()" />
+            <span class="proposal-logo-name">${escapeHtml(BRAND.name)}</span>
+          </div>
           <p class="proposal-eyebrow">${escapeHtml(copy.preparedBy)}</p>
           <h1>${escapeHtml(doc.title)}</h1>
           <p class="proposal-subtitle">${escapeHtml(copy.proposalEyebrow)} · ${escapeHtml(copy.preparedFor)} ${escapeHtml(doc.client)}</p>
@@ -1083,12 +1086,18 @@ function ProposalDocumentPreview({ proposal, className = "", exportRef = null })
     <article ref={exportRef} className={`proposal-preview-document ${className}`}>
       <div className="proposal-paper">
         <header className="proposal-cover">
-          <img
-            className="proposal-logo"
-            src={BRAND.logoPath}
-            alt={BRAND.name}
-            onError={(event) => { event.currentTarget.style.display = "none"; }}
-          />
+          <div className="proposal-logo-band">
+            <img
+              className="proposal-logo"
+              src={BRAND.logoPath}
+              alt={BRAND.name}
+              onError={(event) => {
+                event.currentTarget.style.display = "none";
+                event.currentTarget.parentElement?.classList.add("logo-missing");
+              }}
+            />
+            <span className="proposal-logo-name">{BRAND.name}</span>
+          </div>
           <p className="proposal-eyebrow">{copy.preparedBy}</p>
           <h1>{doc.title}</h1>
           <p className="proposal-subtitle">{copy.proposalEyebrow} · {copy.preparedFor} {doc.client}</p>
@@ -1311,16 +1320,21 @@ async function prepareExportLogo(root) {
   const logo = await loadBrandLogo();
   const images = [...root.querySelectorAll(".proposal-logo")];
   await Promise.all(images.map(async (img) => {
-    if (!logo) {
+    const dropLogo = () => {
+      img.closest(".proposal-logo-band")?.classList.add("logo-missing");
       img.remove();
+    };
+    if (!logo) {
+      dropLogo();
       return;
     }
     img.style.display = "";
+    img.closest(".proposal-logo-band")?.classList.remove("logo-missing");
     img.src = logo.dataUrl;
     try {
       await img.decode?.();
     } catch {
-      img.remove();
+      dropLogo();
     }
   }));
 }
@@ -1445,8 +1459,15 @@ function extractProposalDocumentFromDom(sourceElement, fallbackProposal = {}) {
   // as .proposal-detail-card divs, not <li> — keep this in sync with
   // proposalDocumentToHtml()/cardsToHtml(), otherwise these always extract
   // empty and the DOCX export throws when it builds a zero-row Table from them.
+  // A card is <strong>title</strong><p>body</p>: rejoin as "title: body"
+  // (plain textContent glued them together, e.g. "Costoalto.").
+  const cardText = (node) => {
+    const title = node.querySelector?.("strong")?.textContent.trim() || "";
+    const body = [...(node.querySelectorAll?.("p") || [])].map((p) => p.textContent.trim()).filter(Boolean).join(" ");
+    return title || body ? [title, body].filter(Boolean).join(": ") : node.textContent.trim();
+  };
   const sectionList = (key, selector = ".proposal-detail-card") => [...(findSection(key)?.querySelectorAll(selector) || [])]
-    .map((node) => node.textContent.trim())
+    .map(cardText)
     .filter(Boolean);
   const lineItems = [...(findSection("implementationCosts")?.querySelectorAll("tbody tr") || [])]
     .map((row) => [...row.querySelectorAll("td")].map((cell) => cell.textContent.trim()))
@@ -1500,11 +1521,11 @@ const docxParagraphs = (text, options) => String(text || "")
 
 function docxHeading(text, level = HeadingLevel.HEADING_2, spacing = {}, pageBreakBefore = false) {
   return new Paragraph({
-    children: [docxText(text, { bold: true, color: DOCX_COLORS.secondary, size: 28 })],
+    children: [docxText(text, { bold: true, color: DOCX_COLORS.primary, size: 28 })],
     heading: level,
     keepNext: true,
     pageBreakBefore,
-    border: { bottom: { style: BorderStyle.SINGLE, size: 10, color: DOCX_COLORS.primary, space: 4 } },
+    border: { bottom: { style: BorderStyle.SINGLE, size: 10, color: DOCX_COLORS.accent, space: 4 } },
     spacing: { before: 620, after: 260, ...spacing },
   });
 }
@@ -1523,8 +1544,8 @@ function docxRowsFromLineItems(lineItems = [], copy = PROPOSAL_COPY.en) {
     tableHeader: true,
     cantSplit: true,
     children: [copy.serviceUnit, copy.description, copy.qty, copy.unitPrice, copy.subtotal].map((label) =>
-      docxCell(new Paragraph({ children: [docxText(label, { bold: true, color: DOCX_COLORS.secondary })] }), {
-        shading: { type: ShadingType.CLEAR, fill: DOCX_COLORS.primarySoft },
+      docxCell(new Paragraph({ children: [docxText(label, { bold: true, color: DOCX_COLORS.onPrimary })] }), {
+        shading: { type: ShadingType.CLEAR, fill: DOCX_COLORS.primary },
       }),
     ),
   });
@@ -1557,7 +1578,7 @@ function docxTechnologyRows(technologies = []) {
     children: chunk.map((technology) => docxCell(
       new Paragraph({
         alignment: AlignmentType.CENTER,
-        children: [docxText(technology, { bold: true, color: DOCX_COLORS.secondary })],
+        children: [docxText(technology, { bold: true, color: DOCX_COLORS.primary })],
       }),
       {
         shading: { type: ShadingType.CLEAR, fill: DOCX_COLORS.surface },
@@ -1592,19 +1613,33 @@ function docxSignatureCell(label) {
   });
 }
 
-// Logo paragraph for the DOCX cover, or null when the logo isn't available.
-function docxLogoParagraph(logo) {
-  if (!logo) return null;
-  const maxWidth = 180;
-  const maxHeight = 56;
-  const scale = Math.min(maxWidth / logo.width, maxHeight / logo.height, 1);
-  return new Paragraph({
-    spacing: { after: 240 },
-    children: [new ImageRun({
+// Primary-color band at the top of the DOCX cover with the (white) logo inside;
+// shows the brand name in white when the logo isn't available.
+function docxLogoBand(logo) {
+  let content;
+  if (logo) {
+    const scale = Math.min(180 / logo.width, 56 / logo.height, 1);
+    content = new ImageRun({
       type: logo.type,
       data: logo.bytes,
       transformation: { width: Math.round(logo.width * scale), height: Math.round(logo.height * scale) },
       altText: { name: BRAND.name, title: BRAND.name, description: `${BRAND.name} logo` },
+    });
+  } else {
+    content = docxText(BRAND.name, { bold: true, color: DOCX_COLORS.onPrimary, size: 36 });
+  }
+  const none = { style: BorderStyle.NONE, size: 0, color: DOCX_COLORS.white };
+  return new Table({
+    width: { size: 100, type: WidthType.PERCENTAGE },
+    borders: { top: none, bottom: none, left: none, right: none, insideHorizontal: none, insideVertical: none },
+    rows: [new TableRow({
+      cantSplit: true,
+      children: [new TableCell({
+        shading: { type: ShadingType.CLEAR, fill: DOCX_COLORS.primary },
+        borders: { top: none, left: none, right: none, bottom: { style: BorderStyle.SINGLE, size: 24, color: DOCX_COLORS.accent } },
+        margins: { top: 200, bottom: 200, left: 280, right: 280 },
+        children: [new Paragraph({ children: [content] })],
+      })],
     })],
   });
 }
@@ -1614,7 +1649,7 @@ export async function buildProposalDocx(proposal, sourceElement) {
   try {
     const doc = extractProposalDocumentFromDom(sourceElement || temporary?.element, proposal);
     const copy = getProposalCopy(doc.language);
-    const logoParagraph = docxLogoParagraph(await loadBrandLogo());
+    const logoBand = docxLogoBand(await loadBrandLogo());
     // Mirror the PDF/preview fallbacks: a Table built from a zero-length rows
     // array throws (docx tries to Array(Math.max(...[])) internally), so an
     // empty list must never reach docxTechnologyRows/docxRowsFromLineItems.
@@ -1631,7 +1666,7 @@ export async function buildProposalDocx(proposal, sourceElement) {
             [copy.preparedByPerson, doc.issuedBy || "—"],
           ].map(([label, value]) => docxCell([
             new Paragraph({ children: [docxText(label, { color: DOCX_COLORS.muted, bold: true })] }),
-            new Paragraph({ children: [docxText(value, { color: DOCX_COLORS.secondary, bold: true })] }),
+            new Paragraph({ children: [docxText(value, { color: DOCX_COLORS.primary, bold: true })] }),
           ], { shading: { type: ShadingType.CLEAR, fill: DOCX_COLORS.surface } })),
         }),
       ],
@@ -1663,7 +1698,7 @@ export async function buildProposalDocx(proposal, sourceElement) {
       spacing: { before: 60, after: 60 },
       children: [
         docxText(`${label}: `, { color: DOCX_COLORS.muted }),
-        docxText(value, { bold: true, color: DOCX_COLORS.secondary }),
+        docxText(value, { bold: true, color: DOCX_COLORS.primary }),
       ],
     }));
     const costSectionTable = new Table({
@@ -1675,9 +1710,9 @@ export async function buildProposalDocx(proposal, sourceElement) {
           costTable,
           ...adjustmentParagraphs,
           new Paragraph({
-            children: [docxText(`${copy.totalImplementationCost}: ${doc.formattedTotal}`, { bold: true, color: DOCX_COLORS.secondary, size: 28 })],
-            shading: { type: ShadingType.CLEAR, fill: DOCX_COLORS.primarySoft },
-            border: { left: { style: BorderStyle.SINGLE, size: 18, color: DOCX_COLORS.primary } },
+            children: [docxText(`${copy.totalImplementationCost}: ${doc.formattedTotal}`, { bold: true, color: DOCX_COLORS.onPrimary, size: 28 })],
+            shading: { type: ShadingType.CLEAR, fill: DOCX_COLORS.primary },
+            border: { left: { style: BorderStyle.SINGLE, size: 18, color: DOCX_COLORS.accent } },
             spacing: { before: 240, after: 260 },
             alignment: AlignmentType.CENTER,
           }),
@@ -1719,15 +1754,14 @@ export async function buildProposalDocx(proposal, sourceElement) {
           }),
         },
         children: [
-          ...(logoParagraph ? [logoParagraph] : []),
+          logoBand,
           new Paragraph({
             children: [docxText(copy.preparedBy.toUpperCase(), { bold: true, color: DOCX_COLORS.primary, size: 22 })],
-            border: { top: { style: BorderStyle.SINGLE, size: 18, color: DOCX_COLORS.primary } },
             spacing: { before: 360, after: 220 },
           }),
-          new Paragraph({ children: [docxText(doc.title, { bold: true, color: DOCX_COLORS.secondaryDeep, size: 42 })], spacing: { after: 260, line: 360 } }),
+          new Paragraph({ children: [docxText(doc.title, { bold: true, color: DOCX_COLORS.primaryDeep, size: 42 })], spacing: { after: 260, line: 360 } }),
           docxParagraph(`${copy.proposalEyebrow} - ${copy.preparedFor} ${doc.client}`, { spacing: { after: clientDetails || doc.introduction ? 160 : 360, line: 360 }, textOptions: { color: DOCX_COLORS.muted, size: 24 } }),
-          ...(clientDetails ? [docxParagraph(clientDetails, { spacing: { after: 240, line: 320 }, textOptions: { color: DOCX_COLORS.secondary, bold: true } })] : []),
+          ...(clientDetails ? [docxParagraph(clientDetails, { spacing: { after: 240, line: 320 }, textOptions: { color: DOCX_COLORS.primary, bold: true } })] : []),
           ...docxParagraphs(doc.introduction, { spacing: { after: 200, line: 320 }, textOptions: { color: DOCX_COLORS.muted } }),
           docxParagraph([doc.industry, doc.contact, doc.serviceLine].filter(Boolean).join("   "), { spacing: { after: 420, line: 320 }, textOptions: { color: DOCX_COLORS.text, bold: true } }),
           coverInfoTable,

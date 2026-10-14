@@ -1,25 +1,33 @@
 /**
  * Corporate brand settings for exported documents (proposal preview, PDF and DOCX).
  *
- * This is the ONLY place to change NoonDalton's identity. When the official assets
- * arrive: replace the file at `logoPath` and the values in BRAND_BASE. Every other
- * color (soft tints, deep tones) is derived from these, so nothing else needs editing.
+ * This is the ONLY place to change NoonDalton's identity: replace the file at
+ * `logoPath` and the values in BRAND_BASE. Soft tints and deep tones are derived
+ * from these, so nothing else needs editing.
  *
- * Current values are the provisional palette the app already used.
+ * NOTA: logo provisorio de baja resolución (134x75 px), reemplazar por PNG grande
+ * o SVG cuando NoonDalton lo entregue. (El DOCX necesita PNG/JPEG; un SVG debe
+ * acompañarse de un PNG.)
  */
 
 const BRAND_BASE = {
   name: "NoonDalton",
-  logoPath: "/brand/logo-placeholder.png",
-  primaryColor: "#6366F1",
-  secondaryColor: "#1A2B4A",
-  textColor: "#1F2937",
+  // White logo on transparent background: it is always placed on the primary-color band.
+  logoPath: "/brand/logo.png",
+  // Titles, tables, stripes and the logo band.
+  primaryColor: "#225258",
+  // Accent: only borders, lines, labels or buttons with large white text.
+  // Never use it for small text on a white background (contrast 3.1:1).
+  secondaryColor: "#FF5500",
+  // Text on the logo band and on primary-color stripes/fills.
+  textColor: "#FFFFFF",
   font: "Inter",
 };
 
-// Neutral grays shared by all documents (not brand-specific).
+// Neutral colors shared by all documents (not brand-specific).
 const NEUTRALS = {
-  muted: "#64748B",
+  bodyText: "#1F2937",
+  muted: "#5E6B7E", // >= 4.5:1 on white and on the light surfaces
   border: "#D8DEE8",
   surface: "#F6F8FB",
   white: "#FFFFFF",
@@ -49,13 +57,18 @@ export const BRAND = {
   fontStack: `${BRAND_BASE.font}, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif`,
   colors: {
     primary: BRAND_BASE.primaryColor,
+    primaryDeep: mixColors(BRAND_BASE.primaryColor, "#000000", 0.3),
     primarySoft: mixColors(BRAND_BASE.primaryColor, NEUTRALS.white, 0.9),
     primaryTint: mixColors(BRAND_BASE.primaryColor, NEUTRALS.white, 0.95),
     primaryLine: mixColors(BRAND_BASE.primaryColor, NEUTRALS.white, 0.65),
-    secondary: BRAND_BASE.secondaryColor,
-    secondaryDeep: mixColors(BRAND_BASE.secondaryColor, "#000000", 0.35),
-    text: BRAND_BASE.textColor,
-    ...NEUTRALS,
+    accent: BRAND_BASE.secondaryColor,
+    onPrimary: BRAND_BASE.textColor,
+    // Body text on white stays a neutral dark gray (textColor is for text on primary).
+    text: NEUTRALS.bodyText,
+    muted: NEUTRALS.muted,
+    border: NEUTRALS.border,
+    surface: NEUTRALS.surface,
+    white: NEUTRALS.white,
   },
 };
 
@@ -74,8 +87,9 @@ export function brandCssVariables(brand = BRAND) {
     "--brand-primary-soft": c.primarySoft,
     "--brand-primary-tint": c.primaryTint,
     "--brand-primary-line": c.primaryLine,
-    "--brand-secondary": c.secondary,
-    "--brand-secondary-deep": c.secondaryDeep,
+    "--brand-primary-deep": c.primaryDeep,
+    "--brand-accent": c.accent,
+    "--brand-on-primary": c.onPrimary,
     "--brand-text": c.text,
     "--brand-muted": c.muted,
     "--brand-border": c.border,
