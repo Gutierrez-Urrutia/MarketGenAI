@@ -31,6 +31,7 @@ from reportlab.platypus import (
 )
 
 from app.core.rate_limit import limiter
+from app.core.rbac import is_admin
 from app.config import settings
 from app.dependencies.auth import CurrentUser, get_current_user
 from app.schemas.job import JobAccepted
@@ -38,12 +39,15 @@ from app.schemas.proposal import (
     GenerateProposalRequest,
     ProposalExportRequest,
     ProposalCreate,
+    PROPOSAL_STATUS_VALUES,
     ProposalOut,
+    ProposalStatus,
     ProposalUpdate,
     ProposalVersionCreate,
     SendToCrmRequest,
+    invalid_status_detail,
 )
-from app.services.firestore_service import opportunities_repo, proposals_repo, jobs_repo, settings_repo
+from app.services.firestore_service import proposals_repo, jobs_repo, settings_repo
 from app.services import crm_service, deepseek_service
 from app.workers.tasks.proposal_tasks import _lang_code, format_usd
 from app.services.crm_service import (
@@ -76,15 +80,6 @@ router = APIRouter(prefix="/proposals", tags=["Proposals"])
 
 # Brand palette — mirrors the --proposal-* tokens in frontend/src/index.css
 # so exported PDFs/DOCX match the on-screen proposal preview.
-PROPOSAL_STATUS_SCORES = {
-    "Generada": 16,
-    "Entregada": 32,
-    "En Negociación": 48,
-    "Cerrada": 64,
-    "En Contrato": 80,
-    "Perdida": 0,
-}
-
 # ── Helpers internos ──────────────────────────────────────────────────────────
 
 
@@ -950,7 +945,8 @@ async def create_proposal(
         "downloadUrl": None,
         "filePath": None,
         "status": data.get("status") or "draft",
-        "proposal_status": data.get("proposal_status") or "Generada",
+        # Toda propuesta nace en borrador; se ignora lo que envíe el cliente.
+        "proposal_status": ProposalStatus.borrador.value,
         "userId": user.sub,
     }
     if data.get("opportunity_id"):
@@ -1001,6 +997,7 @@ async def generate_proposal_draft(
         "downloadUrl": None,
         "filePath": None,
         "status": "pending",
+        "proposal_status": ProposalStatus.borrador.value,
         "language": body.language,
         "customPrompt": body.customPrompt,
         "userId": user.sub,
@@ -1122,13 +1119,18 @@ async def update_proposal(
     body: ProposalUpdate,
     user: CurrentUser = Depends(get_current_user),
 ):
-    await _get_proposal_for_user(proposal_id, user.sub)
+    proposal = await _get_proposal_for_user(proposal_id, user.sub)
     update_data = body.model_dump(exclude_none=True)
     if not update_data:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="No fields to update."
         )
+    # El estado comercial solo cambia por PATCH /status (transiciones + auditoría).
+    # `status` (ciclo de generación con IA) sí pasa: el frontend lo usa.
+    update_data.pop("proposal_status", None)
+    if not update_data:
+        return proposal
     return await proposals_repo.update(proposal_id, update_data)
 
 
@@ -1136,31 +1138,42 @@ async def update_proposal(
 async def update_proposal_status(
     proposal_id: str,
     body: dict,
+    request: Request,
     current_user: CurrentUser = Depends(get_current_user),
 ):
     new_status = body.get("status")
-    if new_status not in PROPOSAL_STATUS_SCORES:
+    if new_status not in PROPOSAL_STATUS_VALUES:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Invalid proposal status.",
+            detail=invalid_status_detail(new_status),
         )
 
-    proposal = await _get_proposal_for_user(proposal_id, current_user.sub)
-    updated = await proposals_repo.update(proposal_id, {"proposal_status": new_status})
+    actor_is_admin = is_admin(current_user)
+    if not actor_is_admin:
+        # Igual que antes para los no admin: 404 / 403 si la propuesta no es suya.
+        # Un admin puede llegar a una propuesta ajena, pero solo para reabrirla:
+        # lo decide la transacción (decide_cambio_estado).
+        await _get_proposal_for_user(proposal_id, current_user.sub)
 
-    opportunity_id = proposal.get("opportunity_id")
-    if opportunity_id:
-        try:
-            opportunity = await opportunities_repo.get_or_404(opportunity_id)
-        except KeyError:
-            opportunity = None
-        if opportunity and opportunity.get("userId") == current_user.sub:
-            await opportunities_repo.update(
-                opportunity_id,
-                {"score": PROPOSAL_STATUS_SCORES[new_status]},
-            )
-
-    return updated
+    outcome = await proposals_repo.change_status(
+        proposal_id,
+        new_status,
+        actor_id=current_user.sub,
+        actor_roles=current_user.roles,
+        actor_is_admin=actor_is_admin,
+        method=request.method,
+        path=request.url.path,
+        ip=request.client.host if request.client else None,
+    )
+    if outcome.get("not_found"):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Proposal '{proposal_id}' not found.",
+        )
+    if outcome.get("error"):
+        error = outcome["error"]
+        raise HTTPException(status_code=error.status_code, detail=error.detail)
+    return outcome["proposal"]
 
 
 @router.delete("/{proposal_id}", status_code=status.HTTP_204_NO_CONTENT)
