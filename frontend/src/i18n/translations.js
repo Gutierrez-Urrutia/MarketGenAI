@@ -452,14 +452,6 @@ export const translations = {
         private: "Private",
         public: "Public",
       },
-      proposalStatuses: {
-        generated: "Generated",
-        delivered: "Delivered",
-        inNegotiation: "In Negotiation",
-        closed: "Closed",
-        underContract: "Under Contract",
-        lost: "Lost",
-      },
       aiFields: {
         client_name: "Client name",
         industry: "Industry",
@@ -905,6 +897,30 @@ export const translations = {
         rejected: "Rejected",
         error: "Error",
       },
+    },
+    proposalStatus: {
+      labels: {
+        borrador: "Draft",
+        enviada: "Sent",
+        vista: "Viewed",
+        en_negociacion: "In negotiation",
+        firmada: "Signed",
+        rechazada: "Rejected",
+        desconocido: "Unknown",
+      },
+      errors: {
+        invalidStatus: "That proposal status is not valid.",
+        invalidTransition: "That status change is not allowed from the current status.",
+        unknownStatus: "This proposal has an unrecognized status. It must be migrated before its status can change.",
+        reopenAdminOnly: "Only an administrator can reopen a rejected proposal.",
+        forbidden: "You do not have permission to change this proposal.",
+        generic: "Could not update the proposal status.",
+      },
+      noActions: "No status changes available",
+      changeTo: "Change status",
+    },
+    auditLogs: {
+      proposalStatusChanged: "Proposal status changed",
     },
   },
 
@@ -1355,14 +1371,6 @@ export const translations = {
         private: "Privado",
         public: "Público",
       },
-      proposalStatuses: {
-        generated: "Generada",
-        delivered: "Entregada",
-        inNegotiation: "En Negociación",
-        closed: "Cerrada",
-        underContract: "En Contrato",
-        lost: "Perdida",
-      },
       aiFields: {
         client_name: "Nombre del cliente",
         industry: "Industria",
@@ -1808,6 +1816,30 @@ export const translations = {
         rejected: "Rechazado",
         error: "Error",
       },
+    },
+    proposalStatus: {
+      labels: {
+        borrador: "Borrador",
+        enviada: "Enviada",
+        vista: "Vista",
+        en_negociacion: "En negociación",
+        firmada: "Firmada",
+        rechazada: "Rechazada",
+        desconocido: "Desconocido",
+      },
+      errors: {
+        invalidStatus: "Ese estado de propuesta no es válido.",
+        invalidTransition: "Ese cambio de estado no está permitido desde el estado actual.",
+        unknownStatus: "Esta propuesta tiene un estado no reconocido. Hay que migrarla antes de cambiar su estado.",
+        reopenAdminOnly: "Solo un administrador puede reabrir una propuesta rechazada.",
+        forbidden: "No tienes permiso para cambiar esta propuesta.",
+        generic: "No se pudo actualizar el estado de la propuesta.",
+      },
+      noActions: "Sin cambios de estado disponibles",
+      changeTo: "Cambiar estado",
+    },
+    auditLogs: {
+      proposalStatusChanged: "Cambio de estado de propuesta",
     },
   },
 
@@ -2294,14 +2326,6 @@ export const translations = {
         private: "Privado",
         public: "Público",
       },
-      proposalStatuses: {
-        generated: "Gerada",
-        delivered: "Entregue",
-        inNegotiation: "Em Negociação",
-        closed: "Fechada",
-        underContract: "Em Contrato",
-        lost: "Perdida",
-      },
       aiFields: {
         client_name: "Nome do cliente",
         industry: "Setor",
@@ -2747,6 +2771,30 @@ export const translations = {
         rejected: "Rejeitado",
         error: "Erro",
       },
+    },
+    proposalStatus: {
+      labels: {
+        borrador: "Rascunho",
+        enviada: "Enviada",
+        vista: "Visualizada",
+        en_negociacion: "Em negociação",
+        firmada: "Assinada",
+        rechazada: "Rejeitada",
+        desconocido: "Desconhecido",
+      },
+      errors: {
+        invalidStatus: "Esse status de proposta não é válido.",
+        invalidTransition: "Essa mudança de status não é permitida a partir do status atual.",
+        unknownStatus: "Esta proposta tem um status não reconhecido. Ela precisa ser migrada antes de mudar de status.",
+        reopenAdminOnly: "Somente um administrador pode reabrir uma proposta rejeitada.",
+        forbidden: "Você não tem permissão para alterar esta proposta.",
+        generic: "Não foi possível atualizar o status da proposta.",
+      },
+      noActions: "Nenhuma mudança de status disponível",
+      changeTo: "Mudar status",
+    },
+    auditLogs: {
+      proposalStatusChanged: "Mudança de status da proposta",
     },
   },
 };

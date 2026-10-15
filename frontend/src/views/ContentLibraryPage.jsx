@@ -3,11 +3,18 @@ import { Badge, Btn, Card, Field, Input, Select } from "@/components/dashboard/u
 import { Footer } from "docx";
 import Modal from "@/components/ui/Modal";
 import { PREF_KEYS, getContentItemKey, getStoredPreference, readDeletedContentIds, readLocalContentProposals, saveLocalContentProposal, writeDeletedContentIds } from "@/utils/localStore";
-import { PROPOSAL_STATUSES, PROPOSAL_STATUS_COLOR_CLASSES } from "@/features/proposals/proposalStatus";
+import {
+  proposalStatusColorClass,
+  proposalStatusErrorMessage,
+  proposalStatusLabelKey,
+  toDisplayProposalStatus,
+} from "@/features/proposals/proposalStatus";
+import { ProposalStatusControl } from "@/features/proposals/ProposalStatusControl";
+import { isAdminUser } from "@/utils/permissions";
 import { ProgressModal } from "@/components/dashboard/ProgressModal";
 import { ProposalDocumentPreview } from "@/features/proposals/ProposalDocumentPreview";
 import { ToastStack, useToastQueue } from "@/components/dashboard/toasts";
-import api, { socialApi } from "@/api/axios";
+import api, { authTokenStore, socialApi } from "@/api/axios";
 import { calculateProposalTotal, cleanStructuredText, formatUsd, normalizeLineItem, normalizeProposalDocument } from "@/features/proposals/proposalDocument";
 import { cleanProposalHtml, stripHtml } from "@/utils/htmlText";
 import { completeCampaignFlowSteps, normalizeCampaignContent } from "@/utils/campaignContent";
@@ -101,6 +108,7 @@ export function ContentLibraryPage({ navigationState = {}, onNavigate = () => {}
   const [generationModal, setGenerationModal] = useState(null);
   const [wizardStep, setWizardStep] = useState(1);
   const { toasts, setToast, removeToast, pauseToast, resumeToast } = useToastQueue();
+  const [statusChangePendingId, setStatusChangePendingId] = useState(null);
   const [deletedContentIds, setDeletedContentIds] = useState(readDeletedContentIds);
   const [libraryRefreshKey, setLibraryRefreshKey] = useState(0);
   const [proposalForm, setProposalForm] = useState({
@@ -1628,7 +1636,7 @@ export function ContentLibraryPage({ navigationState = {}, onNavigate = () => {}
     title: proposal.title || proposal.name || "AI Generated Proposal",
     type: "Proposal",
     status: proposal.status || "generated",
-    proposal_status: proposal.proposal_status || "Generada",
+    proposal_status: toDisplayProposalStatus(proposal.proposal_status),
     description: proposal.description || "",
     content: proposal.content || proposal.description || "",
     structuredContent,
@@ -1646,7 +1654,7 @@ const allItems = [...realProposalItems, ...libraryItems];
 
 const filtered = allItems.filter((item) => {
   if (typeFilter !== "All" && item.type !== (typeToItemType[typeFilter] || typeFilter)) return false;
-  if (statusFilter) return item.type === "Proposal" && (item.proposal_status || "Generada") === statusFilter;
+  if (statusFilter) return item.type === "Proposal" && toDisplayProposalStatus(item.proposal_status) === statusFilter;
   return true;
 });
 
@@ -1678,29 +1686,31 @@ const filtered = allItems.filter((item) => {
     const colors = { "Published": "bg-green-100 text-green-700", "Active": "bg-green-100 text-green-700", "Sent": "bg-blue-100 text-blue-700", "Accepted": "bg-green-100 text-green-700", "Draft": "bg-gray-100 text-gray-600", "draft": "bg-gray-100 text-gray-600", "generated": "bg-indigo-100 text-indigo-700", "Generated": "bg-indigo-100 text-indigo-700", "pending CRM upload": "bg-yellow-100 text-yellow-700", "uploaded": "bg-green-100 text-green-700", "Generating...": "bg-yellow-100 text-yellow-700" };
     return colors[status] || "bg-gray-100 text-gray-600";
   };
-  const proposalStatusColor = (proposalStatus = "Generada") => {
+  const proposalStatusColor = (proposalStatus) => {
     if (isDark) return "bg-slate-900 text-slate-200 border border-white/10";
-    return PROPOSAL_STATUS_COLOR_CLASSES[proposalStatus] || "bg-gray-100 text-gray-600";
+    return proposalStatusColorClass(proposalStatus);
   };
-  const proposalStatusLabel = (proposalStatus = "Generada") => {
-    const statusConfig = PROPOSAL_STATUSES.find((item) => item.value === proposalStatus) || PROPOSAL_STATUSES[0];
-    return t(`contentLibrary.proposalStatuses.${statusConfig.labelKey}`);
-  };
+  const proposalStatusLabel = (proposalStatus) => t(proposalStatusLabelKey(proposalStatus));
+  const canReopenProposals = isAdminUser(authTokenStore.getUser() || {});
   const handleProposalStatusChange = async (proposal, proposalStatus) => {
-    const nextProposal = { ...proposal, proposal_status: proposalStatus };
-    setViewingProposal(nextProposal);
-    setProposals((current) => current.map((item) => (
-      item.id === proposal.id ? { ...item, proposal_status: proposalStatus } : item
-    )));
+    const previousStatus = proposal.proposal_status;
+    const applyStatus = (value) => {
+      setViewingProposal((current) => (current && current.id === proposal.id ? { ...current, proposal_status: value } : current));
+      setProposals((current) => current.map((item) => (
+        item.id === proposal.id ? { ...item, proposal_status: value } : item
+      )));
+    };
+    applyStatus(proposalStatus);
+    setStatusChangePendingId(proposal.id);
     try {
-      await updateProposalStatus(proposal.id, proposalStatus);
+      const { data } = await updateProposalStatus(proposal.id, proposalStatus);
+      if (data?.proposal_status) applyStatus(data.proposal_status);
     } catch (error) {
       console.error(error);
-      setViewingProposal(proposal);
-      setProposals((current) => current.map((item) => (
-        item.id === proposal.id ? { ...item, proposal_status: proposal.proposal_status || "Generada" } : item
-      )));
-      setToast({ type: "error", message: "No se pudo actualizar el estado de la propuesta." });
+      applyStatus(previousStatus);
+      setToast({ type: "error", message: proposalStatusErrorMessage(error, { from: previousStatus, to: proposalStatus }, t) });
+    } finally {
+      setStatusChangePendingId(null);
     }
   };
   const duplicateItem = (item) => {
@@ -2000,8 +2010,8 @@ const filtered = allItems.filter((item) => {
                   />
                 ) : item.type === "Proposal" ? (
                     <Badge
-                      label={proposalStatusLabel(item.proposal_status || "Generada")}
-                      color={proposalStatusColor(item.proposal_status || "Generada")}
+                      label={proposalStatusLabel(item.proposal_status)}
+                      color={proposalStatusColor(item.proposal_status)}
                     />
                 ) : (
                   <Badge label={contentStatusLabel(item.status)} color={statusColor(item.status)} />
@@ -2847,19 +2857,13 @@ const filtered = allItems.filter((item) => {
             {editingProposal ? t("contentLibrary.editProposal") : t("contentLibrary.proposalPreview")}
           </p>
           {!editingProposal && (
-            <div className={`mt-3 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium shadow-sm ${proposalStatusColor(viewingProposal.proposal_status || "Generada")}`}>
-              <select
-                value={viewingProposal.proposal_status || "Generada"}
-                onChange={(event) => handleProposalStatusChange(viewingProposal, event.target.value)}
-                className="cursor-pointer appearance-none border-0 bg-transparent pr-5 text-xs font-medium text-current outline-none"
-              >
-                {PROPOSAL_STATUSES.map((proposalStatus) => (
-                  <option key={proposalStatus.value} value={proposalStatus.value} className="bg-white text-slate-900">
-                    {t(`contentLibrary.proposalStatuses.${proposalStatus.labelKey}`)}
-                  </option>
-                ))}
-              </select>
-            </div>
+            <ProposalStatusControl
+              status={viewingProposal.proposal_status}
+              isAdmin={canReopenProposals}
+              pending={statusChangePendingId === viewingProposal.id}
+              colorClassName={proposalStatusColor(viewingProposal.proposal_status)}
+              onChange={(proposalStatus) => handleProposalStatusChange(viewingProposal, proposalStatus)}
+            />
           )}
         </div>
 

@@ -4,14 +4,19 @@ import api, { reportsApi } from "@/api/axios";
 import { getDashboardData } from "@/api/dashboardApi";
 import { useEffect, useState } from "react";
 import { useI18n } from "@/hooks/useI18n";
-import { useLanguage } from "@/context/LanguageContext";
+import {
+  PROPOSAL_STATUS_DISPLAY_ORDER,
+  UNKNOWN_PROPOSAL_STATUS,
+  proposalStatusChartColor,
+  proposalStatusLabelKey,
+  toDisplayProposalStatus,
+} from "@/features/proposals/proposalStatus";
 
 /* ═══════════════════════════════════════════════════════════════ */
 /*  PAGE: REPORTS                                                  */
 /* ═══════════════════════════════════════════════════════════════ */
 export function ReportsPage({ onNavigate = () => {}, campaignFlow = null, setCampaignFlow = () => {} }) {
   const { t } = useI18n();
-  const { language } = useLanguage();
   const [proposalStatusPeriod, setProposalStatusPeriod] = useState("30d");
   const [winRateData, setWinRateData] = useState({ rate: null, detail: "" });
   const [reportsState, setReportsState] = useState({
@@ -107,46 +112,29 @@ export function ReportsPage({ onNavigate = () => {}, campaignFlow = null, setCam
   const reportsData = reportsState.overview || {};
   const overviewKpis = reportsData.kpis || {};
   const dashboard = reportsState.dashboard || {};
-  const translateProposalStatus = (status, lang) => {
-    const translations = {
-      Generada: { en: "Generated", pt: "Gerada" },
-      Entregada: { en: "Delivered", pt: "Entregue" },
-      "En Negociación": { en: "In Negotiation", pt: "Em Negociação" },
-      Cerrada: { en: "Closed", pt: "Fechada" },
-      "En Contrato": { en: "Under Contract", pt: "Em Contrato" },
-      Perdida: { en: "Lost", pt: "Perdida" },
-    };
-    if (lang === "es") return status;
-    return translations[status]?.[lang] || status;
-  };
-  const statusColors = {
-    Generada: "rgb(var(--brand-600))",
-    Entregada: "#3B82F6",
-    "En Negociación": "#F59E0B",
-    Cerrada: "#16A34A",
-    "En Contrato": "#047857",
-    Perdida: "#F43F5E",
-  };
-  const proposalStatusOrder = ["Generada", "Entregada", "En Negociación", "Cerrada", "En Contrato", "Perdida"];
   const rawProposalRows = Array.isArray(reportsState.proposals?.data) ? reportsState.proposals.data : [];
+  // El backend agrupa por código; un label no reconocido se suma a "desconocido".
   const rawProposalRowsByStatus = rawProposalRows.reduce((map, row) => {
-    const status = row.name || row.label || "Generada";
-    map[status] = row;
+    const status = toDisplayProposalStatus(row.name ?? row.label);
+    const previous = map[status] || { count: 0, totalValue: 0 };
+    map[status] = {
+      ...row,
+      count: previous.count + (Number(row.value ?? row.count) || 0),
+      totalValue: previous.totalValue + (Number(row.totalValue) || 0),
+    };
     return map;
   }, {});
-  const proposalRows = proposalStatusOrder.map((status) => {
+  const proposalRows = PROPOSAL_STATUS_DISPLAY_ORDER.map((status) => {
     const row = rawProposalRowsByStatus[status] || {};
-    const value = Number(row.value ?? row.count) || 0;
-    const totalValue = Number(row.totalValue) || 0;
     return {
       ...row,
       status,
-      name: translateProposalStatus(status, language),
-      value,
-      totalValue,
-      fill: statusColors[status] || "rgb(var(--brand-600))",
+      name: t(proposalStatusLabelKey(status)),
+      value: row.count || 0,
+      totalValue: row.totalValue || 0,
+      fill: proposalStatusChartColor(status),
     };
-  }).filter((row) => row.value > 0 || rawProposalRows.length === 0);
+  }).filter((row) => row.value > 0 || (rawProposalRows.length === 0 && row.status !== UNKNOWN_PROPOSAL_STATUS));
   const totalProposalValue = rawProposalRows.reduce((sum, row) => sum + (Number(row.totalValue) || 0), 0);
   const totalProposalCount = proposalRows.reduce((sum, row) => sum + row.value, 0);
   const winRateValue = Number(winRateData.rate ?? overviewKpis.winRate ?? dashboard?.totals?.winRate);
