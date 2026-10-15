@@ -27,6 +27,7 @@ Endpoints cubiertos (secciones 2 y 3):
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from typing import Optional
 
@@ -43,6 +44,8 @@ from app.schemas.book import (
 from app.schemas.job import JobAccepted
 from app.services import book_ai_service
 from app.services.firestore_service import books_repo, jobs_repo
+
+logger = logging.getLogger("marketgen.books")
 from app.workers.tasks.content_tasks import (
     task_generate_chapters,
     task_generate_all_content,
@@ -94,6 +97,7 @@ def _enum_value(value):
 
 
 async def _generate_chapters_now(job_id: str, book_id: str, book: dict, chapter_count: int, language: str = "en") -> None:
+    logger.info(f"🚀 [BooksRouter] Iniciando generación de {chapter_count} capítulos para libro '{book.get('title')}' (id={book_id}, job_id={job_id})")
     await jobs_repo.update_progress(job_id, 10, "processing")
     chapters_data = await book_ai_service.generate_chapters(
         title=book["title"],
@@ -103,6 +107,7 @@ async def _generate_chapters_now(job_id: str, book_id: str, book: dict, chapter_
         language=language,
     )
 
+    logger.info(f"💾 [BooksRouter] Guardando {len(chapters_data)} capítulos en base de datos para book_id={book_id}...")
     await jobs_repo.update_progress(job_id, 60, "processing")
     for chapter in await books_repo.get_chapters(book_id):
         await books_repo.delete_chapter(book_id, chapter["id"])
@@ -120,6 +125,7 @@ async def _generate_chapters_now(job_id: str, book_id: str, book: dict, chapter_
 
     await books_repo.update(book_id, {"status": "outlined"})
     await jobs_repo.complete_job(job_id, {"chapters": created, "bookStatus": "outlined"})
+    logger.info(f"✨ [BooksRouter] Generación de capítulos completada con éxito para book_id={book_id}")
 
 
 async def _generate_chapter_content_now(
@@ -412,7 +418,18 @@ async def generate_chapters_endpoint(
             raise
         return JobAccepted(job_id=job["id"])
 
-    task_generate_chapters.delay(job["id"], book_id, book, body.chapter_count, body.language)
+    try:
+        task_generate_chapters.delay(job["id"], book_id, book, body.chapter_count, body.language)
+    except Exception as exc:
+        logger.warning(
+            "Celery task_generate_chapters dispatch failed (%s); falling back to synchronous execution",
+            exc,
+        )
+        try:
+            await _generate_chapters_now(job["id"], book_id, book, body.chapter_count, body.language)
+        except Exception as inner_exc:
+            await jobs_repo.fail_job(job["id"], str(inner_exc))
+            raise
     return JobAccepted(job_id=job["id"])
 
 
@@ -614,12 +631,15 @@ async def generate_all_content(
 
     try:
         task_generate_all_content.delay(job["id"], book_id, book, chapters, body.content_type, body.style, body.language)
-    except Exception:
-        # Redis/Celery no disponible — ejecutar síncronamente
+    except Exception as exc:
+        logger.warning(
+            "Celery task_generate_all_content dispatch failed (%s); falling back to synchronous execution",
+            exc,
+        )
         try:
             await _generate_all_content_now(job["id"], book_id, book, chapters, body.content_type, body.style, body.language)
-        except Exception as exc:
-            await jobs_repo.fail_job(job["id"], str(exc))
+        except Exception as inner_exc:
+            await jobs_repo.fail_job(job["id"], str(inner_exc))
             raise
     return JobAccepted(job_id=job["id"])
 
@@ -669,12 +689,15 @@ async def generate_single_chapter_content(
         task_generate_single_chapter.delay(
             job["id"], book_id, book, chapter, body.content_type, body.style, body.language
         )
-    except Exception:
-        # Redis/Celery no disponible — ejecutar síncronamente
+    except Exception as exc:
+        logger.warning(
+            "Celery task_generate_single_chapter dispatch failed (%s); falling back to synchronous execution",
+            exc,
+        )
         try:
             await _generate_single_chapter_now(job["id"], book_id, book, chapter, body.content_type, body.style, body.language)
-        except Exception as exc:
-            await jobs_repo.fail_job(job["id"], str(exc))
+        except Exception as inner_exc:
+            await jobs_repo.fail_job(job["id"], str(inner_exc))
             raise
     return {"jobId": job["id"], "status": "pending"}
 

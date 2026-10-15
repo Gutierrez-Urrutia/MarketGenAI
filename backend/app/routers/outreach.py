@@ -221,7 +221,7 @@ Rules:
         classification_prompt,
         system_prompt="You classify B2B outreach replies and return strict JSON.",
         temperature=0.2,
-        timeout=settings.llm_short_timeout_seconds,
+        timeout=None,
     )
     try:
         payload = _safe_json(raw)

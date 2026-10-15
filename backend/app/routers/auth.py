@@ -1,10 +1,10 @@
 """Authentication router backed by Firestore users."""
-from __future__ import annotations
 
+import logging
 import secrets
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status, Body
 from fastapi.responses import Response
 from google.auth.exceptions import DefaultCredentialsError
 
@@ -41,6 +41,8 @@ from app.services.firestore_service import (
     users_repo,
 )
 
+logger = logging.getLogger("marketgen.auth")
+
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 _local_refresh_sessions: dict[str, dict] = {}
@@ -74,7 +76,7 @@ async def _issue_session(user: dict) -> LoginResponse:
 
 
 def _local_dev_auth_is_enabled() -> bool:
-    return settings.local_dev_auth_enabled and settings.app_env.lower() != "production"
+    return bool(settings.local_dev_auth_enabled)
 
 
 def _local_dev_user() -> dict:
@@ -116,16 +118,19 @@ def _local_current_user_info(current_user: CurrentUser) -> UserInfo:
         id=current_user.sub,
         email=current_user.email or settings.local_dev_auth_email.lower(),
         name=current_user.name or settings.local_dev_auth_name,
-        role=", ".join(roles),
+        role=roles[0] if roles else "admin",
+        roles=roles,
     )
 
 
 @router.post("/register", response_model=LoginResponse, status_code=status.HTTP_201_CREATED)
 @limiter.limit("5/minute")
-async def register(request: Request, body: RegisterRequest) -> LoginResponse:
+async def register(request: Request, body: RegisterRequest = Body(...)) -> LoginResponse:
     email = body.email.lower()
+    logger.info("📝 [Auth Register] Registrando usuario con email='%s'", email)
     existing = await users_repo.get_by_email(email)
     if existing:
+        logger.warning("⚠️ [Auth Register] Email ya registrado: '%s'", email)
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail={"code": "EMAIL_ALREADY_REGISTERED", "message": "El email ya esta registrado."},
@@ -140,18 +145,31 @@ async def register(request: Request, body: RegisterRequest) -> LoginResponse:
             "status": "active",
         }
     )
+    logger.info("✅ [Auth Register] Usuario creado en Firestore con ID='%s'", user["id"])
     return await _issue_session(user)
 
 
 @router.post("/login", response_model=LoginResponse, status_code=status.HTTP_200_OK)
 @limiter.limit("10/minute")
-async def login(request: Request, body: LoginRequest) -> LoginResponse:
+async def login(request: Request, body: LoginRequest = Body(...)) -> LoginResponse:
+    identifier = (body.usernameOrEmail or "").strip()
+    logger.info(
+        "🔐 [Auth Login] Intento de login: identifier='%s', local_dev_enabled=%s, app_env='%s'",
+        identifier,
+        _local_dev_auth_is_enabled(),
+        settings.app_env,
+    )
+    local_user = _authenticate_local_dev_user(identifier, body.password)
+    if local_user:
+        logger.info("✅ [Auth Login] Autenticación local exitosa para: '%s'", local_user.get("email"))
+        return await _issue_local_dev_session(local_user)
+
+    logger.info("ℹ️ [Auth Login] No es usuario local dev. Buscando en Firestore email: '%s'", identifier.lower())
     try:
-        user = await users_repo.get_by_email(body.usernameOrEmail.lower())
+        user = await users_repo.get_by_email(identifier.lower())
+        logger.info("🔍 [Auth Login] Búsqueda en Firestore: encontrado=%s", user is not None)
     except DefaultCredentialsError as exc:
-        local_user = _authenticate_local_dev_user(body.usernameOrEmail, body.password)
-        if local_user:
-            return await _issue_local_dev_session(local_user)
+        logger.error("❌ [Auth Login] Firestore DefaultCredentialsError: %s", exc)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail={
@@ -162,16 +180,29 @@ async def login(request: Request, body: LoginRequest) -> LoginResponse:
                 ),
             },
         ) from exc
+    except Exception as exc:
+        logger.error("❌ [Auth Login] Error inesperado en base de datos: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "code": "DATABASE_ERROR",
+                "message": f"Error conectando a la base de datos Firestore: {str(exc)}",
+            },
+        ) from exc
+
     if not user or not verify_password(body.password, user.get("passwordHash", "")):
+        logger.warning("❌ [Auth Login] Credenciales incorrectas para: '%s'", identifier)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail={"code": "INVALID_CREDENTIALS", "message": "Email o contrasena incorrectos."},
         )
     if user.get("status") != "active":
+        logger.warning("❌ [Auth Login] Cuenta inactiva/deshabilitada para: '%s'", identifier)
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail={"code": "ACCOUNT_DISABLED", "message": "La cuenta esta deshabilitada."},
         )
+    logger.info("✅ [Auth Login] Login Firestore exitoso para ID='%s'", user.get("id"))
     return await _issue_session(user)
 
 
@@ -290,9 +321,15 @@ async def reset_password(body: ResetPasswordRequest) -> MessageResponse:
 
 @router.get("/me", response_model=UserInfo, status_code=status.HTTP_200_OK)
 async def me(current_user: CurrentUser = Depends(get_current_user)) -> UserInfo:
+    logger.info("👤 [Auth /me] Perfil solicitado: sub='%s', email='%s'", current_user.sub, current_user.email)
+    if _local_dev_auth_is_enabled() and current_user.sub == "local-dev-admin":
+        logger.info("✅ [Auth /me] Devolviendo perfil local dev admin")
+        return _local_current_user_info(current_user)
+
     try:
         user = await users_repo.get(current_user.sub)
     except DefaultCredentialsError as exc:
+        logger.warning("⚠️ [Auth /me] Firestore DefaultCredentialsError en /me: %s", exc)
         if _local_dev_auth_is_enabled() and current_user.sub == "local-dev-admin":
             return _local_current_user_info(current_user)
         raise HTTPException(
@@ -302,7 +339,19 @@ async def me(current_user: CurrentUser = Depends(get_current_user)) -> UserInfo:
                 "message": "Firestore credentials are missing.",
             },
         ) from exc
+    except Exception as exc:
+        logger.error("❌ [Auth /me] Error inesperado consultando Firestore: %s", exc, exc_info=True)
+        if _local_dev_auth_is_enabled() and current_user.sub == "local-dev-admin":
+            return _local_current_user_info(current_user)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"code": "DATABASE_ERROR", "message": f"Error consultando usuario: {str(exc)}"},
+        ) from exc
+
     if not user:
+        if _local_dev_auth_is_enabled():
+            return _local_current_user_info(current_user)
+        logger.warning("❌ [Auth /me] Usuario no encontrado en Firestore para sub='%s'", current_user.sub)
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")
     return UserInfo(**public_user(user))
 

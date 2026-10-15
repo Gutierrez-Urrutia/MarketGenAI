@@ -4,11 +4,73 @@
 @tailwind components;
 @tailwind utilities;
 
+/* En oscuro, los enlaces y textos de marca usan un tono más claro: el 600 de la escala es para fondos. */
+html.dark .text-indigo-500,
+html.dark .text-indigo-600,
+html.dark .text-indigo-700,
+html.dark .text-teal-600,
+html.dark .text-teal-700 {
+  color: rgb(var(--brand-300));
+}
+html.dark .hover\:text-indigo-700:hover,
+html.dark .hover\:text-indigo-800:hover { color: rgb(var(--brand-200)); }
+
+/* Pantalla de acceso en el tema oscuro (usa clases neutral-* pensadas para fondo claro) */
+html.dark .auth-screen { color: rgb(var(--n-100)); }
+html.dark .auth-card { background: rgb(var(--surface-card)); border-color: rgb(var(--n-700) / 0.8); }
+html.dark .auth-card :is(.text-neutral-900, .text-neutral-800) { color: rgb(var(--n-50)); }
+html.dark .auth-card :is(.text-neutral-700, .text-neutral-600, .text-neutral-500) { color: rgb(var(--n-300)); }
+html.dark .auth-card input:not([type="checkbox"]) { background: rgb(var(--n-900)); border-color: rgb(var(--n-600)); color: rgb(var(--n-50)); }
+html.dark .auth-card :is(.bg-neutral-100, .hover\:bg-neutral-100:hover) { background: rgb(var(--n-800)); }
+html.dark .auth-card :is(.border-neutral-300, .border-neutral-200, .bg-neutral-200) { border-color: rgb(var(--n-700)); }
+html.dark .auth-card button.bg-\[\#fbfaf7\] { background: rgb(var(--n-800)); color: rgb(var(--n-50)); border-color: rgb(var(--n-600)); }
+
 @layer base {
-  html { font-family: 'Inter', system-ui, sans-serif; }
-  body { @apply bg-slate-50 text-slate-900 antialiased; }
-  html.dark body { @apply bg-slate-950 text-slate-50; }
+  /* un punto más grande que el 16px del navegador: la interfaz usa mucho text-xs/text-sm */
+  html { font-family: 'Inter', system-ui, sans-serif; font-size: 106.25%; -webkit-text-size-adjust: 100%; }
+  body {
+    @apply bg-page text-slate-900 antialiased;
+    background-image:
+      radial-gradient(60rem 36rem at 0% -10%, rgb(var(--glow) / var(--glow-alpha)), transparent 60%),
+      radial-gradient(50rem 30rem at 100% 110%, rgb(var(--glow) / calc(var(--glow-alpha) * 0.6)), transparent 60%);
+    background-attachment: fixed;
+    font-feature-settings: "cv11", "ss01";
+  }
+  html.dark body { @apply bg-page text-slate-50; }
   * { box-sizing: border-box; }
+
+  ::selection { background: rgb(var(--accent-600) / 0.22); }
+
+  /* foco visible con el acento de la marca, para teclado y lectores */
+  :focus-visible {
+    outline: 2px solid rgb(var(--accent-600) / 0.9);
+    outline-offset: 2px;
+    border-radius: 6px;
+  }
+  input:focus-visible, textarea:focus-visible, select:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 3px rgb(var(--accent-600) / 0.25);
+  }
+
+  /* barras de desplazamiento discretas */
+  * { scrollbar-width: thin; scrollbar-color: rgb(var(--n-400) / 0.5) transparent; }
+  *::-webkit-scrollbar { width: 10px; height: 10px; }
+  *::-webkit-scrollbar-thumb {
+    background: rgb(var(--n-400) / 0.45);
+    border-radius: 999px;
+    border: 3px solid transparent;
+    background-clip: content-box;
+  }
+  *::-webkit-scrollbar-thumb:hover { background: rgb(var(--n-500) / 0.6); background-clip: content-box; }
+
+  h1, h2, h3 { letter-spacing: -0.01em; }
+
+  /* respuesta táctil sutil en botones */
+  button:not(:disabled):not([role="radio"]):active { transform: translateY(0.5px) scale(0.985); }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+  }
 
   /* Smooth theme transition */
   html,
@@ -69,8 +131,8 @@
 }
 
 .campaign-wizard-step.active {
-  background: #EEF2FF;
-  color: #6366F1;
+  background: rgb(var(--brand-50));
+  color: rgb(var(--brand-600));
   font-weight: 600;
 }
 
@@ -93,7 +155,7 @@
 }
 
 .campaign-flow-bar {
-  background: linear-gradient(135deg, #6366F1, #4F46E5);
+  background: linear-gradient(135deg, rgb(var(--brand-600)), rgb(var(--brand-700)));
   padding: 10px 20px;
   margin-bottom: 16px;
   border-radius: 10px;
@@ -155,7 +217,7 @@
 
 .campaign-flow-step.active .campaign-flow-step-num {
   background: white;
-  color: #6366F1;
+  color: rgb(var(--brand-600));
 }
 
 .campaign-flow-step.done .campaign-flow-step-num {
@@ -179,9 +241,9 @@
 }
 
 .flow-step-banner {
-  background: #EEF2FF;
-  border: 1px solid #C7D2FE;
-  border-left: 4px solid #6366F1;
+  background: rgb(var(--brand-50));
+  border: 1px solid rgb(var(--brand-200));
+  border-left: 4px solid rgb(var(--brand-600));
   border-radius: 8px;
   padding: 12px 16px;
   margin-bottom: 20px;
@@ -190,7 +252,7 @@
   justify-content: space-between;
   gap: 12px;
   font-size: 0.9em;
-  color: #3730A3;
+  color: rgb(var(--brand-800));
 }
 
 .flow-step-banner.success {
@@ -201,7 +263,7 @@
 }
 
 .flow-step-banner button {
-  background: #6366F1;
+  background: rgb(var(--brand-600));
   color: white;
   border: none;
   padding: 6px 14px;
@@ -579,7 +641,7 @@
 }
 
 .proposal-export-pdf {
-  color: #111827;
+  color: var(--proposal-text);
   font-size: 13px;
   line-height: 1.56;
 }
@@ -591,6 +653,65 @@
   box-shadow: none;
   margin-top: 0;
   padding: 26px 38px;
+}
+
+/* In the PDF the page itself is the paper: no card border, radius or bottom
+   padding (they spilled onto an extra, almost empty page). */
+.proposal-export-pdf .proposal-paper,
+.proposal-export-pdf.proposal-preview-document .proposal-paper {
+  border: 0;
+  border-radius: 0;
+  padding-bottom: 0;
+}
+
+.proposal-export-pdf .proposal-paper > :last-child {
+  margin-bottom: 0;
+}
+
+/* Tailwind's preflight strips list markers; the document needs them
+   (e.g. numbered Next Steps). */
+.proposal-preview-document ol {
+  list-style: decimal;
+}
+
+.proposal-preview-document ul {
+  list-style: disc;
+}
+
+/* PDF: list markers are real text (see materializeListMarkers), at the text's
+   size and on its baseline instead of html2canvas' raised native markers. */
+.proposal-export-pdf .proposal-export-list {
+  list-style: none;
+  padding-left: 0;
+}
+
+.proposal-export-pdf .proposal-export-list > li {
+  padding-left: 1.8em;
+  position: relative;
+}
+
+.proposal-export-pdf .proposal-list-marker {
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  left: 0;
+  line-height: inherit;
+  position: absolute;
+  top: 0;
+}
+
+/* PDF: a section title and its first block move to the next page together. */
+.proposal-export-pdf .proposal-keep-with-next {
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+
+.proposal-export-pdf .proposal-split-head {
+  margin-bottom: 0;
+}
+
+.proposal-export-pdf .proposal-split-tail {
+  margin-top: 0;
 }
 
 .proposal-export-pdf .proposal-paper section {
@@ -664,18 +785,25 @@
   height: 1px;
 }
 
-/* Corporate proposal document: print-first navy, neutral gray, and restrained brand indigo. */
+/* Corporate proposal document. Colors come from src/config/brand.js
+   (applied as --brand-* variables on <html> by applyBrandCssVariables). */
 .proposal-preview-document {
-  --proposal-navy: #1a2b4a;
-  --proposal-navy-deep: #111c30;
-  --proposal-brand: #6366f1;
-  --proposal-brand-text: #4f46e5;
-  --proposal-brand-soft: #eef2ff;
-  --proposal-text: #1f2937;
-  --proposal-muted: #64748b;
-  --proposal-border: #d8dee8;
-  --proposal-surface: #f6f8fb;
+  /* "navy" = title color (primary); "brand" = primary fills; accent = lines only. */
+  --proposal-navy: var(--brand-primary);
+  --proposal-navy-deep: var(--brand-primary-deep);
+  --proposal-brand: var(--brand-primary);
+  --proposal-accent: var(--brand-accent);
+  --proposal-on-brand: var(--brand-on-primary);
+  --proposal-brand-text: var(--brand-primary);
+  --proposal-brand-soft: var(--brand-primary-soft);
+  --proposal-brand-tint: var(--brand-primary-tint);
+  --proposal-brand-line: var(--brand-primary-line);
+  --proposal-text: var(--brand-text);
+  --proposal-muted: var(--brand-muted);
+  --proposal-border: var(--brand-border);
+  --proposal-surface: var(--brand-surface);
   background: #ffffff;
+  font-family: var(--brand-font);
   color: var(--proposal-text);
 }
 
@@ -690,23 +818,82 @@
 .proposal-preview-document .proposal-cover,
 .theme-dark .proposal-preview-document:not(.proposal-export-pdf) .proposal-cover {
   border-bottom: 1px solid var(--proposal-border);
-  padding-top: 28px;
+  padding-top: 0;
   position: relative;
 }
 
-.proposal-preview-document .proposal-cover::before {
+/* Primary-color band at the top of the cover; the (white) logo sits inside it. */
+.proposal-preview-document .proposal-logo-band {
+  align-items: center;
   background: var(--proposal-brand);
-  content: "";
-  height: 5px;
-  left: 0;
-  position: absolute;
-  right: 0;
-  top: 0;
+  border-bottom: 4px solid var(--proposal-accent);
+  border-radius: 6px 6px 0 0;
+  display: flex;
+  margin: 0 0 24px;
+  min-height: 80px;
+  padding: 12px 20px;
+}
+
+.proposal-preview-document .proposal-logo-name {
+  color: var(--proposal-on-brand);
+  display: none;
+  font-size: 20px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+}
+
+/* Logo failed to load: show the brand name in the band instead. */
+.proposal-preview-document .proposal-logo-band.logo-missing .proposal-logo-name {
+  display: inline;
 }
 
 .proposal-preview-document .proposal-eyebrow,
 .theme-dark .proposal-preview-document:not(.proposal-export-pdf) .proposal-eyebrow {
   color: var(--proposal-brand-text);
+}
+
+.proposal-preview-document .proposal-logo {
+  display: block;
+  height: 56px;
+  margin: 0;
+  max-height: 56px;
+  max-width: 200px;
+  object-fit: contain;
+  object-position: left center;
+}
+
+.proposal-preview-document .proposal-client-details {
+  color: var(--proposal-navy);
+  font-size: 14px;
+  font-weight: 600;
+  margin: 8px 0 0;
+}
+
+.proposal-preview-document .proposal-intro {
+  margin-top: 12px;
+}
+
+.proposal-preview-document .proposal-intro p {
+  color: var(--proposal-muted);
+  margin-bottom: 6px;
+}
+
+.proposal-preview-document .proposal-adjustments {
+  margin: 12px 0 0 auto;
+  max-width: 320px;
+}
+
+.proposal-preview-document .proposal-adjustments div {
+  border-bottom: 1px solid var(--proposal-border);
+  color: var(--proposal-muted);
+  display: flex;
+  font-size: 13px;
+  justify-content: space-between;
+  padding: 6px 0;
+}
+
+.proposal-preview-document .proposal-adjustments strong {
+  color: var(--proposal-navy-deep);
 }
 
 .proposal-preview-document h1,
@@ -762,7 +949,7 @@
 
 .proposal-preview-document h2,
 .theme-dark .proposal-preview-document:not(.proposal-export-pdf) h2 {
-  border-bottom: 2px solid var(--proposal-brand);
+  border-bottom: 2px solid var(--proposal-accent);
   color: var(--proposal-navy);
   font-size: 21px;
   letter-spacing: -0.01em;
@@ -813,7 +1000,7 @@
 .theme-dark .proposal-preview-document:not(.proposal-export-pdf) th {
   background: var(--proposal-brand-soft);
   border-color: var(--proposal-border);
-  border-top: 2px solid var(--proposal-brand);
+  border-top: 2px solid var(--proposal-accent);
   color: var(--proposal-navy-deep);
   padding: 14px;
 }
@@ -832,8 +1019,8 @@
 .proposal-preview-document .proposal-total-card,
 .theme-dark .proposal-preview-document:not(.proposal-export-pdf) .proposal-total {
   background: var(--proposal-brand-soft);
-  border: 1px solid #c7d2fe;
-  border-left: 4px solid var(--proposal-brand);
+  border: 1px solid var(--proposal-brand-line);
+  border-left: 4px solid var(--proposal-accent);
   border-radius: 6px;
   color: var(--proposal-navy-deep);
 }
@@ -1073,7 +1260,7 @@
 .proposal-preview-document h2,
 .theme-dark .proposal-preview-document:not(.proposal-export-pdf) h2,
 .proposal-export-pdf .proposal-paper h2 {
-  border-bottom: 2px solid #6366F1;
+  border-bottom: 2px solid var(--proposal-accent);
   margin: 2.2em 0 0.8em;
   padding-bottom: 6px;
 }
@@ -1099,11 +1286,11 @@
 
 .proposal-preview-document .proposal-detail-card,
 .proposal-preview-document .proposal-insight-card {
-  background: #F8F8FF;
+  background: var(--proposal-brand-tint);
   border: 0;
-  border-left: 4px solid #6366F1;
+  border-left: 4px solid var(--proposal-accent);
   border-radius: 6px;
-  color: #334155;
+  color: var(--proposal-text);
   margin-bottom: 14px;
   padding: 12px 16px;
   break-inside: avoid;
@@ -1111,7 +1298,7 @@
 }
 
 .proposal-preview-document .proposal-detail-card strong {
-  color: #111827;
+  color: var(--proposal-navy-deep);
   display: block;
   font-weight: 800;
   margin-bottom: 5px;
@@ -1124,21 +1311,21 @@
 
 .proposal-preview-document th,
 .theme-dark .proposal-preview-document:not(.proposal-export-pdf) th {
-  background: #6366F1;
-  border-color: #6366F1;
-  color: #ffffff;
+  background: var(--proposal-brand);
+  border-color: var(--proposal-brand);
+  color: var(--proposal-on-brand);
 }
 
 .proposal-preview-document tbody tr:nth-child(even) td {
-  background: #F5F5FF;
+  background: var(--proposal-brand-tint);
 }
 
 .proposal-preview-document .proposal-total-card,
 .theme-dark .proposal-preview-document:not(.proposal-export-pdf) .proposal-total-card {
-  background: #6366F1;
+  background: var(--proposal-brand);
   border: 0;
   border-radius: 8px;
-  color: #ffffff;
+  color: var(--proposal-on-brand);
   padding: 16px;
 }
 
@@ -1146,7 +1333,7 @@
 .proposal-preview-document .proposal-total-card strong,
 .theme-dark .proposal-preview-document:not(.proposal-export-pdf) .proposal-total-card span,
 .theme-dark .proposal-preview-document:not(.proposal-export-pdf) .proposal-total-card strong {
-  color: #ffffff;
+  color: var(--proposal-on-brand);
 }
 
 .proposal-preview-document .proposal-total-card strong {
@@ -1155,10 +1342,10 @@
 }
 
 .proposal-preview-document .proposal-validity-note {
-  background: #F8F8FF;
-  border-left: 4px solid #6366F1;
+  background: var(--proposal-brand-tint);
+  border-left: 4px solid var(--proposal-accent);
   border-radius: 6px;
-  color: #475569;
+  color: var(--proposal-muted);
   font-size: 12px;
   margin: 14px 0 0;
   padding: 10px 14px;
@@ -1178,7 +1365,7 @@
 
 .proposal-preview-document .proposal-signature-line,
 .theme-dark .proposal-preview-document:not(.proposal-export-pdf) .proposal-signature-line {
-  border-bottom: 1px solid #333333;
+  border-bottom: 1px solid var(--proposal-text);
   min-height: 40px;
 }
 
@@ -1225,47 +1412,51 @@
 ::-webkit-scrollbar-thumb { @apply bg-slate-300 rounded-full; }
 ::-webkit-scrollbar-thumb:hover { @apply bg-slate-400; }
 
+/* Tema oscuro global: antes usaba los slate de Tailwind en código duro; ahora toma los tokens del tema. */
 .theme-dark body {
-  background: #0f172a;
+  background-color: rgb(var(--surface-page));
 }
 
 .theme-dark .app-shell,
-.theme-dark main,
+.theme-dark main {
+  background-color: transparent !important;
+}
+
 .theme-dark .bg-gray-50,
 .theme-dark .bg-slate-50 {
-  background-color: #0f172a !important;
+  background-color: rgb(var(--n-900)) !important;
 }
 
 .theme-dark .bg-white {
-  background-color: #1e293b !important;
+  background-color: rgb(var(--surface-card)) !important;
 }
 
 .theme-dark .text-gray-900,
 .theme-dark .text-slate-900,
 .theme-dark .text-gray-800,
 .theme-dark .text-slate-800 {
-  color: #f8fafc !important;
+  color: rgb(var(--n-50)) !important;
 }
 
 .theme-dark .text-gray-700,
 .theme-dark .text-slate-700,
 .theme-dark .text-gray-600,
 .theme-dark .text-slate-600 {
-  color: #cbd5e1 !important;
+  color: rgb(var(--n-300)) !important;
 }
 
 .theme-dark .text-gray-500,
 .theme-dark .text-slate-500,
 .theme-dark .text-gray-400,
 .theme-dark .text-slate-400 {
-  color: #94a3b8 !important;
+  color: rgb(var(--n-400)) !important;
 }
 
 .theme-dark .border-gray-100,
 .theme-dark .border-gray-200,
 .theme-dark .border-slate-100,
 .theme-dark .border-slate-200 {
-  border-color: #334155 !important;
+  border-color: rgb(var(--n-700)) !important;
 }
 
 .theme-dark .shadow-sm,
@@ -1277,9 +1468,9 @@
 .theme-dark input,
 .theme-dark textarea,
 .theme-dark select {
-  background-color: #0f172a !important;
-  border-color: #334155 !important;
-  color: #f8fafc !important;
+  background-color: rgb(var(--n-950)) !important;
+  border-color: rgb(var(--n-700)) !important;
+  color: rgb(var(--n-50)) !important;
 }
 
 .spinner {
@@ -1310,12 +1501,12 @@
 .cs-metric-value, .op-metric-value {
   font-size: 2em;
   font-weight: 700;
-  color: #6366F1;
+  color: rgb(var(--brand-600));
   display: block;
 }
 
 .cs-testimonial {
-  border-left: 4px solid #6366F1;
+  border-left: 4px solid rgb(var(--brand-600));
   padding: 12px 16px;
   background: #F8F8FF;
   color: #1e293b;
@@ -1330,7 +1521,7 @@
 }
 
 .tpl-channel, .tpl-category, .tpl-tone {
-  background: #6366F1;
+  background: rgb(var(--brand-600));
   color: white;
   padding: 2px 10px;
   border-radius: 12px;
@@ -1354,7 +1545,7 @@
 }
 
 .op-cta {
-  background: #6366F1;
+  background: rgb(var(--brand-600));
   color: white;
   border-radius: 8px;
   padding: 20px;

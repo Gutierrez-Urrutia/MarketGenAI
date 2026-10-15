@@ -8,8 +8,19 @@ export const API_BASE_URL =
 const api = axios.create({
   baseURL: API_BASE_URL,
   headers: { 'Content-Type': 'application/json' },
-  timeout: 30000,
+  timeout: 0,
 })
+
+// The instance default is `timeout: 0` (no limit) because generative routes
+// must never be cut. These are opt-in, per-call limits for routes that must
+// not hang forever; see the request interceptor for the generative keywords.
+export const READ_TIMEOUT_MS = 30_000
+export const AUTH_REFRESH_TIMEOUT_MS = 30_000
+// POST /pipeline/runs runs the whole scan inside the request when Celery is
+// unavailable (up to RUN_TIME_BUDGET_SECONDS = 240 s on the backend). 360 s is
+// backend RUN_CONSIDERED_DEAD_AFTER_SECONDS: the client never gives up on a
+// scan the server still considers alive.
+export const SCAN_REQUEST_TIMEOUT_MS = 360_000
 
 const emitMarketgenEvent = (name) => {
   if (typeof window !== 'undefined') {
@@ -126,11 +137,19 @@ export async function refreshAuthSession() {
   }
 
   try {
-    const { data } = await axios.post(`${api.defaults.baseURL}/auth/refresh`, { refreshToken })
+    const { data } = await axios.post(
+      `${api.defaults.baseURL}/auth/refresh`,
+      { refreshToken },
+      { timeout: AUTH_REFRESH_TIMEOUT_MS },
+    )
     authTokenStore.setTokens(data)
     return authTokenStore.isAccessTokenValid()
-  } catch {
-    authTokenStore.clear()
+  } catch (error) {
+    // Only a real rejection of the refresh token ends the session. A timeout or
+    // network error (e.g. a saturated backend) says nothing about the token:
+    // keep it so the next request can retry instead of logging the user out.
+    const status = error?.response?.status
+    if (status === 400 || status === 401 || status === 403) authTokenStore.clear()
     return false
   }
 }
@@ -148,6 +167,25 @@ function ensureFreshSession() {
 }
 
 api.interceptors.request.use(async (config) => {
+  // Peticiones de generación o LLM: sin timeout para no perder tokens ni cortar peticiones
+  const generativeKeywords = [
+    'generate',
+    'chapters',
+    'content',
+    'assets',
+    'proposals',
+    'campaigns',
+    'books',
+    'assistant',
+    'chat',
+    'whitepaper',
+    'outreach',
+    'jobs'
+  ]
+  if (config.url && generativeKeywords.some((kw) => config.url.toLowerCase().includes(kw))) {
+    config.timeout = 0
+  }
+
   if (!authTokenStore.isAccessTokenValid() && authTokenStore.getRefreshToken()) {
     await ensureFreshSession()
   }
@@ -156,17 +194,37 @@ api.interceptors.request.use(async (config) => {
   if (token) {
     config.headers.Authorization = `Bearer ${token}`
   }
+  console.log(`📡 [API ->] ${config.method?.toUpperCase()} ${config.url}`, config.data || '')
+  config._startTime = Date.now()
   return config
 })
 
 api.interceptors.response.use(
-  (response) => response,
+  (response) => {
+    const duration = response.config._startTime ? `${Date.now() - response.config._startTime}ms` : ''
+    console.log(`✅ [API <-] ${response.status} ${response.config.method?.toUpperCase()} ${response.config.url} (${duration})`, response.data)
+    return response
+  },
   async (error) => {
+    const duration = error.config?._startTime ? `${Date.now() - error.config._startTime}ms` : ''
+    console.error(`❌ [API Error] ${error.config?.method?.toUpperCase()} ${error.config?.url} (${duration}) - Status: ${error.response?.status || 'TIMEOUT/NETWORK_ERR'}:`, error.response?.data || error.message)
     const status = error.response?.status
     const originalRequest = error.config
 
     if (status === 401 && originalRequest && !originalRequest._retry) {
       originalRequest._retry = true
+
+      // This request went out with a token that has since been replaced (a
+      // refresh started by another request finished while this one was in
+      // flight). Its 401 is stale: retry with the current token. Refreshing
+      // again would rotate the refresh token a second time for no reason.
+      const sentToken = String(originalRequest.headers?.Authorization || '').replace(/^Bearer\s+/i, '')
+      const currentToken = authTokenStore.getAccessToken()
+      if (sentToken && currentToken && sentToken !== currentToken) {
+        originalRequest.headers.Authorization = `Bearer ${currentToken}`
+        return api(originalRequest)
+      }
+
       const refreshed = await ensureFreshSession()
       const token = authTokenStore.getAccessToken()
       if (refreshed && token) {
@@ -255,6 +313,11 @@ export const jobsApi = {
   get: (id) => api.get(`/jobs/${id}`),
 }
 
+export const tasksApi = {
+  enqueuePilot: (data) => api.post('/tasks/pilot', data),
+  getStatus: (taskId) => api.get(`/tasks/${taskId}`),
+}
+
 export const proposalsApi = {
   list: (params) => api.get('/proposals', { params }),
   create: (data) => withMarketgenEvent(api.post('/proposals', data), 'marketgen:proposal-updated'),
@@ -262,11 +325,50 @@ export const proposalsApi = {
   update: (id, data) => withMarketgenEvent(api.put(`/proposals/${id}`, data), 'marketgen:proposal-updated'),
   delete: (id) => api.delete(`/proposals/${id}`),
   generate: (id, data) => withMarketgenEvent(api.post(`/proposals/${id}/generate`, data), 'marketgen:proposal-updated'),
+  exportFile: (id, { format = 'pdf', content, issuedBy } = {}) => api.post(`/proposals/${id}/export`, { format, content, issuedBy }, {
+    responseType: 'blob',
+    timeout: 60_000,
+  }),
   export: (id, fmt = 'pdf') => api.get(`/proposals/${id}/download`, {
     params: { format: fmt },
     responseType: 'blob',
   }),
 }
+
+export const pollCampaignJob = async (jobId, campaignId) => {
+  const startTime = Date.now();
+  const maxTimeout = 180000;
+  const doneStatuses = ["completed", "succeeded", "success"];
+  const errorStatuses = ["failed", "error", "cancelled"];
+
+  while (Date.now() - startTime < maxTimeout) {
+    const jobRes = await api.get(`/jobs/${jobId}`, { suppressPermissionToast: true });
+    const job = jobRes.data;
+    const status = String(job?.status || "").toLowerCase();
+
+    if (doneStatuses.includes(status)) {
+      if (job?.result?.asset) {
+        return job.result;
+      }
+      if (job?.result?.assetId) {
+        try {
+          const assetRes = await api.get(`/assets/${job.result.assetId}`);
+          return { ...job.result, asset: assetRes.data };
+        } catch {
+          // ignore asset fetch error
+        }
+      }
+      return job?.result || { campaignId, jobId };
+    }
+
+    if (errorStatuses.includes(status)) {
+      throw new Error(job?.error || job?.message || "Campaign generation failed");
+    }
+
+    await new Promise((r) => setTimeout(r, 1500));
+  }
+  throw new Error("Campaign generation timed out");
+};
 
 export const campaignsApi = {
   list: (params) => api.get('/campaigns', { params }),
@@ -274,7 +376,15 @@ export const campaignsApi = {
   get: (id) => api.get(`/campaigns/${id}`),
   update: (id, data) => withMarketgenEvent(api.put(`/campaigns/${id}`, data), 'marketgen:campaign-updated'),
   delete: (id) => api.delete(`/campaigns/${id}`),
-  generate: (id) => withMarketgenEvent(api.post(`/campaigns/${id}/generate`, undefined, { timeout: 60000 }), 'marketgen:campaign-updated'),
+  generate: async (id, data) => {
+    const res = await withMarketgenEvent(api.post(`/campaigns/${id}/generate`, data, { timeout: 0 }), 'marketgen:campaign-updated');
+    if (res.data && (res.data.job_id || res.data.jobId)) {
+      const jobId = res.data.job_id || res.data.jobId;
+      const finalData = await pollCampaignJob(jobId, id);
+      return { ...res, data: finalData };
+    }
+    return res;
+  },
 }
 
 export const opportunitiesApi = {
@@ -283,6 +393,18 @@ export const opportunitiesApi = {
   get: (id) => api.get(`/opportunities/${id}`),
   update: (id, data) => withMarketgenEvent(api.put(`/opportunities/${id}`, data), 'marketgen:opportunity-updated'),
   delete: (id) => api.delete(`/opportunities/${id}`),
+}
+
+export const knowledgeApi = {
+  list: () => api.get('/knowledge/documents'),
+  upload: (files, { service, client } = {}) => {
+    const fd = new FormData()
+    files.forEach((f) => fd.append('files', f))
+    if (service) fd.append('service', service)
+    if (client) fd.append('client', client)
+    return api.post('/knowledge/documents', fd, { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 120_000 })
+  },
+  remove: (id) => api.delete(`/knowledge/documents/${id}`),
 }
 
 export const customersApi = {
@@ -323,6 +445,14 @@ export const settingsApi = {
   put: (data) => api.put('/settings', data),
 }
 
+export const crmApi = {
+  status: () => api.get('/settings/crm/status'),
+  testConnection: (data) => api.post('/settings/crm/test-connection', data),
+  connect: (provider, data) => api.post(`/settings/crm/${provider}/connect`, data),
+  disconnect: (provider) => api.delete(`/settings/crm/${provider}`),
+  setActiveProvider: (activeProvider) => api.put('/settings/crm/active-provider', { activeProvider }),
+}
+
 export const socialApi = {
   status: () => api.get('/settings/social/status'),
   connectFacebook: () => api.post('/settings/social/facebook/connect'),
@@ -350,6 +480,26 @@ export const analysisApi = {
   seo: (data) => api.post('/analysis/seo', data),
   plagiarism: (data) => api.post('/analysis/plagiarism', data),
   aiDetection: (data) => api.post('/analysis/ai-detection', data),
+}
+
+export const pipelineApi = {
+  getConfig: () => api.get('/pipeline/config'),
+  updateConfig: (data) => api.put('/pipeline/config', data),
+  updateKeywords: (data) => api.put('/pipeline/config/keywords', data),
+  createSource: (data) => api.post('/pipeline/config/sources', data),
+  updateSource: (id, data) => api.put(`/pipeline/config/sources/${id}`, data),
+  deleteSource: (id) => api.delete(`/pipeline/config/sources/${id}`),
+  testSource: (id) => api.post(`/pipeline/config/sources/${id}/test`),
+  // Fase 2 — Agente 1, siempre disparado a mano (ver job_scout_service.py)
+  runScan: (data) => api.post('/pipeline/runs', data, { timeout: SCAN_REQUEST_TIMEOUT_MS }),
+  listRuns: (params) => api.get('/pipeline/runs', { params, timeout: READ_TIMEOUT_MS }),
+  getRun: (id) => api.get(`/pipeline/runs/${id}`, { timeout: READ_TIMEOUT_MS }),
+  getActiveRun: () => api.get('/pipeline/runs/active', { timeout: READ_TIMEOUT_MS }),
+}
+
+export const leadsApi = {
+  list: (params) => api.get('/leads', { params, timeout: READ_TIMEOUT_MS }),
+  get: (id) => api.get(`/leads/${id}`, { timeout: READ_TIMEOUT_MS }),
 }
 
 export const publishingApi = {

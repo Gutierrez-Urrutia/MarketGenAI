@@ -126,6 +126,70 @@ async def test_create_campaign_accepts_email_outreach(client):
 
 
 @pytest.mark.asyncio
+async def test_generate_campaign_content_enqueues_celery_task(client):
+    campaign = fake_campaign({"status": "active", "channels": ["linkedin"]})
+    asset = {
+        "id": "asset-001",
+        "type": "campaign_content",
+        "campaignId": campaign["id"],
+        "userId": FAKE_USER_SUB,
+        "status": "generating",
+        "title": "AI Campaign Content - Launch Campaign",
+        "createdAt": "2024-01-01T00:00:00Z",
+        "updatedAt": "2024-01-01T00:00:00Z",
+    }
+    job = {"id": "job-001"}
+
+    with (
+        patch("app.routers.campaigns.campaigns_repo.get_or_404", new_callable=AsyncMock, return_value=campaign),
+        patch("app.routers.campaigns.assets_repo.create", new_callable=AsyncMock, return_value=asset),
+        patch("app.routers.campaigns.jobs_repo.create_job", new_callable=AsyncMock, return_value=job),
+        patch("app.routers.campaigns.task_generate_campaign_content.delay") as delay_mock,
+    ):
+        response = await client.post(f"{API}/campaign-001/generate")
+
+    assert response.status_code == 202
+    assert response.json()["job_id"] == "job-001"
+    assert response.json()["campaign_id"] == "campaign-001"
+    assert response.json()["asset_id"] == "asset-001"
+    delay_mock.assert_called_once_with("job-001", "campaign-001", "asset-001", FAKE_USER_SUB)
+
+
+@pytest.mark.asyncio
+async def test_generate_campaign_content_falls_back_when_celery_fails(client):
+    campaign = fake_campaign({"status": "active", "channels": ["linkedin"]})
+    asset = {
+        "id": "asset-001",
+        "type": "campaign_content",
+        "campaignId": campaign["id"],
+        "userId": FAKE_USER_SUB,
+        "status": "generating",
+        "title": "AI Campaign Content - Launch Campaign",
+        "createdAt": "2024-01-01T00:00:00Z",
+        "updatedAt": "2024-01-01T00:00:00Z",
+    }
+    job = {"id": "job-001"}
+    sync_result = {
+        "campaignId": "campaign-001",
+        "jobId": "job-001",
+        "asset": {**asset, "status": "ready"},
+    }
+
+    with (
+        patch("app.routers.campaigns.campaigns_repo.get_or_404", new_callable=AsyncMock, return_value=campaign),
+        patch("app.routers.campaigns.assets_repo.create", new_callable=AsyncMock, return_value=asset),
+        patch("app.routers.campaigns.jobs_repo.create_job", new_callable=AsyncMock, return_value=job),
+        patch("app.routers.campaigns.task_generate_campaign_content.delay", side_effect=ConnectionError("Redis down")),
+        patch("app.routers.campaigns.generate_campaign_content_now", new_callable=AsyncMock, return_value=sync_result) as sync_mock,
+    ):
+        response = await client.post(f"{API}/campaign-001/generate")
+
+    assert response.status_code == 201
+    assert response.json()["asset"]["status"] == "ready"
+    sync_mock.assert_awaited_once_with("job-001", "campaign-001", "asset-001", FAKE_USER_SUB)
+
+
+@pytest.mark.asyncio
 async def test_generate_campaign_content_creates_owned_asset_and_job(client):
     campaign = fake_campaign({"status": "active", "channels": ["linkedin"]})
     asset = {
@@ -153,7 +217,7 @@ async def test_generate_campaign_content_creates_owned_asset_and_job(client):
             return_value=asset,
         ) as create_asset,
         patch(
-            "app.routers.campaigns.assets_repo.update",
+            "app.workers.tasks.campaign_tasks.assets_repo.update",
             new_callable=AsyncMock,
             return_value=ready_asset,
         ) as update_asset,
@@ -162,16 +226,16 @@ async def test_generate_campaign_content_creates_owned_asset_and_job(client):
             new_callable=AsyncMock,
             return_value=job,
         ),
-        patch("app.routers.campaigns.jobs_repo.update_progress", new_callable=AsyncMock),
-        patch("app.routers.campaigns.jobs_repo.complete_job", new_callable=AsyncMock) as complete_job,
-        patch("app.routers.campaigns.campaigns_repo.update", new_callable=AsyncMock),
+        patch("app.workers.tasks.campaign_tasks.jobs_repo.update_progress", new_callable=AsyncMock),
+        patch("app.workers.tasks.campaign_tasks.jobs_repo.complete_job", new_callable=AsyncMock) as complete_job,
+        patch("app.workers.tasks.campaign_tasks.campaigns_repo.update", new_callable=AsyncMock),
         patch(
-            "app.routers.campaigns.deepseek_service.generate_text",
+            "app.workers.tasks.campaign_tasks.deepseek_service.generate_text",
             new_callable=AsyncMock,
             return_value='{"posts":[{"channel":"linkedin","headline":"Launch","content":"Generated post","hashtags":["#AI"]}]}',
         ) as generate_content,
     ):
-        response = await client.post(f"{API}/campaign-001/generate")
+        response = await client.post(f"{API}/campaign-001/generate", json={"sync": True})
 
     assert response.status_code == 201
     assert response.json()["asset"]["status"] == "ready"
@@ -199,14 +263,14 @@ async def test_campaign_generation_retries_invalid_json_then_returns_structured_
     campaign = fake_campaign({"channels": ["linkedin"]})
     with (
         patch(
-            "app.routers.campaigns.deepseek_service.generate_text",
+            "app.workers.tasks.campaign_tasks.deepseek_service.generate_text",
             new_callable=AsyncMock,
             side_effect=[
                 "not json",
                 '```json\n{"posts":[{"channel":"linkedin","headline":"Launch","content":"Clean post","hashtags":["#AI"]}]}\n```',
             ],
         ) as generate_text,
-        patch("app.routers.campaigns.logger.exception") as log_exception,
+        patch("app.workers.tasks.campaign_tasks.logger.exception") as log_exception,
     ):
         result = await __import__(
             "app.routers.campaigns", fromlist=["_generate_campaign_content"]
@@ -229,11 +293,11 @@ async def test_campaign_generation_falls_back_to_plain_text_after_invalid_json()
     campaign = fake_campaign({"channels": ["linkedin", "substack"]})
     with (
         patch(
-            "app.routers.campaigns.deepseek_service.generate_text",
+            "app.workers.tasks.campaign_tasks.deepseek_service.generate_text",
             new_callable=AsyncMock,
             side_effect=["bad response", "Legacy **campaign** text"],
         ),
-        patch("app.routers.campaigns.logger.exception"),
+        patch("app.workers.tasks.campaign_tasks.logger.exception"),
     ):
         result = await __import__(
             "app.routers.campaigns", fromlist=["_generate_campaign_content"]
@@ -272,23 +336,26 @@ async def test_generate_campaign_content_logs_error_and_returns_generic_502(clie
             new_callable=AsyncMock,
             return_value=asset,
         ),
+        patch("app.workers.tasks.campaign_tasks.assets_repo.update", new_callable=AsyncMock),
         patch("app.routers.campaigns.assets_repo.update", new_callable=AsyncMock),
         patch(
             "app.routers.campaigns.jobs_repo.create_job",
             new_callable=AsyncMock,
             return_value=job,
         ),
-        patch("app.routers.campaigns.jobs_repo.update_progress", new_callable=AsyncMock),
+        patch("app.workers.tasks.campaign_tasks.jobs_repo.update_progress", new_callable=AsyncMock),
+        patch("app.workers.tasks.campaign_tasks.jobs_repo.fail_job", new_callable=AsyncMock),
         patch("app.routers.campaigns.jobs_repo.fail_job", new_callable=AsyncMock),
+        patch("app.workers.tasks.campaign_tasks.campaigns_repo.update", new_callable=AsyncMock),
         patch("app.routers.campaigns.campaigns_repo.update", new_callable=AsyncMock),
         patch(
-            "app.routers.campaigns.deepseek_service.generate_text",
+            "app.workers.tasks.campaign_tasks.deepseek_service.generate_text",
             new_callable=AsyncMock,
             side_effect=RuntimeError("secret provider failure"),
         ),
         patch("app.routers.campaigns.logger.exception") as log_exception,
     ):
-        response = await client.post(f"{API}/campaign-001/generate")
+        response = await client.post(f"{API}/campaign-001/generate", json={"sync": True})
 
     assert response.status_code == 502
     assert response.json() == {

@@ -334,3 +334,36 @@ async def test_infographic_appends_variation_instruction_and_passes_temperature(
     assert final_data["storagePath"] == "assets/asset-1.infographic.pdf"
     assert final_data["downloadUrl"] == "https://example.com/infographic.pdf"
     assert final_data["mimeType"] == "application/pdf"
+
+
+def test_html_to_flowables_supports_plain_text_and_markdown():
+    from app.rendering.html_flowables import html_to_flowables
+    styles = asset_tasks._whitepaper_styles()
+
+    raw_text = (
+        "Subtitulo de Seccion\n\n"
+        "Este es un parrafo normal con **texto en negrita** y *cursiva*.\n\n"
+        "- Elemento 1\n"
+        "- Elemento 2\n"
+        "- Elemento 3\n\n"
+        "Otro parrafo de conclusion."
+    )
+    flowables = html_to_flowables(raw_text, styles)
+    assert len(flowables) >= 4
+
+
+def test_build_whitepaper_pdf_renders_full_content_from_plain_text_chapters():
+    book = fake_book({"title": "Libro de Prueba", "description": "Descripcion"})
+    chapters = [
+        fake_chapter({
+            "title": "Capitulo 1",
+            "content": "Introduccion\n\nParrafo principal del capitulo con bastante contenido explicativo.\n\n- Punto 1\n- Punto 2",
+        }),
+        fake_chapter({
+            "title": "Capitulo 2",
+            "content": "Desarrollo\n\nSegundo capitulo con analisis profundo del caso de estudio.",
+        }),
+    ]
+    pdf_bytes = asset_tasks._build_whitepaper_pdf(book, chapters)
+    assert len(pdf_bytes) > 2000
+    assert pdf_bytes.startswith(b"%PDF")

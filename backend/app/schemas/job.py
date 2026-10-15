@@ -31,6 +31,9 @@ class JobOut(BaseModel):
 
 
 class JobAccepted(BaseModel):
-    job_id:  str    = ""
-    status:  str    = "pending"
-    message: str    = "Job enqueued successfully"
+    job_id:      str           = ""
+    status:      str           = "pending"
+    message:     str           = "Job enqueued successfully"
+    proposal_id: Optional[str] = None
+    campaign_id: Optional[str] = None
+    asset_id:    Optional[str] = None

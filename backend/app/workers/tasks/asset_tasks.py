@@ -43,7 +43,11 @@ from app.rendering.brand_styles import (
     BRAND_PRIMARY_INDIGO,
     content_base_styles,
 )
-from app.rendering.html_flowables import html_to_flowables, inline_markup
+from app.rendering.html_flowables import (
+    html_to_flowables,
+    inline_markup,
+    text_or_markdown_to_html,
+)
 from app.rendering.infographic import build_infographic_pdf
 
 logger = logging.getLogger(__name__)
@@ -51,26 +55,45 @@ logger = logging.getLogger(__name__)
 
 def _run(coro):
     """Run an async coroutine from a sync Celery task."""
-    return asyncio.get_event_loop().run_until_complete(coro)
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_closed():
+            raise RuntimeError
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+    return loop.run_until_complete(coro)
 
 
 _CHAPTER_HEADING_RE = re.compile(r"^(?:chapter|cap[ií]tulo|capitulo)\s*\d+", re.IGNORECASE)
 
 
 def _strip_duplicate_chapter_heading(content: str, title: str) -> str:
-    """Remove a leading h1/h2/h3 if the LLM already baked in its own
+    """Remove a leading h1/h2/h3 or markdown heading if the LLM already baked in its own
     'Chapter N: ...' or repeated the chapter title — avoids a duplicate
     heading on top of the one the PDF template adds explicitly."""
     if not content:
         return content
+
+    title_norm = (title or "").strip().lower()
+
+    # 1. Plain text / markdown check: if first line matches chapter title or 'Chapter N'
+    lines = content.lstrip().split("\n", 1)
+    if lines:
+        first_line = lines[0].strip()
+        first_line_clean = re.sub(r"^#{1,6}\s*", "", first_line).strip().lower()
+        if _CHAPTER_HEADING_RE.match(first_line_clean) or (title_norm and first_line_clean.startswith(title_norm)):
+            return lines[1].lstrip() if len(lines) > 1 else ""
+
+    # 2. HTML check
     soup = BeautifulSoup(content, "html.parser")
     first = next((el for el in soup.contents if getattr(el, "name", None)), None)
-    if first and first.name in ("h1", "h2", "h3"):
+    if first and first.name in ("h1", "h2", "h3", "p"):
         text = first.get_text(strip=True)
-        title_norm = (title or "").strip().lower()
         if _CHAPTER_HEADING_RE.match(text) or (title_norm and text.lower().startswith(title_norm)):
             first.decompose()
-    return str(soup)
+            return str(soup)
+    return content
 
 
 # ── Whitepaper PDF (ReportLab — no native system libraries required) ─────────
@@ -218,7 +241,7 @@ async def generate_one_pager_now(
     html_content = await deepseek_service.generate_text(
         prompt,
         system_prompt="You are an expert marketing copywriter specializing in concise, persuasive one-page sales collateral. Return clean HTML only.",
-        timeout=settings.llm_long_timeout_seconds,
+        timeout=None,
         **extra_kwargs,
     )
     html_content = book_ai_service._clean_fenced_text(html_content)
@@ -276,7 +299,10 @@ def _build_whitepaper_preview(book: Dict[str, Any], chapters: List[Dict[str, Any
 
     first_chapter = chapters[0] if chapters else None
     if first_chapter and first_chapter.get("content"):
-        soup = BeautifulSoup(first_chapter["content"], "html.parser")
+        raw_c = first_chapter["content"]
+        if "<p" not in raw_c and "<h" not in raw_c:
+            raw_c = text_or_markdown_to_html(raw_c)
+        soup = BeautifulSoup(raw_c, "html.parser")
         for p in soup.find_all("p")[:3]:
             parts.append(str(p))
 
@@ -446,7 +472,7 @@ async def generate_infographic_now(
     raw = await deepseek_service.generate_text(
         prompt,
         system_prompt="You are an expert data storyteller who converts book content into structured infographic data. Return strict JSON only, no markdown, no commentary.",
-        timeout=settings.llm_long_timeout_seconds,
+        timeout=None,
         **extra_kwargs,
     )
     infographic_data = book_ai_service._safe_json(raw)

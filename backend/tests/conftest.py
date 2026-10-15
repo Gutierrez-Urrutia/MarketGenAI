@@ -21,6 +21,18 @@ from httpx import AsyncClient, ASGITransport
 pytest_plugins = ["pytest_asyncio"]
 
 
+@pytest.fixture(autouse=True)
+def _reset_rate_limiter():
+    """The slowapi limiter is in-memory and keyed by client address, so every
+    test client shares one bucket: without this, tests that call a limited
+    endpoint (e.g. POST /pipeline/runs, 10/minute) start failing with 429
+    depending on how many earlier tests hit it."""
+    from app.core.rate_limit import limiter
+
+    limiter.reset()
+    yield
+
+
 # ── Fake user ─────────────────────────────────────────────────────────────────
 FAKE_USER_SUB   = "test-user-sub-123"
 FAKE_USER_EMAIL = "test@noondalton.com"

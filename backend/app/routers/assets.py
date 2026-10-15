@@ -13,9 +13,12 @@ Endpoints:
 """
 from __future__ import annotations
 
+import logging
+import mimetypes
+from pathlib import Path
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import RedirectResponse
+from fastapi.responses import FileResponse, RedirectResponse
 
 from app.dependencies.auth import CurrentUser, get_current_user
 from app.schemas.asset import (
@@ -31,7 +34,13 @@ from app.workers.tasks.asset_tasks import (
     generate_one_pager_now,
     generate_social_posts_now,
     generate_infographic_now,
+    task_generate_one_pager,
+    task_generate_whitepaper,
+    task_generate_social_posts,
+    task_generate_infographic,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["Assets"])
 
@@ -126,10 +135,38 @@ async def download_asset(
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found.")
     _assert_owner(asset, user)
-    if not asset.get("storagePath"):
+    storage_path = asset.get("storagePath")
+    if not storage_path:
         raise HTTPException(status_code=404, detail="File not available yet.")
-    url = await storage_service.get_signed_url(asset["storagePath"], expires_in_seconds=300)
+
+    local_path = (Path("generated_files") / storage_path).resolve()
+    base_dir = Path("generated_files").resolve()
+    if local_path.is_file() and str(local_path).startswith(str(base_dir)):
+        media_type, _ = mimetypes.guess_type(str(local_path))
+        filename = Path(storage_path).name
+        return FileResponse(
+            str(local_path),
+            media_type=media_type or "application/octet-stream",
+            filename=filename,
+        )
+
+    url = await storage_service.get_signed_url(storage_path, expires_in_seconds=300)
     return RedirectResponse(url=url)
+
+
+# ── Local Asset Serving ───────────────────────────────────────────────────────
+@router.get("/assets/local/{file_path:path}")
+async def get_local_asset(file_path: str):
+    base_dir = Path("generated_files").resolve()
+    target_path = (base_dir / file_path).resolve()
+    if not str(target_path).startswith(str(base_dir)) or not target_path.is_file():
+        raise HTTPException(status_code=404, detail="File not found.")
+    media_type, _ = mimetypes.guess_type(str(target_path))
+    return FileResponse(
+        str(target_path),
+        media_type=media_type or "application/octet-stream",
+        filename=target_path.name,
+    )
 
 
 # ── Generate one-pager ────────────────────────────────────────────────────────
@@ -142,12 +179,25 @@ async def generate_one_pager(
     book = await _get_book_for_user(book_id, user)
     asset = await _upsert_pending_asset(book_id, "one_pager", user, f"One-Pager — {book['title']}")
     job = await jobs_repo.create_job("one_pager_generation", user.sub, {"assetId": asset["id"]})
+    if getattr(body, "sync", False):
+        try:
+            await generate_one_pager_now(job["id"], asset["id"], book, body.model_dump())
+        except Exception as exc:
+            await assets_repo.update(asset["id"], {"status": "error"})
+            await jobs_repo.fail_job(job["id"], str(exc))
+            raise
+        return JobAccepted(job_id=job["id"])
+
     try:
-        await generate_one_pager_now(job["id"], asset["id"], book, body.model_dump())
+        task_generate_one_pager.delay(job["id"], asset["id"], book, body.model_dump())
     except Exception as exc:
-        await assets_repo.update(asset["id"], {"status": "error"})
-        await jobs_repo.fail_job(job["id"], str(exc))
-        raise
+        logger.warning("Celery dispatch failed: %s; falling back to inline execution for job %s", exc, job["id"])
+        try:
+            await generate_one_pager_now(job["id"], asset["id"], book, body.model_dump())
+        except Exception as exc2:
+            await assets_repo.update(asset["id"], {"status": "error"})
+            await jobs_repo.fail_job(job["id"], str(exc2))
+            raise
     return JobAccepted(job_id=job["id"])
 
 
@@ -164,12 +214,25 @@ async def generate_whitepaper(
         chapters = [c for c in chapters if c["id"] in body.chapterIds]
     asset = await _upsert_pending_asset(book_id, "whitepaper", user, f"Whitepaper — {book['title']}")
     job = await jobs_repo.create_job("whitepaper_generation", user.sub, {"assetId": asset["id"]})
+    if getattr(body, "sync", False):
+        try:
+            await generate_whitepaper_now(job["id"], asset["id"], book, chapters, body.model_dump())
+        except Exception as exc:
+            await assets_repo.update(asset["id"], {"status": "error"})
+            await jobs_repo.fail_job(job["id"], str(exc))
+            raise
+        return JobAccepted(job_id=job["id"])
+
     try:
-        await generate_whitepaper_now(job["id"], asset["id"], book, chapters, body.model_dump())
+        task_generate_whitepaper.delay(job["id"], asset["id"], book, chapters, body.model_dump())
     except Exception as exc:
-        await assets_repo.update(asset["id"], {"status": "error"})
-        await jobs_repo.fail_job(job["id"], str(exc))
-        raise
+        logger.warning("Celery dispatch failed: %s; falling back to inline execution for job %s", exc, job["id"])
+        try:
+            await generate_whitepaper_now(job["id"], asset["id"], book, chapters, body.model_dump())
+        except Exception as exc2:
+            await assets_repo.update(asset["id"], {"status": "error"})
+            await jobs_repo.fail_job(job["id"], str(exc2))
+            raise
     return JobAccepted(job_id=job["id"])
 
 
@@ -187,12 +250,25 @@ async def generate_social_posts(
         chapter = next((c for c in chapters if c["id"] == body.chapterId), None)
     asset = await _upsert_pending_asset(book_id, "social_post", user, f"Social Posts — {book['title']}")
     job = await jobs_repo.create_job("social_posts_generation", user.sub, {"assetId": asset["id"]})
+    if getattr(body, "sync", False):
+        try:
+            await generate_social_posts_now(job["id"], asset["id"], book, chapter, body.model_dump())
+        except Exception as exc:
+            await assets_repo.update(asset["id"], {"status": "error"})
+            await jobs_repo.fail_job(job["id"], str(exc))
+            raise
+        return JobAccepted(job_id=job["id"])
+
     try:
-        await generate_social_posts_now(job["id"], asset["id"], book, chapter, body.model_dump())
+        task_generate_social_posts.delay(job["id"], asset["id"], book, chapter, body.model_dump())
     except Exception as exc:
-        await assets_repo.update(asset["id"], {"status": "error"})
-        await jobs_repo.fail_job(job["id"], str(exc))
-        raise
+        logger.warning("Celery dispatch failed: %s; falling back to inline execution for job %s", exc, job["id"])
+        try:
+            await generate_social_posts_now(job["id"], asset["id"], book, chapter, body.model_dump())
+        except Exception as exc2:
+            await assets_repo.update(asset["id"], {"status": "error"})
+            await jobs_repo.fail_job(job["id"], str(exc2))
+            raise
     return JobAccepted(job_id=job["id"])
 
 
@@ -206,10 +282,23 @@ async def generate_infographic(
     book = await _get_book_for_user(book_id, user)
     asset = await _upsert_pending_asset(book_id, "infographic", user, f"Infografía — {book['title']}")
     job = await jobs_repo.create_job("infographic_generation", user.sub, {"assetId": asset["id"]})
+    if getattr(body, "sync", False):
+        try:
+            await generate_infographic_now(job["id"], asset["id"], book, body.model_dump())
+        except Exception as exc:
+            await assets_repo.update(asset["id"], {"status": "error"})
+            await jobs_repo.fail_job(job["id"], str(exc))
+            raise
+        return JobAccepted(job_id=job["id"])
+
     try:
-        await generate_infographic_now(job["id"], asset["id"], book, body.model_dump())
+        task_generate_infographic.delay(job["id"], asset["id"], book, body.model_dump())
     except Exception as exc:
-        await assets_repo.update(asset["id"], {"status": "error"})
-        await jobs_repo.fail_job(job["id"], str(exc))
-        raise
+        logger.warning("Celery dispatch failed: %s; falling back to inline execution for job %s", exc, job["id"])
+        try:
+            await generate_infographic_now(job["id"], asset["id"], book, body.model_dump())
+        except Exception as exc2:
+            await assets_repo.update(asset["id"], {"status": "error"})
+            await jobs_repo.fail_job(job["id"], str(exc2))
+            raise
     return JobAccepted(job_id=job["id"])

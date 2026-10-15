@@ -49,9 +49,12 @@ class Settings(BaseSettings):
 
     deepseek_api_key: str = ""
     deepseek_base_url: str = "https://api.deepseek.com"
-    llm_short_timeout_seconds: int = 20
-    llm_default_timeout_seconds: int = 45
-    llm_long_timeout_seconds: int = 90
+    deepseek_model: str = "deepseek-flash"
+    gemini_api_key: str = ""
+    gemini_default_model: str = "gemini-3.6-flash"
+    llm_short_timeout_seconds: int | None = None
+    llm_default_timeout_seconds: int | None = None
+    llm_long_timeout_seconds: int | None = None
 
     google_oauth_client_id: str = ""
     google_oauth_client_secret: str = ""
@@ -79,9 +82,17 @@ class Settings(BaseSettings):
     keycloak_client_id: str = "nd-backend"
     keycloak_client_secret: str = ""
 
+    hubspot_base_url: str = "https://api.hubapi.com"
+    salesforce_api_version: str = "v61.0"
+
     supabase_url: str = ""
     supabase_service_key: str = ""
     supabase_storage_bucket: str = "nd-assets"
+
+    # Fernet key encrypting pipeline secrets at rest (SMTP passwords, provider
+    # API keys) — see app/services/encryption_service.py. Deliberately not
+    # derived from app_secret_key: different blast radius and rotation needs.
+    pipeline_encryption_key: str = ""
 
     redis_url: str = "redis://localhost:6379/0"
     celery_broker_url: str = "redis://localhost:6379/0"

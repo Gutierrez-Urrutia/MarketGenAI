@@ -30,6 +30,7 @@ class GenerateOnePagerRequest(BaseModel):
     maxPages:    int = Field(2, ge=1, le=5)
     variationInstruction: Optional[str] = None
     temperature: Optional[float] = None
+    sync:        bool = False
 
 
 class GenerateWhitepaperRequest(BaseModel):
@@ -40,6 +41,7 @@ class GenerateWhitepaperRequest(BaseModel):
     forceRegenerate: bool = False
     variationInstruction: Optional[str] = None
     temperature: Optional[float] = None
+    sync:        bool = False
 
 
 class GenerateSocialPostsRequest(BaseModel):
@@ -50,6 +52,7 @@ class GenerateSocialPostsRequest(BaseModel):
     language:    str = "es"
     variationInstruction: Optional[str] = None
     temperature: Optional[float] = None
+    sync:        bool = False
 
 
 class GenerateInfographicRequest(BaseModel):
@@ -59,6 +62,7 @@ class GenerateInfographicRequest(BaseModel):
     language:    str = "es"
     variationInstruction: Optional[str] = None
     temperature: Optional[float] = None
+    sync:        bool = False
 
 
 class AssetOut(BaseModel):

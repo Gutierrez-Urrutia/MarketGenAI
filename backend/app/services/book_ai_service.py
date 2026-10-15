@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from typing import Any, Dict, List
 
 from app.config import settings
 from app.services import deepseek_service
+
+logger = logging.getLogger("marketgen.books.ai")
 
 STYLE_PROMPTS = {
     "professional": "Use a formal, authoritative, and polished tone.",
@@ -32,12 +35,26 @@ SOCIAL_LIMITS = {
 
 
 def _clean_fenced_text(text: str) -> str:
-    cleaned = re.sub(r"```(?:json|html)?\s*", "", text or "").strip()
+    text = (text or "").strip()
+    # Match markdown code fences first
+    fenced_match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", text)
+    if fenced_match:
+        return fenced_match.group(1).strip()
+    # Match outermost brackets or braces
+    json_match = re.search(r"(\[[\s\S]*\]|\{[\s\S]*\})", text)
+    if json_match:
+        return json_match.group(1).strip()
+    cleaned = re.sub(r"```(?:json|html)?\s*", "", text).strip()
     return cleaned.rstrip("`").strip()
 
 
 def _safe_json(text: str) -> Any:
-    return json.loads(_clean_fenced_text(text))
+    data = json.loads(_clean_fenced_text(text))
+    if isinstance(data, dict):
+        for key in ("chapters", "items", "data", "outline"):
+            if key in data and isinstance(data[key], list):
+                return data[key]
+    return data
 
 
 async def generate_chapters(
@@ -65,14 +82,18 @@ Example:
   {{"title": "Chapter Title", "description": "Chapter writing prompt..."}}
 ]
 """
+    logger.info(f"📚 [BookAI] Solicitando esquema de {chapter_count} capítulos para libro: '{title}' (idioma: {language})")
     raw = await deepseek_service.generate_text(
         prompt,
         system_prompt="You are an expert content strategist. Return strict JSON only.",
-        timeout=settings.llm_long_timeout_seconds,
+        timeout=None,
     )
+    logger.info(f"📚 [BookAI] Analizando respuesta JSON de capítulos ({len(raw)} chars)...")
     chapters = _safe_json(raw)
     if not isinstance(chapters, list):
+        logger.error(f"❌ [BookAI] El modelo no devolvió una lista JSON válida. Respuesta recibida: {raw[:200]}")
         raise ValueError("DeepSeek chapter response must be a JSON array.")
+    logger.info(f"✅ [BookAI] {len(chapters)} capítulos generados y formateados correctamente.")
     return chapters[:chapter_count]
 
 
@@ -114,7 +135,7 @@ Instructions:
     content = await deepseek_service.generate_text(
         prompt,
         system_prompt="You are an expert long-form content writer specializing in business and marketing books. Write rich, substantive content with depth and examples. Return clean HTML only.",
-        timeout=settings.llm_long_timeout_seconds,
+        timeout=None,
         **extra_kwargs,
     )
     return _clean_fenced_text(content)
@@ -134,7 +155,7 @@ Language: {language}. Every word in the refined content must be in this language
     content = await deepseek_service.generate_text(
         prompt,
         system_prompt="You refine long-form marketing content. Return clean HTML only.",
-        timeout=settings.llm_long_timeout_seconds,
+        timeout=None,
     )
     return _clean_fenced_text(content)
 
@@ -175,7 +196,7 @@ Output ONLY the post text. No labels, no quotes, no commentary.
         text = await deepseek_service.generate_text(
             prompt,
             system_prompt=f"You are an expert social media copywriter for {platform.upper()}. Return plain post text only, no labels, no quotes, no markdown.",
-            timeout=settings.llm_default_timeout_seconds,
+            timeout=None,
             **extra_kwargs,
         )
         text = _clean_fenced_text(text)

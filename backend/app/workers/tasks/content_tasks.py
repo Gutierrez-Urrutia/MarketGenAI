@@ -25,7 +25,14 @@ logger = logging.getLogger(__name__)
 
 def _run(coro):
     """Run an async coroutine from a sync Celery task."""
-    return asyncio.get_event_loop().run_until_complete(coro)
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_closed():
+            raise RuntimeError
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+    return loop.run_until_complete(coro)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -264,7 +271,7 @@ CONTENT:
 """,
                     system_prompt="You are a professional translator. Preserve HTML tags exactly and return only translated HTML.",
                     temperature=0.2,
-                    timeout=settings.llm_default_timeout_seconds,
+                    timeout=None,
                 ))
 
                 if save_as == "overwrite":

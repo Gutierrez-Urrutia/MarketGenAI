@@ -19,9 +19,12 @@ from app.routers import (
     customers,
     health,
     jobs,
+    knowledge,
+    leads,
     oauth,
     outreach,
     opportunities,
+    pipeline,
     platform,
     proposals,
     publishing,
@@ -29,6 +32,7 @@ from app.routers import (
     settings as settings_router,
     social,
     social_mock,
+    tasks,
     templates,
 )
 
@@ -43,6 +47,7 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
+    allow_origin_regex=r"https://.*\.vercel\.app",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -64,7 +69,10 @@ app.include_router(books.router, prefix="/api/v1")
 app.include_router(campaigns.router, prefix="/api/v1")
 app.include_router(content_types.router, prefix="/api/v1/content", tags=["content"])
 app.include_router(opportunities.router, prefix="/api/v1")
+app.include_router(pipeline.router, prefix="/api/v1")
+app.include_router(leads.router, prefix="/api/v1")
 app.include_router(customers.router, prefix="/api/v1")
+app.include_router(knowledge.router, prefix="/api/v1")
 app.include_router(templates.router, prefix="/api/v1")
 app.include_router(assets.router, prefix="/api/v1")
 app.include_router(jobs.router, prefix="/api/v1")
@@ -82,3 +90,4 @@ app.include_router(proposals.router, prefix="/api/v1")
 app.include_router(social.router, prefix="/api/v1")
 app.include_router(social_mock.router, prefix="/api/v1")
 app.include_router(assistant.router, prefix="/api/v1")
+app.include_router(tasks.router, prefix="/api/v1")
