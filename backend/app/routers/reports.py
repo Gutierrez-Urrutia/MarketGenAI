@@ -21,11 +21,24 @@ from app.rendering.brand_styles import (
     BRAND_SOFT_INDIGO_SURFACE,
     BRAND_TEXT,
 )
+from app.schemas.proposal import PROPOSAL_STATUS_VALUES, ProposalStatus, normalize_proposal_status
 from app.services.firestore_service import (
     books_repo, proposals_repo, customers_repo, opportunities_repo,
 )
 
 router = APIRouter(prefix="/reports", tags=["Reports"])
+
+UNKNOWN_PROPOSAL_STATUS = "desconocido"
+# Propuestas que ya salieron del borrador (se enviaron al cliente en algún momento).
+SENT_PROPOSAL_STATUSES = frozenset(PROPOSAL_STATUS_VALUES - {ProposalStatus.borrador.value})
+# El cliente respondió: está negociando o ya firmó.
+REPLIED_PROPOSAL_STATUSES = frozenset({ProposalStatus.en_negociacion.value, ProposalStatus.firmada.value})
+
+
+def _proposal_status_code(proposal: dict) -> str:
+    """Código de proposal_status para agrupar; valores no reconocidos → "desconocido"."""
+    code = normalize_proposal_status(proposal.get("proposal_status"))
+    return code if code in PROPOSAL_STATUS_VALUES else UNKNOWN_PROPOSAL_STATUS
 
 
 def _proposal_amount(proposal: dict) -> float:
@@ -196,14 +209,16 @@ async def reports_dashboard(user: CurrentUser = Depends(get_current_user)):
         customers_repo.count(filters=[("userId", "==", user.sub)]),
     )
     proposals = await proposals_repo.list(filters=[("userId", "==", user.sub)], limit=500)
-    accepted = len([p for p in proposals if p.get("status") in {"accepted", "won"}])
-    sent = len([p for p in proposals if p.get("status") in {"sent", "generated", "accepted", "won"}])
+    # Estado comercial (proposal_status), no el ciclo de generación (status).
+    codes = [_proposal_status_code(p) for p in proposals]
+    accepted = codes.count(ProposalStatus.firmada.value)
+    sent = len([c for c in codes if c in SENT_PROPOSAL_STATUSES])
     return {
         "detected": total_customers + total_proposals + total_books,
         "researched": total_customers,
         "contacted": sent,
-        "pendingReview": len([p for p in proposals if p.get("status", "draft") == "draft"]),
-        "replied": len([p for p in proposals if p.get("status") == "generated"]),
+        "pendingReview": codes.count(ProposalStatus.borrador.value),
+        "replied": len([c for c in codes if c in REPLIED_PROPOSAL_STATUSES]),
         "won": accepted,
         "totals": {
             "books": total_books,
@@ -242,7 +257,7 @@ async def reports_proposals(
     status_map = {}
 
     for proposal in proposals:
-        status = proposal.get("proposal_status") or "Generada"
+        status = _proposal_status_code(proposal)
         amount = _proposal_amount(proposal)
 
         if status not in status_map:
@@ -251,9 +266,10 @@ async def reports_proposals(
         status_map[status]["count"] += 1
         status_map[status]["totalValue"] += amount
 
+    order = [s.value for s in ProposalStatus] + [UNKNOWN_PROPOSAL_STATUS]
     return {
         "dimension": "proposal_status",
-        "data": list(status_map.values())[:limit],
+        "data": [status_map[s] for s in order if s in status_map][:limit],
         "timeSeries": [],
     }
 

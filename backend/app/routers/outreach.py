@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.config import settings
 from app.core.rate_limit import limiter
 from app.dependencies.auth import CurrentUser, get_current_user
+from app.schemas.proposal import ProposalStatus
 from app.services import deepseek_service
 from app.services.firestore_service import FirestoreRepo, proposals_repo
 
@@ -453,7 +454,8 @@ async def create_proposal_followups(
     negotiation_proposals = [
         proposal
         for proposal in proposals
-        if proposal.get("proposal_status") == "En Negociación"
+        # proposals_repo.list ya normaliza los valores viejos ("En Negociación").
+        if proposal.get("proposal_status") == ProposalStatus.en_negociacion.value
     ][: body.limit]
 
     existing_items = await _list_for_user(current_user.sub, {"pending"})
