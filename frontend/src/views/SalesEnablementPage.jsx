@@ -134,7 +134,7 @@ export function SalesEnablementPage() {
       <div className="grid grid-cols-1 gap-5 xl:grid-cols-[minmax(0,380px)_minmax(0,1fr)]">
         <Card className="p-5">
           <form onSubmit={generate} className="space-y-3">
-            <div role="radiogroup" aria-label={t("enablement.title")} className="grid grid-cols-3 gap-1 rounded-xl bg-slate-100 p-1">
+            <div role="radiogroup" aria-label={t("enablement.title")} className="grid grid-cols-3 gap-1 rounded-xl bg-slate-100 p-1 dark:bg-white/10">
               {TYPES.map((type) => (
                 <button
                   key={type}
@@ -142,7 +142,7 @@ export function SalesEnablementPage() {
                   role="radio"
                   aria-checked={form.type === type}
                   onClick={() => setForm((prev) => ({ ...prev, type }))}
-                  className={`rounded-lg px-2 py-1.5 text-xs font-medium transition-colors ${form.type === type ? "bg-white text-brand-700 shadow-sm dark:bg-brand-600 dark:text-white" : "text-slate-500 hover:text-slate-700"}`}
+                  className={`rounded-lg px-2 py-1.5 text-xs font-medium transition-colors ${form.type === type ? "bg-white text-brand-700 shadow-sm dark:bg-brand-600 dark:text-white" : "text-slate-500 hover:text-slate-700 dark:text-slate-300 dark:hover:text-white"}`}
                 >
                   {t(`enablement.types.${type}`)}
                 </button>
