@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 const { enablementApi, toast } = vi.hoisted(() => ({
-  enablementApi: { list: vi.fn(), generate: vi.fn(), update: vi.fn(), remove: vi.fn() },
+  enablementApi: { list: vi.fn(), generate: vi.fn(), update: vi.fn(), remove: vi.fn(), exportDocx: vi.fn() },
   toast: { error: vi.fn(), success: vi.fn() },
 }));
 
@@ -94,6 +94,22 @@ describe("SalesEnablementPage", () => {
 
     await waitFor(() => expect(enablementApi.remove).toHaveBeenCalledWith("d1"));
     await waitFor(() => expect(screen.queryByLabelText("enablement.edit")).toBeNull());
+  });
+
+  it("descarga el borrador en Word con el texto que se está editando", async () => {
+    enablementApi.list.mockResolvedValue({ data: [draft()] });
+    enablementApi.exportDocx.mockResolvedValue({ data: new Blob(["x"]) });
+    window.URL.createObjectURL = vi.fn(() => "blob:x");
+    window.URL.revokeObjectURL = vi.fn();
+    HTMLAnchorElement.prototype.click = vi.fn();
+    render(<SalesEnablementPage />);
+
+    fireEvent.click(await screen.findByText("Caso Banco Uno"));
+    fireEvent.change(await screen.findByLabelText("enablement.edit"), { target: { value: "texto sin guardar" } });
+    fireEvent.click(screen.getByRole("button", { name: "enablement.download" }));
+
+    await waitFor(() => expect(enablementApi.exportDocx).toHaveBeenCalledWith("d1", "texto sin guardar"));
+    await waitFor(() => expect(window.URL.createObjectURL).toHaveBeenCalled());
   });
 
   it("filtra la lista por tipo", async () => {

@@ -214,6 +214,7 @@ export function SalesEnablementPage() {
                 </div>
                 <div className="flex gap-2">
                   <Btn variant="secondary" small onClick={copy}>{t("enablement.copy")}</Btn>
+                  <Btn variant="secondary" small onClick={download}>{t("enablement.download")}</Btn>
                   <Btn variant="secondary" small onClick={() => remove(selected)}>{t("enablement.delete")}</Btn>
                 </div>
               </div>
