@@ -412,6 +412,7 @@ export const enablementApi = {
   generate: (data) => api.post('/sales-enablement/drafts/generate', data, { timeout: 180_000 }),
   update: (id, data) => api.put(`/sales-enablement/drafts/${id}`, data),
   remove: (id) => api.delete(`/sales-enablement/drafts/${id}`),
+  exportDocx: (id, content) => api.post(`/sales-enablement/drafts/${id}/export`, { content }, { responseType: 'blob', timeout: 60_000 }),
 }
 
 export const customersApi = {

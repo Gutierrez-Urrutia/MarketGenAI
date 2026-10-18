@@ -6,6 +6,7 @@ Endpoints:
   GET    /sales-enablement/drafts            — lista los borradores del usuario (?type=)
   GET    /sales-enablement/drafts/{id}       — un borrador
   PUT    /sales-enablement/drafts/{id}       — edita título o contenido
+  POST   /sales-enablement/drafts/{id}/export — descarga el borrador en Word (.docx), con el texto editado si se envía
   DELETE /sales-enablement/drafts/{id}       — elimina
 
 Todo se limita al usuario autenticado. El borrador se basa solo en su base de conocimiento.
@@ -14,7 +15,7 @@ Todo se limita al usuario autenticado. El borrador se basa solo en su base de co
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, Response, status
 
 from app.core.rate_limit import limiter
 from app.dependencies.auth import CurrentUser, get_current_user
@@ -123,6 +124,21 @@ async def update_draft(
     if not changes:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Nada que actualizar.")
     return await enablement_drafts_repo.update(draft_id, changes)
+
+
+@router.post("/drafts/{draft_id}/export")
+async def export_draft(
+    draft_id: str,
+    content: Optional[str] = Body(None, embed=True, max_length=20000),
+    user: CurrentUser = Depends(get_current_user),
+):
+    draft = await _get_draft_for_user(draft_id, user.sub)
+    data = enablement_service.build_docx(draft, content)
+    return Response(
+        content=data,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": 'attachment; filename="borrador-comercial.docx"'},
+    )
 
 
 @router.delete("/drafts/{draft_id}", status_code=status.HTTP_204_NO_CONTENT)

@@ -9,6 +9,7 @@ import { Loader2 } from "lucide-react";
 
 import { enablementApi, opportunitiesApi } from "@/api/axios";
 import { Btn, Card } from "@/components/dashboard/ui";
+import { downloadBlob, sanitizeDownloadName } from "@/features/proposals/proposalExport";
 import { useI18n } from "@/hooks/useI18n";
 
 const TYPES = ["case_study", "comparison", "objection"];
@@ -116,6 +117,15 @@ export function SalesEnablementPage() {
     try {
       await navigator.clipboard.writeText(editText);
       toast.success(t("enablement.copied"));
+    } catch {
+      toast.error(t("enablement.err"));
+    }
+  };
+
+  const download = async () => {
+    try {
+      const { data } = await enablementApi.exportDocx(selected.id, editText);
+      downloadBlob(data, `${sanitizeDownloadName(selected.title)}.docx`);
     } catch {
       toast.error(t("enablement.err"));
     }

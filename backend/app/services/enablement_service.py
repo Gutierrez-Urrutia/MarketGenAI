@@ -8,9 +8,10 @@ datos que el sistema no tiene. Lo que el modelo no pueda respaldar queda marcado
 from __future__ import annotations
 
 import re
+from io import BytesIO
 
 from app.services import deepseek_service
-from app.services.rag_proposal_service import retrieve_sources
+from app.services.rag_proposal_service import _tokens, retrieve_sources
 
 TYPES = ("case_study", "comparison", "objection")
 PLACEHOLDER = "[COMPLETAR:"
@@ -76,6 +77,30 @@ _TASKS = {
 }
 
 
+# La búsqueda es léxica: una objeción corta ("es muy caro") casi no comparte palabras con las propuestas.
+# Se amplía SOLO la consulta de búsqueda con términos afines; el prompt conserva el tema original y la
+# regla de "sin fuentes relevantes no se llama al modelo" no cambia.
+_RELATED_TERMS = {
+    ("caro", "costoso", "costo", "costos", "precio", "precios", "presupuesto", "barato", "expensive", "price", "cost", "preco", "caro"):
+        "precio costo tarifa inversión presupuesto ahorro valor retorno price cost investment savings",
+    ("tiempo", "demora", "plazo", "lento", "implementacion", "rapido", "timeline", "slow", "prazo"):
+        "plazo cronograma implementación puesta en marcha etapas semanas meses timeline implementation schedule",
+    ("confianza", "riesgo", "seguro", "seguridad", "garantia", "confiable", "risk", "trust", "security", "risco"):
+        "seguridad garantía SLA confidencialidad cumplimiento experiencia referencias security compliance guarantee",
+    ("competencia", "proveedor", "competitor", "vendor", "concorrente"):
+        "diferenciador ventaja experiencia propuesta valor diferencia comparación advantage differentiator",
+    ("interno", "propio", "insourcing", "outsourcing", "externo", "in-house"):
+        "equipo interno externo tercerizar outsourcing dotación operación gestión",
+}
+
+
+def expand_query(topic: str) -> str:
+    """Agrega términos afines al tema para la búsqueda léxica (no altera el tema mostrado al modelo)."""
+    words = set(_tokens(topic))
+    extra = [terms for triggers, terms in _RELATED_TERMS.items() if words & set(_tokens(" ".join(triggers)))]
+    return " ".join([topic, *extra])
+
+
 class NoSourcesError(Exception):
     """El usuario no tiene documentos relevantes para respaldar el borrador."""
 
@@ -131,6 +156,32 @@ REQUIRED STRUCTURE: write the title on the first line, then each section title E
 """
 
 
+def build_docx(draft: dict, content: str | None = None) -> bytes:
+    """Word del borrador: título, secciones (por sus títulos fijos) y texto. Usa el texto editado si se envía."""
+    from docx import Document
+
+    text = (content if content is not None else draft.get("content", "")).strip()
+    headings = set(section_titles(draft.get("type", "case_study"), draft.get("language")))
+    doc = Document()
+    lines = [ln.rstrip() for ln in text.splitlines()]
+    first = next((i for i, ln in enumerate(lines) if ln.strip()), None)
+    if first is not None:
+        doc.add_heading(lines[first].strip(), level=0)
+    for ln in lines[(first + 1 if first is not None else 0):]:
+        stripped = ln.strip()
+        if not stripped:
+            continue
+        if stripped.rstrip(":") in headings:
+            doc.add_heading(stripped.rstrip(":"), level=1)
+        elif stripped.startswith("- "):
+            doc.add_paragraph(stripped[2:], style="List Bullet")
+        else:
+            doc.add_paragraph(stripped)
+    buf = BytesIO()
+    doc.save(buf)
+    return buf.getvalue()
+
+
 async def generate_draft(
     *,
     user_id: str,
@@ -141,7 +192,7 @@ async def generate_draft(
     instructions: str | None,
 ) -> dict:
     """Devuelve {title, content, sources}. Lanza NoSourcesError si no hay fuentes relevantes."""
-    sources = await retrieve_sources(user_id, client_name=client_name, service_type=topic)
+    sources = await retrieve_sources(user_id, client_name=client_name, service_type=expand_query(topic))
     if not sources:
         raise NoSourcesError()
 

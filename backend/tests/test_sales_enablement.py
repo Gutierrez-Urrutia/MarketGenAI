@@ -177,3 +177,29 @@ async def test_update_requires_a_change_and_delete_removes(client):
         assert (await client.put(f"{API}/x1", json={})).status_code == 422
         assert (await client.delete(f"{API}/x1")).status_code == 204
     dele.assert_awaited_once_with("x1")
+
+
+def test_expand_query_adds_related_terms_for_short_objections():
+    assert "precio" in svc.expand_query("Es muy caro").split()
+    assert svc.expand_query("contact center") == "contact center"
+
+
+@pytest.mark.asyncio
+async def test_short_objection_finds_sources_through_related_terms():
+    docs = [{"id": "d1", "title": "Propuesta", "service": "", "client": ""}]
+    chunks = [{"docId": "d1", "userId": "u", "text": "El precio mensual incluye 50 agentes.", "tokens": rag._tokens("El precio mensual incluye 50 agentes.")}]
+    with patch.object(rag.knowledge_documents_repo, "list", new_callable=AsyncMock, return_value=docs),          patch.object(rag.knowledge_chunks_repo, "list", new_callable=AsyncMock, return_value=chunks):
+        assert await rag.retrieve_sources("u", service_type="Es muy caro") == []
+        assert await rag.retrieve_sources("u", service_type=svc.expand_query("Es muy caro"))
+
+
+@pytest.mark.asyncio
+async def test_export_returns_docx_with_edited_text_and_checks_owner(client):
+    repo = "app.routers.sales_enablement.enablement_drafts_repo"
+    body = "Titulo\nDesafio\nTexto del desafio\n- punto"
+    with patch(f"{repo}.get", new_callable=AsyncMock, return_value=_draft()):
+        resp = await client.post(f"{API}/x1/export", json={"content": body})
+    assert resp.status_code == 200 and resp.content[:2] == b"PK"
+    assert "wordprocessingml" in resp.headers["content-type"]
+    with patch(f"{repo}.get", new_callable=AsyncMock, return_value=_draft(userId="otro")):
+        assert (await client.post(f"{API}/x1/export", json={})).status_code == 403
