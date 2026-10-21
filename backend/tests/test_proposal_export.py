@@ -153,3 +153,37 @@ def test_brand_assets_exist():
     from app.rendering import proposal_brand
     assert proposal_brand.logo_available()
     assert proposal_brand.PRIMARY == "#225258" and proposal_brand.ACCENT == "#FF5500"
+
+
+def test_cover_has_reference_number_in_pdf_and_docx(tmp_path):
+    from docx import Document
+
+    proposal = _proposal(id="ab12cd", createdAt="2026-10-17T10:00:00Z")
+    cover = pr._proposal_cover_fields(proposal)
+    assert cover["reference"] == "NDP-20261017-AB12"
+
+    pdf = tmp_path / "p.pdf"
+    pr._build_proposal_pdf(pdf, "Propuesta", proposal["content"], cover)
+    assert "REFERENCIA: NDP-20261017-AB12" in _pdf_text(pdf)
+
+    docx = tmp_path / "p.docx"
+    pr._build_proposal_docx(docx, "Propuesta", proposal["content"], cover)
+    assert "REFERENCIA: NDP-20261017-AB12" in " | ".join(p.text for p in Document(str(docx)).paragraphs)
+
+
+def test_reference_label_is_localized():
+    assert pr._proposal_cover_fields(_proposal(language="en"))["labels"]["reference"] == "REFERENCE"
+    assert pr._proposal_cover_fields(_proposal(language="pt"))["labels"]["reference"] == "REFERÊNCIA"
+
+
+@pytest.mark.asyncio
+async def test_export_defaults_executive_to_current_user(client, tmp_path):
+    with (
+        patch("app.routers.proposals.proposals_repo.get", new_callable=AsyncMock, return_value=_proposal()),
+        patch("app.routers.proposals._output_dir", return_value=tmp_path),
+    ):
+        resp = await client.post(f"{API}/p1/export", json={"format": "pdf"})
+    assert resp.status_code == 200
+    out = tmp_path / "out.pdf"
+    out.write_bytes(resp.content)
+    assert "PREPARADO POR" in _pdf_text(out) and "—" not in _pdf_text(out).split("PREPARADO POR")[1][:40]

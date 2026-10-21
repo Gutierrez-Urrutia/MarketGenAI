@@ -199,6 +199,17 @@ async def retrieve_sources(
     return sources
 
 
+def unique_source_refs(sources: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Documentos distintos usados como fuente, como [{docId, title}] (sin el texto)."""
+    seen: set[str] = set()
+    refs = []
+    for s in sources:
+        if s["docId"] not in seen:
+            seen.add(s["docId"])
+            refs.append({"docId": s["docId"], "title": s["title"]})
+    return refs
+
+
 async def get_rag_context(
     user_id: str | None,
     client_name: str = "",
@@ -207,9 +218,20 @@ async def get_rag_context(
 ) -> str:
     """Contexto para el prompt de generación; cadena vacía si el usuario no cargó documentos
     relevantes (no se inventa un contexto de relleno)."""
+    context, _ = await get_rag_context_and_sources(user_id, client_name, service_type, extra_query)
+    return context
+
+
+async def get_rag_context_and_sources(
+    user_id: str | None,
+    client_name: str = "",
+    service_type: str = "",
+    extra_query: str = "",
+) -> tuple[str, list[dict[str, str]]]:
+    """Como get_rag_context, pero devuelve además los documentos usados (para mostrarlos al usuario)."""
     sources = await retrieve_sources(user_id, client_name, service_type, extra_query)
     if not sources:
-        return ""
+        return "", []
     blocks = [f"[Fuente: {s['title']}]\n{s['text']}" for s in sources]
     return (
         "CONTEXTO DE PROPUESTAS HISTÓRICAS DE LA EMPRESA:\n"
@@ -218,4 +240,4 @@ async def get_rag_context(
         "otros clientes (nombres, precios, cifras) a esta propuesta.\n\n"
         + "\n\n---\n\n".join(blocks)
         + "\n"
-    )
+    ), unique_source_refs(sources)
