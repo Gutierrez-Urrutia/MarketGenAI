@@ -1,13 +1,20 @@
-import { ArrowRightIcon, BookIcon, BriefIcon, CheckIcon, DownloadIcon, EyeIcon, FileIcon, LayersIcon, LinkIcon, PenIcon, PlugIcon, PlusIcon, RefreshIcon, SaveIcon, Share2Icon, SparkIcon, TrashIcon, XIcon } from "@/components/dashboard/icons";
+import { ArrowRightIcon, BookIcon, BriefIcon, CheckIcon, DownloadIcon, FileIcon, LayersIcon, LinkIcon, PenIcon, PlugIcon, PlusIcon, RefreshIcon, SaveIcon, Share2Icon, SparkIcon, TrashIcon, XIcon } from "@/components/dashboard/icons";
 import { Badge, Btn, Card, Field, Input, Select } from "@/components/dashboard/ui";
 import { Footer } from "docx";
 import Modal from "@/components/ui/Modal";
 import { PREF_KEYS, getContentItemKey, getStoredPreference, readDeletedContentIds, readLocalContentProposals, saveLocalContentProposal, writeDeletedContentIds } from "@/utils/localStore";
-import { PROPOSAL_STATUSES, PROPOSAL_STATUS_COLOR_CLASSES } from "@/features/proposals/proposalStatus";
+import {
+  proposalStatusColorClass,
+  proposalStatusErrorMessage,
+  proposalStatusLabelKey,
+  toDisplayProposalStatus,
+} from "@/features/proposals/proposalStatus";
+import { ProposalStatusControl } from "@/features/proposals/ProposalStatusControl";
+import { isAdminUser } from "@/utils/permissions";
 import { ProgressModal } from "@/components/dashboard/ProgressModal";
 import { ProposalDocumentPreview } from "@/features/proposals/ProposalDocumentPreview";
 import { ToastStack, useToastQueue } from "@/components/dashboard/toasts";
-import api, { socialApi } from "@/api/axios";
+import api, { authTokenStore, socialApi } from "@/api/axios";
 import { calculateProposalTotal, cleanStructuredText, formatUsd, normalizeLineItem, normalizeProposalDocument } from "@/features/proposals/proposalDocument";
 import { cleanProposalHtml, stripHtml } from "@/utils/htmlText";
 import { completeCampaignFlowSteps, normalizeCampaignContent } from "@/utils/campaignContent";
@@ -101,6 +108,7 @@ export function ContentLibraryPage({ navigationState = {}, onNavigate = () => {}
   const [generationModal, setGenerationModal] = useState(null);
   const [wizardStep, setWizardStep] = useState(1);
   const { toasts, setToast, removeToast, pauseToast, resumeToast } = useToastQueue();
+  const [statusChangePendingId, setStatusChangePendingId] = useState(null);
   const [deletedContentIds, setDeletedContentIds] = useState(readDeletedContentIds);
   const [libraryRefreshKey, setLibraryRefreshKey] = useState(0);
   const [proposalForm, setProposalForm] = useState({
@@ -1530,6 +1538,27 @@ export function ContentLibraryPage({ navigationState = {}, onNavigate = () => {}
   loadProposals();
 }, [deletedContentIds, libraryRefreshKey]);
 
+  // Abre la vista previa que corresponde al tipo de ítem (clic en la tarjeta).
+  const openContentItem = (item) => {
+    if (item.type === "Proposal") {
+      setViewingProposal(item);
+    } else if (item.assetType === "campaign_content") {
+      setViewingCampaignContent(item);
+    } else if (item.type === "Social Post") {
+      setViewingCampaignContent({
+        ...item,
+        campaignPosts: normalizeCampaignContent(
+          item.content || item.rawContent || item.description,
+          item.inputData?.platform || item.services?.[0] || "linkedin",
+          item.title,
+        ),
+      });
+    } else {
+      console.log("Viewing content item:", item);
+      setViewingContentItem(item);
+    }
+  };
+
   const handleDeleteContentItem = async (item) => {
     const warning = item.uses > 0
       ? t("contentLibrary.deleteWarningUsed")
@@ -1628,7 +1657,7 @@ export function ContentLibraryPage({ navigationState = {}, onNavigate = () => {}
     title: proposal.title || proposal.name || "AI Generated Proposal",
     type: "Proposal",
     status: proposal.status || "generated",
-    proposal_status: proposal.proposal_status || "Generada",
+    proposal_status: toDisplayProposalStatus(proposal.proposal_status),
     description: proposal.description || "",
     content: proposal.content || proposal.description || "",
     structuredContent,
@@ -1646,7 +1675,7 @@ const allItems = [...realProposalItems, ...libraryItems];
 
 const filtered = allItems.filter((item) => {
   if (typeFilter !== "All" && item.type !== (typeToItemType[typeFilter] || typeFilter)) return false;
-  if (statusFilter) return item.type === "Proposal" && (item.proposal_status || "Generada") === statusFilter;
+  if (statusFilter) return item.type === "Proposal" && toDisplayProposalStatus(item.proposal_status) === statusFilter;
   return true;
 });
 
@@ -1678,29 +1707,31 @@ const filtered = allItems.filter((item) => {
     const colors = { "Published": "bg-green-100 text-green-700", "Active": "bg-green-100 text-green-700", "Sent": "bg-blue-100 text-blue-700", "Accepted": "bg-green-100 text-green-700", "Draft": "bg-gray-100 text-gray-600", "draft": "bg-gray-100 text-gray-600", "generated": "bg-indigo-100 text-indigo-700", "Generated": "bg-indigo-100 text-indigo-700", "pending CRM upload": "bg-yellow-100 text-yellow-700", "uploaded": "bg-green-100 text-green-700", "Generating...": "bg-yellow-100 text-yellow-700" };
     return colors[status] || "bg-gray-100 text-gray-600";
   };
-  const proposalStatusColor = (proposalStatus = "Generada") => {
+  const proposalStatusColor = (proposalStatus) => {
     if (isDark) return "bg-slate-900 text-slate-200 border border-white/10";
-    return PROPOSAL_STATUS_COLOR_CLASSES[proposalStatus] || "bg-gray-100 text-gray-600";
+    return proposalStatusColorClass(proposalStatus);
   };
-  const proposalStatusLabel = (proposalStatus = "Generada") => {
-    const statusConfig = PROPOSAL_STATUSES.find((item) => item.value === proposalStatus) || PROPOSAL_STATUSES[0];
-    return t(`contentLibrary.proposalStatuses.${statusConfig.labelKey}`);
-  };
+  const proposalStatusLabel = (proposalStatus) => t(proposalStatusLabelKey(proposalStatus));
+  const canReopenProposals = isAdminUser(authTokenStore.getUser() || {});
   const handleProposalStatusChange = async (proposal, proposalStatus) => {
-    const nextProposal = { ...proposal, proposal_status: proposalStatus };
-    setViewingProposal(nextProposal);
-    setProposals((current) => current.map((item) => (
-      item.id === proposal.id ? { ...item, proposal_status: proposalStatus } : item
-    )));
+    const previousStatus = proposal.proposal_status;
+    const applyStatus = (value) => {
+      setViewingProposal((current) => (current && current.id === proposal.id ? { ...current, proposal_status: value } : current));
+      setProposals((current) => current.map((item) => (
+        item.id === proposal.id ? { ...item, proposal_status: value } : item
+      )));
+    };
+    applyStatus(proposalStatus);
+    setStatusChangePendingId(proposal.id);
     try {
-      await updateProposalStatus(proposal.id, proposalStatus);
+      const { data } = await updateProposalStatus(proposal.id, proposalStatus);
+      if (data?.proposal_status) applyStatus(data.proposal_status);
     } catch (error) {
       console.error(error);
-      setViewingProposal(proposal);
-      setProposals((current) => current.map((item) => (
-        item.id === proposal.id ? { ...item, proposal_status: proposal.proposal_status || "Generada" } : item
-      )));
-      setToast({ type: "error", message: "No se pudo actualizar el estado de la propuesta." });
+      applyStatus(previousStatus);
+      setToast({ type: "error", message: proposalStatusErrorMessage(error, { from: previousStatus, to: proposalStatus }, t) });
+    } finally {
+      setStatusChangePendingId(null);
     }
   };
   const duplicateItem = (item) => {
@@ -1980,42 +2011,57 @@ const filtered = allItems.filter((item) => {
           <p style={{ fontSize: 14, color: "#94a3b8", fontWeight: 500, margin: 0 }}>{t("contentLibrary.emptyState")}</p>
         </div>
       ) : (
-      <div className="grid grid-cols-3 gap-1.5">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
         {filtered.map(item => {
           const Ic = typeIcon(item.type);
           const isSelectedAsset = campaignFlow?.selectedAssets?.some((asset) => asset.id === item.id);
+          const actionLabel = (action) => `${t(`contentLibrary.actions.${action}`)}: ${item.title}`;
+          // 36px (44px en táctil); siempre visibles sin hover o con foco, en escritorio aparecen con el mouse.
+          const actionButtonClass = "inline-flex h-9 w-9 items-center justify-center rounded-lg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 [@media(pointer:coarse)]:h-11 [@media(pointer:coarse)]:w-11";
           const card = (
-            <Card className={`p-2 hover:border-indigo-200 cursor-pointer transition-colors group ${campaignAssetsStep && isSelectedAsset ? "!border-2 !border-brand-600 !bg-[#F5F3FF]" : ""}`}>
-              <div className="flex items-center justify-between mb-1.5">
-                <div className="flex items-center gap-1">
-                  <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${typeColor(item.type)}`}><Ic size={14} /></div>
+            <Card className={`h-full flex flex-col p-3 hover:border-indigo-200 cursor-pointer transition-colors group ${campaignAssetsStep && isSelectedAsset ? "!border-2 !border-brand-600 !bg-[#F5F3FF]" : ""}`}>
+              <div className="flex items-center justify-between gap-2 mb-2">
+                <div className="flex min-w-0 items-center gap-1">
+                  <div className={`w-8 h-8 shrink-0 rounded-lg flex items-center justify-center ${typeColor(item.type)}`}><Ic size={14} /></div>
                   <Badge label={contentTypeLabel(item.type)} color={typeColor(item.type)} />
                 </div>
-                {campaignAssetsStep ? (
-                  <input
-                    type="checkbox"
-                    checked={Boolean(isSelectedAsset)}
-                    readOnly
-                    className="h-4 w-4 rounded border-slate-300 text-indigo-600"
-                  />
-                ) : item.type === "Proposal" ? (
-                    <Badge
-                      label={proposalStatusLabel(item.proposal_status || "Generada")}
-                      color={proposalStatusColor(item.proposal_status || "Generada")}
+                <div className="shrink-0">
+                  {campaignAssetsStep ? (
+                    <input
+                      type="checkbox"
+                      checked={Boolean(isSelectedAsset)}
+                      readOnly
+                      className="h-4 w-4 rounded border-slate-300 text-indigo-600"
                     />
-                ) : (
-                  <Badge label={contentStatusLabel(item.status)} color={statusColor(item.status)} />
-                )}
+                  ) : item.type === "Proposal" ? (
+                      <Badge
+                        label={proposalStatusLabel(item.proposal_status)}
+                        color={proposalStatusColor(item.proposal_status)}
+                      />
+                  ) : (
+                    <Badge label={contentStatusLabel(item.status)} color={statusColor(item.status)} />
+                  )}
+                </div>
               </div>
-              <p className="text-sm font-medium text-gray-900 mb-1">{item.title}</p>
-              <p className="text-xs text-gray-400 mb-1 line-clamp-3">
+              {campaignAssetsStep ? (
+                <p className="text-sm font-medium text-gray-900 mb-1 line-clamp-2 min-h-[2.5rem] break-words">{item.title}</p>
+              ) : (
+                <button
+                  type="button"
+                  className="mb-1 block w-full rounded text-left text-sm font-medium text-gray-900 min-h-[2.5rem] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-2"
+                >
+                  <span className="line-clamp-2 break-words">{item.title}</span>
+                </button>
+              )}
+              <p className="text-xs text-gray-400 mb-2 line-clamp-3 min-h-[3rem] break-words">
                  {getCardPreview(item)} · {getUpdatedLabel(item)}
               </p>
-              <div className="flex flex-wrap gap-1 mb-1.5">
+              <div className="flex gap-1 mb-2 overflow-hidden">
                 {item.services.map((s) => (
                   <span
                     key={s}
-                    className={`px-1.5 py-0.5 rounded border text-xs ${
+                    title={s}
+                    className={`min-w-0 truncate px-1.5 py-0.5 rounded border text-xs ${
                       isDark
                         ? "bg-slate-900 text-slate-200 border-white/10"
                         : "bg-indigo-50 text-indigo-600 border-transparent"
@@ -2026,7 +2072,7 @@ const filtered = allItems.filter((item) => {
                 ))}
               </div>
               {item.type === "Proposal" && (
-                <div className={`mb-1.5 rounded-lg border px-3 py-4 text-xs ${
+                <div className={`mb-2 rounded-lg border px-3 py-4 text-xs ${
                   isDark
                     ? "bg-slate-900 text-white border-white/10"
                     : "bg-slate-50 text-slate-500 border-transparent"
@@ -2034,74 +2080,59 @@ const filtered = allItems.filter((item) => {
                   {t("contentLibrary.totalAmount")}: <span className={`font-semibold ${isDark ? "text-white" : "text-slate-800"}`}>{item.formattedTotal || calculateProposalTotal(item).formattedTotal}</span>
                 </div>
               )}
-              <div className="flex items-center justify-between pt-2 border-t border-gray-50">
-                <span className="text-xs text-gray-400 flex items-center gap-1">
+              <div className="mt-auto flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-gray-50">
+                <span className="min-w-0 truncate text-xs text-gray-400 flex items-center gap-1">
                   {item.uses > 0 ? <><LinkIcon size={10} /> {t("contentLibrary.usedInEmails").replace("{count}", item.uses)}</> : t("contentLibrary.notYetUsed")}
                 </span>
-                
-                {!campaignAssetsStep && (
-                <div className="flex gap-0.5 opacity-0 group-hover:opacity-100">
 
-                  <button
-                    onClick={() => {
-                      if (item.type === "Proposal") {
-                        setViewingProposal(item);
-                      } else if (item.assetType === "campaign_content") {
-                        setViewingCampaignContent(item);
-                      } else if (item.type === "Social Post") {
-                        setViewingCampaignContent({
-                          ...item,
-                          campaignPosts: normalizeCampaignContent(
-                            item.content || item.rawContent || item.description,
-                            item.inputData?.platform || item.services?.[0] || "linkedin",
-                            item.title,
-                          ),
-                        });
-                      } else {
-                        console.log("Viewing content item:", item);
-                        setViewingContentItem(item);
-                      }
-                    }}
-                    title={t("contentLibrary.actions.view")}
-                    className="p-1 rounded hover:bg-gray-100"
-                  >
-                    <EyeIcon size={11} className="text-gray-400" />
-                  </button>
+                {!campaignAssetsStep && (
+                <div
+                  className="flex gap-1.5 opacity-100 transition-opacity [@media(hover:hover)]:opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
+                  onClick={(event) => event.stopPropagation()}
+                >
 
                   {item.type === "Proposal" && item.assetType !== "campaign_content" && (
                     <button
+                      type="button"
                       onClick={() => openProposalHtmlEditor(item)}
                       title={t("contentLibrary.actions.edit")}
-                      className="p-1 rounded hover:bg-gray-100"
+                      aria-label={actionLabel("edit")}
+                      className={`${actionButtonClass} text-gray-500 hover:bg-gray-100`}
                     >
-                      <PenIcon size={11} className="text-gray-400" />
+                      <PenIcon size={18} aria-hidden="true" />
                     </button>
                   )}
 
                   <button
+                    type="button"
                     onClick={() => duplicateItem(item)}
                     title={t("contentLibrary.actions.duplicate")}
-                    className="p-1 rounded hover:bg-gray-100"
+                    aria-label={actionLabel("duplicate")}
+                    className={`${actionButtonClass} text-gray-500 hover:bg-gray-100`}
                   >
-                    <FileIcon size={11} className="text-gray-400" />
+                    <FileIcon size={18} aria-hidden="true" />
                   </button>
 
                   {item.assetType !== "campaign_content" && (
                     <button
+                      type="button"
                       onClick={() => downloadItem(item, "pdf")}
                       title={t("contentLibrary.actions.download")}
-                      className="p-1 rounded hover:bg-gray-100"
+                      aria-label={actionLabel("download")}
+                      className={`${actionButtonClass} text-gray-500 hover:bg-gray-100`}
                     >
-                      <DownloadIcon size={11} className="text-gray-400" />
+                      <DownloadIcon size={18} aria-hidden="true" />
                     </button>
                   )}
 
                   <button
+                    type="button"
                     onClick={() => handleDeleteContentItem(item)}
                     title={t("contentLibrary.actions.delete")}
-                    className="p-1 rounded hover:bg-red-100"
+                    aria-label={actionLabel("delete")}
+                    className={`${actionButtonClass} text-red-500 hover:bg-red-100 dark:hover:bg-red-500/15`}
                   >
-                    <TrashIcon size={11} className="text-red-500" />
+                    <TrashIcon size={18} aria-hidden="true" />
                   </button>
 
                 </div>
@@ -2121,12 +2152,19 @@ const filtered = allItems.filter((item) => {
                   handleAssetToggle(item);
                 }
               }}
-              className="block w-full text-left"
+              className="block h-full w-full text-left"
             >
               {card}
             </div>
           ) : (
-            card
+            <div
+              key={item.id || item.title}
+              onClick={() => openContentItem(item)}
+              className="h-full cursor-pointer"
+              data-testid="content-card"
+            >
+              {card}
+            </div>
           );
         })}
       </div>
@@ -2822,7 +2860,7 @@ const filtered = allItems.filter((item) => {
 )}
 
 {viewingProposal && (
-  <div className="fixed inset-0 z-50 flex items-center justify-center">
+  <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4">
     <div
       className="absolute inset-0 bg-black/40 backdrop-blur-sm"
       onClick={() => {
@@ -2831,9 +2869,10 @@ const filtered = allItems.filter((item) => {
       }}
     />
 
-    <div className={`relative rounded-2xl shadow-2xl w-full max-w-4xl mx-4 max-h-[92vh] overflow-y-auto ${isDark ? "bg-slate-800 border border-white/10" : "bg-white"}`}>
-      <div className={`flex items-center justify-between p-3 border-b ${isDark ? "border-white/10" : "border-gray-100"}`}>
-        <div>
+    {/* Cabecera y pie fijos; el cuerpo es la única zona con scroll. */}
+    <div className={`relative flex w-full max-w-4xl flex-col max-h-[calc(100vh-1rem)] sm:max-h-[calc(100vh-2rem)] overflow-hidden rounded-2xl shadow-2xl ${isDark ? "bg-slate-800 border border-white/10" : "bg-white"}`}>
+      <div className={`flex shrink-0 items-center justify-between gap-3 p-3 border-b ${isDark ? "border-white/10" : "border-gray-100"}`}>
+        <div className="min-w-0">
           {editingProposal ? (
             <Input
               value={editingProposal.draftTitle || ""}
@@ -2841,25 +2880,20 @@ const filtered = allItems.filter((item) => {
               placeholder={t("contentLibrary.proposalTitle")}
             />
           ) : (
-            <h2 className={`text-lg font-semibold ${isDark ? "text-white" : "text-gray-900"}`}>{viewingProposal.title}</h2>
+            <h2 className={`text-lg font-semibold break-words ${isDark ? "text-white" : "text-gray-900"}`}>{viewingProposal.title}</h2>
           )}
           <p className={`text-xs ${isDark ? "text-slate-400" : "text-gray-400"}`}>
             {editingProposal ? t("contentLibrary.editProposal") : t("contentLibrary.proposalPreview")}
           </p>
           {!editingProposal && (
-            <div className={`mt-3 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium shadow-sm ${proposalStatusColor(viewingProposal.proposal_status || "Generada")}`}>
-              <select
-                value={viewingProposal.proposal_status || "Generada"}
-                onChange={(event) => handleProposalStatusChange(viewingProposal, event.target.value)}
-                className="cursor-pointer appearance-none border-0 bg-transparent pr-5 text-xs font-medium text-current outline-none"
-              >
-                {PROPOSAL_STATUSES.map((proposalStatus) => (
-                  <option key={proposalStatus.value} value={proposalStatus.value} className="bg-white text-slate-900">
-                    {t(`contentLibrary.proposalStatuses.${proposalStatus.labelKey}`)}
-                  </option>
-                ))}
-              </select>
-            </div>
+            <ProposalStatusControl
+              status={viewingProposal.proposal_status}
+              proposalTitle={viewingProposal.title}
+              isAdmin={canReopenProposals}
+              pending={statusChangePendingId === viewingProposal.id}
+              colorClassName={proposalStatusColor(viewingProposal.proposal_status)}
+              onChange={(proposalStatus) => handleProposalStatusChange(viewingProposal, proposalStatus)}
+            />
           )}
         </div>
 
@@ -2868,17 +2902,18 @@ const filtered = allItems.filter((item) => {
             setViewingProposal(null);
             setEditingProposal(null);
           }}
-          className={`p-1.5 rounded-lg transition-colors ${isDark ? "hover:bg-slate-700" : "hover:bg-gray-100"}`}
+          aria-label={t("common.close")}
+          className={`shrink-0 p-1.5 rounded-lg transition-colors ${isDark ? "hover:bg-slate-700" : "hover:bg-gray-100"}`}
         >
           <XIcon size={16} className="text-gray-400" />
         </button>
       </div>
 
-      <div className={`p-6 ${isDark ? "text-slate-200" : "text-gray-700"}`}>
+      <div className={`min-h-0 flex-1 overflow-y-auto p-4 sm:p-6 ${isDark ? "text-slate-200" : "text-gray-700"}`}>
         {editingProposal ? (
           <div
             ref={proposalEditorRef}
-            className="min-h-[62vh] max-h-[68vh] w-full overflow-y-auto rounded-xl border border-gray-200 bg-white p-6 text-left text-sm text-gray-700 shadow-sm prose prose-slate max-w-none"
+            className="min-h-[40vh] w-full rounded-xl border border-gray-200 bg-white p-6 text-left text-sm text-gray-700 shadow-sm prose prose-slate max-w-none"
             contentEditable
             suppressContentEditableWarning
             onInput={(event) => {
@@ -2890,11 +2925,11 @@ const filtered = allItems.filter((item) => {
           <ProposalDocumentPreview
             proposal={viewingProposal}
             exportRef={viewingProposalPreviewRef}
-            className={`min-h-[62vh] max-h-[68vh] overflow-y-auto rounded-xl border p-6 shadow-sm ${isDark ? "border-white/10 bg-slate-800" : "border-gray-200 bg-white"}`}
+            className={`rounded-xl border p-6 shadow-sm ${isDark ? "border-white/10 bg-slate-800" : "border-gray-200 bg-white"}`}
           />
         )}
       </div>
-      <div className={`flex justify-end gap-1 p-3 border-t rounded-b-2xl ${isDark ? "border-white/10 bg-slate-900" : "border-gray-100 bg-gray-50"}`}>
+      <div className={`flex shrink-0 flex-wrap justify-end gap-2 p-3 border-t rounded-b-2xl ${isDark ? "border-white/10 bg-slate-900" : "border-gray-100 bg-gray-50"}`}>
         {editingProposal ? (
           <>
             <Btn variant="ghost" onClick={() => setEditingProposal(null)}>{t("common.cancel")}</Btn>

@@ -1,4 +1,5 @@
 import { calculateProposalTotal } from "@/features/proposals/proposalDocument";
+import { PROPOSAL_STATUS, UNKNOWN_PROPOSAL_STATUS, toDisplayProposalStatus } from "@/features/proposals/proposalStatus";
 import { campaignsApi } from "@/api/axios";
 import { getDashboardData } from "@/api/dashboardApi";
 import { getProposals } from "@/api/proposalsApi";
@@ -271,8 +272,10 @@ export async function buildDashboardMetricsFromSources({ allowDemo = false } = {
     totalProposalValue,
   };
   const assets = activeContentItems.filter((item) => item.type !== "Proposal");
-  const proposalApproved = proposals.filter((proposal) => ["approved", "accepted"].includes(normalizeStageName(proposal.status || proposal.state))).length;
-  const proposalSent = proposals.filter((proposal) => normalizeStageName(proposal.status || proposal.state) === "sent").length;
+  // Estado comercial (proposal_status), no el ciclo de generación (status).
+  const proposalStatuses = proposals.map((proposal) => toDisplayProposalStatus(proposal.proposal_status));
+  const proposalApproved = proposalStatuses.filter((status) => status === PROPOSAL_STATUS.FIRMADA).length;
+  const proposalSent = proposalStatuses.filter((status) => status !== PROPOSAL_STATUS.BORRADOR && status !== UNKNOWN_PROPOSAL_STATUS).length;
   const socialPosts = activeContentItems.filter((item) => {
     const type = normalizeStageName(item.type || item.assetType || item.category);
     return type === "social post" || type === "socialpost";
