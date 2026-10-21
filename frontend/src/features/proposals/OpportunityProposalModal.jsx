@@ -557,6 +557,8 @@ export function OpportunityProposalModal({ opportunity, onClose }) {
         state={generationModal}
         subtitle={t("opportunitiesPage.proposalModal.backgroundNote")}
         cancelLabel={t("opportunitiesPage.proposalModal.background")}
+        completeLabel={t("opportunitiesPage.proposalModal.completeLabel")}
+        retryLabel={t("opportunitiesPage.proposalModal.retryLabel")}
         onCancel={continueInBackground}
         onRetry={generateProposal}
       />
