@@ -47,6 +47,12 @@ export const isAdminOnlyTransition = (from, to) =>
 export const getAllowedTransitions = (current, { isAdmin = false } = {}) =>
   (PROPOSAL_STATUS_TRANSITIONS[current] || []).filter((to) => isAdmin || !isAdminOnlyTransition(current, to));
 
+// Destinos que piden confirmación antes de enviarse: firmada es final y rechazada
+// solo la reabre un admin.
+export const PROPOSAL_STATUSES_REQUIRING_CONFIRMATION = Object.freeze([PROPOSAL_STATUS.FIRMADA, PROPOSAL_STATUS.RECHAZADA]);
+
+export const requiresStatusConfirmation = (to) => PROPOSAL_STATUSES_REQUIRING_CONFIRMATION.includes(to);
+
 // Valor a mostrar: ausente → borrador (igual que el backend); no reconocido → "desconocido".
 export const toDisplayProposalStatus = (value) => {
   if (value === undefined || value === null) return PROPOSAL_STATUS.BORRADOR;

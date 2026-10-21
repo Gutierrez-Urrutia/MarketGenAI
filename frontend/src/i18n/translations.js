@@ -918,6 +918,14 @@ export const translations = {
       },
       noActions: "No status changes available",
       changeTo: "Change status",
+      confirm: {
+        title: "Confirm status change",
+        message: "Change “{title}” to {status}?",
+        warningSigned: "This change is final and cannot be undone.",
+        warningRejected: "Only an administrator will be able to reopen this proposal.",
+        cancel: "Cancel",
+        confirm: "Confirm",
+      },
     },
     auditLogs: {
       proposalStatusChanged: "Proposal status changed",
@@ -1837,6 +1845,14 @@ export const translations = {
       },
       noActions: "Sin cambios de estado disponibles",
       changeTo: "Cambiar estado",
+      confirm: {
+        title: "Confirmar cambio de estado",
+        message: "¿Cambiar «{title}» a {status}?",
+        warningSigned: "Este cambio es definitivo y no se puede deshacer.",
+        warningRejected: "Solo un administrador podrá reabrir esta propuesta.",
+        cancel: "Cancelar",
+        confirm: "Confirmar",
+      },
     },
     auditLogs: {
       proposalStatusChanged: "Cambio de estado de propuesta",
@@ -2792,6 +2808,14 @@ export const translations = {
       },
       noActions: "Nenhuma mudança de status disponível",
       changeTo: "Mudar status",
+      confirm: {
+        title: "Confirmar mudança de status",
+        message: "Mudar «{title}» para {status}?",
+        warningSigned: "Esta mudança é definitiva e não pode ser desfeita.",
+        warningRejected: "Somente um administrador poderá reabrir esta proposta.",
+        cancel: "Cancelar",
+        confirm: "Confirmar",
+      },
     },
     auditLogs: {
       proposalStatusChanged: "Mudança de status da proposta",
