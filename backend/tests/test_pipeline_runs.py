@@ -217,3 +217,20 @@ async def test_create_run_with_sync_flag_executes_inline(client):
     mock_scan.assert_awaited_once()
     mock_finalize.assert_awaited_once()
 
+
+
+# RF13-D-002: sin palabras clave no se lanza la ejecución (el modelo usaría un criterio genérico).
+@pytest.mark.asyncio
+@pytest.mark.parametrize("keywords", [[], ["  "]])
+async def test_create_run_rejects_when_no_keywords(client, keywords):
+    doc = fake_config({"keywords": keywords, "sources": [fake_source({"enabled": True})]})
+    with (
+        patch("app.routers.pipeline.pipeline_configs_repo.get_by_user", new_callable=AsyncMock, return_value=doc),
+        patch("app.routers.pipeline.pipeline_runs_repo.create", new_callable=AsyncMock) as mock_create,
+        patch("app.routers.pipeline.job_scout_service.scan_all_sources", new_callable=AsyncMock) as mock_scan,
+    ):
+        resp = await client.post(API)
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["code"] == "no_keywords"
+    mock_create.assert_not_awaited()
+    mock_scan.assert_not_awaited()

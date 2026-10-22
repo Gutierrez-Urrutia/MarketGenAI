@@ -465,6 +465,17 @@ async def create_run(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="No enabled sources configured for this pipeline.",
         )
+    # Without keywords the relevance prompt falls back to a generic criterion
+    # the user never chose, so the run isn't started (RF13-D-002). `code` lets
+    # the screen show the message in the user's language.
+    if not any(str(keyword).strip() for keyword in (config.get("keywords") or [])):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "code": "no_keywords",
+                "message": "Agrega al menos una palabra clave antes de lanzar una ejecución.",
+            },
+        )
 
     # One active run per config, enforced here (not just in the UI) with a
     # Firestore-transaction lock so two simultaneous requests can't both pass.

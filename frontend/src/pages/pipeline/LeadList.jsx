@@ -245,6 +245,10 @@ export default function LeadList() {
         return;
       }
       setScanning(false);
+      if (error?.response?.data?.detail?.code === "no_keywords") {
+        toast.error(t("leads.scanNoKeywords"));
+        return;
+      }
       toast.error(getApiErrorMessage(error, t("leads.scanFailed")));
     }
   };
