@@ -1335,3 +1335,32 @@ async def test_scan_all_sources_jsearch_postings_become_leads(jsearch_source):
     assert lead["location"] == "London, GB"
     assert lead["source_id"] == "jsearch-1"
     assert svc._run_deadline.get() is None
+
+# ── RF14-D-001: la misma vacante dentro de una ejecución da un solo lead ─────
+@pytest.mark.asyncio
+async def test_scan_all_sources_dedupes_repeated_posting_within_the_same_run():
+    """Mismo cargo y empresa en distinta ubicación, en la misma fuente y en otra fuente
+    de la misma ejecución: la huella (empresa + cargo) deja un solo lead, el primero."""
+    santiago = fake_posting(company_name="QA Duplicada SpA", job_title="Agente de contact center", location="Santiago")
+    concepcion = fake_posting(company_name="QA Duplicada SpA", job_title="Agente de contact center", location="Concepción")
+    otra_fuente = fake_posting(company_name="qa duplicada spa", job_title="Agente de Contact Center", location="Valparaíso", source_id="source-b")
+    config = fake_pipeline_config({"sources": [fake_source({"id": "source-a"}), fake_source({"id": "source-b"})]})
+
+    async def fake_scan_source(source, keywords):
+        return [santiago, concepcion] if source["id"] == "source-a" else [otra_fuente]
+
+    async def fake_score(postings, keywords):
+        return {i: {"relevance_score": 0.9, "matched_keywords": []} for i in range(len(postings))}
+
+    with (
+        patch.object(svc, "_scan_source", side_effect=fake_scan_source),
+        patch.object(svc, "_is_duplicate", new_callable=AsyncMock, return_value=False),
+        patch.object(svc, "score_relevance_batch", side_effect=fake_score) as mock_score,
+        patch.object(svc.leads_repo, "create", new_callable=AsyncMock) as mock_create,
+    ):
+        result = await svc.scan_all_sources(config, "run-1")
+
+    assert result["leads_new"] == 1
+    mock_create.assert_awaited_once()
+    assert mock_create.call_args.args[0]["location"] == "Santiago"
+    assert sum(len(call.args[0]) for call in mock_score.call_args_list) == 1  # el repetido no va al modelo

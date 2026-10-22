@@ -728,6 +728,9 @@ async def scan_all_sources(pipeline_config: Dict[str, Any], run_id: str) -> Dict
     errors: List[Dict[str, Any]] = []
     partial = False
     failed_sources = 0
+    # Fingerprints already seen in this run: _is_duplicate only knows leads saved
+    # before it, so a posting repeated within this run would become a second lead.
+    seen_fingerprints: set = set()
 
     for source in sources:
         if evaluated_count >= MAX_RESULTS_PER_RUN:
@@ -785,6 +788,9 @@ async def scan_all_sources(pipeline_config: Dict[str, Any], run_id: str) -> Dict
                 partial = True
                 break
             fingerprint = compute_fingerprint(posting.company_name, posting.job_title)
+            if fingerprint in seen_fingerprints:
+                continue
+            seen_fingerprints.add(fingerprint)
             known_fingerprints = [fingerprint]
             if posting.raw_title is not None:
                 known_fingerprints.append(_legacy_rss_fingerprint(posting.raw_title))
