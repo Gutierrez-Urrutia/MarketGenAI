@@ -30,6 +30,7 @@ const SOURCE_TYPE_FIELD_KEYS = {
       options: [
         { value: "none", labelKey: "titleFormatNone" },
         { value: "company_colon_title", labelKey: "titleFormatCompanyColonTitle" },
+        { value: "title_dash_company", labelKey: "titleFormatTitleDashCompany" },
       ],
     },
   ],

@@ -66,7 +66,8 @@ SOURCE_TYPE_URL_FIELDS: Dict[SourceType, Optional[str]] = {
 # no global guess, each feed's format has to be declared explicitly.
 RSS_TITLE_FORMAT_NONE = "none"
 RSS_TITLE_FORMAT_COMPANY_COLON_TITLE = "company_colon_title"  # "Company: Job Title" (weworkremotely.com)
-RSS_TITLE_FORMATS = (RSS_TITLE_FORMAT_NONE, RSS_TITLE_FORMAT_COMPANY_COLON_TITLE)
+RSS_TITLE_FORMAT_TITLE_DASH_COMPANY = "title_dash_company"  # "Job Title - Company", split on the LAST " - "
+RSS_TITLE_FORMATS = (RSS_TITLE_FORMAT_NONE, RSS_TITLE_FORMAT_COMPANY_COLON_TITLE, RSS_TITLE_FORMAT_TITLE_DASH_COMPANY)
 
 
 class JobSource(BaseModel):

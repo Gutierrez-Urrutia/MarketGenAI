@@ -1364,3 +1364,15 @@ async def test_scan_all_sources_dedupes_repeated_posting_within_the_same_run():
     mock_create.assert_awaited_once()
     assert mock_create.call_args.args[0]["location"] == "Santiago"
     assert sum(len(call.args[0]) for call in mock_score.call_args_list) == 1  # el repetido no va al modelo
+
+
+# ── RF14-D-002: formato declarable «Cargo - Empresa» (separa en el ÚLTIMO « - ») ──
+@pytest.mark.parametrize("title,expected", [
+    ("Agente de back office - QA Formato B", ("Agente de back office", "QA Formato B")),
+    ("Ejecutivo - Turno noche - Acme SpA", ("Ejecutivo - Turno noche", "Acme SpA")),  # el cargo puede llevar guiones
+    ("Sin separador", ("Sin separador", "")),        # no coincide con el formato: entero y sin empresa
+    (" - Acme", (" - Acme".strip(), "")),             # cargo vacío: no se adivina
+    ("Analista - ", ("Analista -", "")),              # empresa vacía: no se adivina
+])
+def test_split_rss_title_title_dash_company(title, expected):
+    assert svc._split_rss_title(title, "title_dash_company") == expected

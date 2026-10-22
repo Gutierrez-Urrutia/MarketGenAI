@@ -56,6 +56,7 @@ from app.schemas.lead import LeadStatus, RawJobPosting
 from app.schemas.pipeline import (
     RSS_TITLE_FORMAT_COMPANY_COLON_TITLE,
     RSS_TITLE_FORMAT_NONE,
+    RSS_TITLE_FORMAT_TITLE_DASH_COMPANY,
     SOURCE_TYPE_SECRET_CONFIG_FIELDS,
     PipelineRunStatus,
     SourceType,
@@ -261,11 +262,17 @@ def _split_rss_title(title: str, title_format: str) -> tuple[str, str]:
     RSS_TITLE_FORMAT_NONE — or any unknown value — never splits: returns
     (title, ""). RSS_TITLE_FORMAT_COMPANY_COLON_TITLE splits "Company: Job
     Title" on the FIRST ": " only, so a colon inside the job title survives.
+    RSS_TITLE_FORMAT_TITLE_DASH_COMPANY splits "Job Title - Company" on the
+    LAST " - " only, so a dash inside the job title survives.
     A title that doesn't match its declared format isn't guessed at either:
     it comes back whole, with an empty company."""
     title = title.strip()
     if title_format == RSS_TITLE_FORMAT_COMPANY_COLON_TITLE:
         company, sep, job_title = title.partition(": ")
+        if sep and company.strip() and job_title.strip():
+            return job_title.strip(), company.strip()
+    elif title_format == RSS_TITLE_FORMAT_TITLE_DASH_COMPANY:
+        job_title, sep, company = title.rpartition(" - ")
         if sep and company.strip() and job_title.strip():
             return job_title.strip(), company.strip()
     return title, ""

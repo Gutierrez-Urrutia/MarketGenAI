@@ -47,7 +47,7 @@ describe("PipelineSettingsTab RSS title_format", () => {
 
     const select = screen.getByLabelText(LABEL);
     expect(select.value).toBe("none");
-    expect([...select.options].map((o) => o.value)).toEqual(["none", "company_colon_title"]);
+    expect([...select.options].map((o) => o.value)).toEqual(["none", "company_colon_title", "title_dash_company"]);
   });
 
   it("sends the chosen title_format in the create payload", async () => {
@@ -87,7 +87,7 @@ describe("title_format / unknownCompany translations", () => {
   // getTranslation silently falls back to English, so check each language directly.
   it.each(["en", "es", "pt"])("are defined in %s", (lang) => {
     const tab = translations[lang].settings.pipelineTab;
-    for (const key of ["sourceFieldTitleFormat", "sourceFieldTitleFormatHint", "titleFormatNone", "titleFormatCompanyColonTitle"]) {
+    for (const key of ["sourceFieldTitleFormat", "sourceFieldTitleFormatHint", "titleFormatNone", "titleFormatCompanyColonTitle", "titleFormatTitleDashCompany"]) {
       expect(tab[key], `${lang}.settings.pipelineTab.${key}`).toBeTruthy();
     }
     expect(translations[lang].leads.unknownCompany).toBeTruthy();

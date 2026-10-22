@@ -378,7 +378,7 @@ async def test_create_source_rejects_url_resolving_to_internal_address(client):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("title_format", ["none", "company_colon_title"])
+@pytest.mark.parametrize("title_format", ["none", "company_colon_title", "title_dash_company"])
 async def test_create_source_accepts_valid_title_format(client, title_format):
     with (
         patch(
