@@ -265,7 +265,14 @@ export default function PipelineSettingsTab({ isDark = false }) {
   };
 
   const openEditSourceForm = (source) => {
-    setSourceForm({ id: source.id, name: source.name, source_type: source.source_type, config: source.config || {} });
+    setSourceForm({
+      id: source.id,
+      name: source.name,
+      source_type: source.source_type,
+      config: source.config || {},
+      // The API never returns a stored secret; the empty field keeps it (RF13-D-004).
+      configuredSecretFields: source.configured_secret_fields || [],
+    });
     setSourceFormOpen(true);
   };
 
@@ -411,7 +418,9 @@ export default function PipelineSettingsTab({ isDark = false }) {
                       ) : (
                         <Input
                           type={field.type || "text"}
-                          placeholder={field.placeholder}
+                          placeholder={sourceForm.configuredSecretFields?.includes(field.key)
+                            ? t("settings.pipelineTab.secretKeptPlaceholder")
+                            : field.placeholder}
                           value={sourceForm.config?.[field.key] || ""}
                           onChange={setFieldValue}
                         />

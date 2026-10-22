@@ -562,6 +562,50 @@ async def test_update_source_re_encrypts_new_api_key(client):
     assert encryption_service.decrypt(persisted_source["config_encrypted"]["api_key"]) == "new-key"
 
 
+async def _put_source(client, source: dict, body: dict) -> dict:
+    doc = fake_config({"sources": [source]})
+    with (
+        patch("app.routers.pipeline.pipeline_configs_repo.get_by_user", new_callable=AsyncMock, return_value=doc),
+        patch("app.routers.pipeline.pipeline_configs_repo.upsert_for_user", new_callable=AsyncMock) as mock_upsert,
+    ):
+        mock_upsert.return_value = doc
+        resp = await client.put(f"{API}/sources/source-001", json=body)
+    assert resp.status_code == 200
+    return mock_upsert.call_args.args[1]["sources"][0]
+
+
+# RF13-D-004: editar una fuente sin volver a escribir la clave no debe borrarla. La pantalla nunca
+# recibe la clave, así que envía la config pública (sin api_key) o el campo vacío.
+@pytest.mark.asyncio
+@pytest.mark.parametrize("config", [
+    {"base_url": "https://jsearch.p.rapidapi.com"},
+    {"base_url": "https://jsearch.p.rapidapi.com", "api_key": ""},
+])
+async def test_update_source_keeps_stored_api_key_when_not_resent(client, config):
+    source = fake_source({
+        "source_type": "api",
+        "config": {"base_url": "https://jsearch.p.rapidapi.com"},
+        "config_encrypted": {"api_key": encryption_service.encrypt("stored-key")},
+    })
+    persisted = await _put_source(client, source, {"name": "JSearch renombrada", "config": config})
+    assert persisted["name"] == "JSearch renombrada"
+    assert encryption_service.decrypt(persisted["config_encrypted"]["api_key"]) == "stored-key"
+
+
+@pytest.mark.asyncio
+async def test_update_source_encrypts_legacy_plaintext_api_key_on_edit(client):
+    """A legacy source (api_key still in plaintext config) keeps its key when
+    edited from the screen, and it gets encrypted on that save."""
+    source = fake_source({
+        "source_type": "api",
+        "config": {"base_url": "https://jsearch.p.rapidapi.com", "api_key": "legacy-key"},
+        "config_encrypted": {},
+    })
+    persisted = await _put_source(client, source, {"config": {"base_url": "https://jsearch.p.rapidapi.com"}})
+    assert "api_key" not in persisted["config"]
+    assert encryption_service.decrypt(persisted["config_encrypted"]["api_key"]) == "legacy-key"
+
+
 @pytest.mark.asyncio
 async def test_create_source_returns_503_when_encryption_key_missing(client, monkeypatch):
     monkeypatch.setattr(

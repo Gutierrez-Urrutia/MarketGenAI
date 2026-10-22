@@ -287,6 +287,18 @@ async def update_source(
         await _validate_source_url(effective_type, updates["config"])
         _validate_source_title_format(effective_type, updates["config"])
         plaintext_config, encrypted_config = _split_source_config(effective_type, updates["config"])
+        # The screen never gets a stored secret back, so a secret field that is
+        # absent or empty here means "keep it" — not "delete it". A legacy
+        # plaintext value is kept too, and gets encrypted on this save.
+        old_encrypted = source.get("config_encrypted") or {}
+        old_plaintext = source.get("config") or {}
+        for field in SOURCE_TYPE_SECRET_CONFIG_FIELDS.get(effective_type, []):
+            if field in encrypted_config:
+                continue
+            if old_encrypted.get(field):
+                encrypted_config[field] = old_encrypted[field]
+            elif old_plaintext.get(field):
+                encrypted_config.update(_split_source_config(effective_type, {field: old_plaintext[field]})[1])
         updates["config"] = plaintext_config
         updates["config_encrypted"] = encrypted_config
     source.update(updates)
