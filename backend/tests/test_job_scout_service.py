@@ -945,3 +945,97 @@ async def test_scan_all_sources_stops_when_time_budget_exhausted():
 
     assert call_order == []  # budget exhausted before the first source runs
     assert result["partial"] is True
+
+
+# ── RF13-D-003: una fuente que falla queda registrada en run.errors ─────────
+EMPTY_RSS = b'<?xml version="1.0"?><rss version="2.0"><channel><title>QA</title></channel></rss>'
+
+
+def _rss_source(source_id: str, url: str) -> dict:
+    return fake_source({"id": source_id, "name": f"Fuente {source_id}", "source_type": "rss", "config": {"feed_url": url}})
+
+
+def _stream_by_url(responses: dict):
+    """url prefix -> (status, content) or an exception raised on connect."""
+    def fake_stream(self, method, url, headers=None, params=None, **kwargs):
+        for prefix, response in responses.items():
+            if str(url).startswith(prefix):
+                if isinstance(response, Exception):
+                    return _FailingStreamCtx(response)
+                status_code, content = response
+                return _FakeStreamCtx(_stream_response(status_code, content=content, url=str(url)))
+        raise AssertionError(f"unexpected url {url}")
+    return fake_stream
+
+
+async def _scan_with(sources: list, responses: dict) -> dict:
+    with (
+        patch.object(httpx.AsyncClient, "stream", _stream_by_url(responses)),
+        patch.object(svc, "_is_duplicate", new_callable=AsyncMock, return_value=False),
+        patch.object(svc, "score_relevance_batch", new_callable=AsyncMock, return_value={}),
+        patch.object(svc.leads_repo, "create", new_callable=AsyncMock),
+    ):
+        return await svc.scan_all_sources(fake_pipeline_config({"sources": sources}), "run-1")
+
+
+@pytest.mark.asyncio
+async def test_scan_all_sources_records_http_error_of_a_source():
+    result = await _scan_with(
+        [_rss_source("caida", "https://caida.example.com/feed"), _rss_source("vacia", "https://vacia.example.com/feed")],
+        {"https://caida.example.com": (404, b"not found"), "https://vacia.example.com": (200, EMPTY_RSS)},
+    )
+    assert result["partial"] is True
+    assert [e["source_id"] for e in result["errors"]] == ["caida"]
+    assert result["errors"][0]["source_name"] == "Fuente caida"
+    assert "HTTP 404" in result["errors"][0]["message"]
+    assert result["all_sources_failed"] is False
+
+
+@pytest.mark.asyncio
+async def test_scan_all_sources_records_network_error_and_all_sources_failed():
+    api = fake_source({"id": "api-red", "config": {"base_url": "https://red.example.com/jobs"}})
+    result = await _scan_with([api], {"https://red.example.com": httpx.ConnectError("connection refused")})
+    assert result["partial"] is True
+    assert "error de red" in result["errors"][0]["message"]
+    assert result["all_sources_failed"] is True
+
+
+@pytest.mark.asyncio
+async def test_scan_all_sources_records_invalid_content():
+    api = fake_source({"id": "api-json", "config": {"base_url": "https://json.example.com/jobs"}})
+    result = await _scan_with(
+        [api, _rss_source("rss-html", "https://html.example.com/feed")],
+        {"https://json.example.com": (200, b"<html>no es json</html>"), "https://html.example.com": (200, b"<html><body>hola</body></html>")},
+    )
+    mensajes = {e["source_id"]: e["message"] for e in result["errors"]}
+    assert "JSON" in mensajes["api-json"]
+    assert "feed" in mensajes["rss-html"]
+
+
+@pytest.mark.asyncio
+async def test_scan_all_sources_records_robots_txt_block():
+    scraper = fake_source({"id": "scraper-robots", "source_type": "scraper",
+                           "config": {"url": "https://robots.example.com/list", "selectors": {"item": ".job"}}})
+    with patch.object(svc, "_robots_txt_allows", new_callable=AsyncMock, return_value=False):
+        result = await svc.scan_all_sources(fake_pipeline_config({"sources": [scraper]}), "run-1")
+    assert "robots.txt" in result["errors"][0]["message"]
+    assert result["partial"] is True
+
+
+@pytest.mark.asyncio
+async def test_scan_all_sources_records_truncated_response():
+    item = b"<item><title>Acme: Analista</title><link>https://x.example.com/1</link></item>"
+    feed = b'<?xml version="1.0"?><rss version="2.0"><channel><title>QA</title>' + item * 40 + b"</channel></rss>"
+    with patch.object(svc, "MAX_SOURCE_RESPONSE_BYTES", 1000):
+        result = await _scan_with([_rss_source("grande", "https://grande.example.com/feed")],
+                                  {"https://grande.example.com": (200, feed)})
+    assert any("truncada" in e["message"] for e in result["errors"])
+    assert result["partial"] is True
+
+
+@pytest.mark.asyncio
+async def test_finalize_run_marks_failed_when_every_source_failed():
+    with patch.object(svc.pipeline_runs_repo, "update", new_callable=AsyncMock) as mock_update:
+        await svc.finalize_run("run-1", {"leads_found": 0, "leads_new": 0, "partial": True, "all_sources_failed": True,
+                                         "errors": [{"source_id": "a", "message": "HTTP 404"}]})
+    assert mock_update.call_args.args[1]["status"] == "failed"

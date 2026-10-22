@@ -21,7 +21,8 @@ import json
 import logging
 import time
 import urllib.robotparser
-from typing import Any, Dict, List
+from contextvars import ContextVar
+from typing import Any, Dict, List, Optional
 from urllib.parse import urljoin, urlparse
 
 import feedparser
@@ -61,6 +62,39 @@ _SCORE_SYSTEM_PROMPT = (
     "Eres un analista de ventas B2B para NoonDalton, empresa de outsourcing/BPO. "
     "Respondes ÚNICAMENTE con un array JSON válido, sin texto adicional antes ni después."
 )
+
+
+# ── Problems of the source being scanned (RF13-D-003) ───────────────────────
+# The adapters keep their contract (a source that fails returns []), but say
+# why through this list, which scan_all_sources opens for each source and turns
+# into run.errors. A fatal problem means nothing could be read from the source;
+# a non-fatal one (truncated response) still keeps what was read.
+_source_problems: ContextVar[Optional[List[Dict[str, Any]]]] = ContextVar("job_scout_source_problems", default=None)
+
+
+def _report_source_problem(message: str, *, fatal: bool = True) -> None:
+    problems = _source_problems.get()
+    if problems is not None:
+        problems.append({"message": message, "fatal": fatal})
+
+
+def _fetch_failure_message(exc: Exception) -> str:
+    if isinstance(exc, url_safety.UnsafeUrlError):
+        return f"URL bloqueada por seguridad: {exc}"
+    if isinstance(exc, json.JSONDecodeError):
+        return "la respuesta no es JSON válido"
+    if isinstance(exc, httpx.HTTPError):
+        return f"error de red ({type(exc).__name__})"
+    return str(exc) or type(exc).__name__
+
+
+def _report_if_truncated(body: bytes) -> None:
+    # safe_get_bytes stops reading past MAX_SOURCE_RESPONSE_BYTES and returns
+    # the body cut to that size.
+    if len(body) >= MAX_SOURCE_RESPONSE_BYTES:
+        _report_source_problem(
+            f"respuesta truncada: superó el máximo de {MAX_SOURCE_RESPONSE_BYTES} bytes", fatal=False,
+        )
 
 
 # ── Secrets ──────────────────────────────────────────────────────────────────
@@ -153,6 +187,7 @@ async def _scan_api(source: Dict[str, Any], keywords: List[str]) -> List[RawJobP
     config = source.get("config") or {}
     base_url = config.get("base_url")
     if not base_url:
+        _report_source_problem("falta la URL de la fuente (base_url)")
         return []
     secrets = _resolve_source_secrets(source)
     headers = dict(config.get("headers") or {})
@@ -170,9 +205,11 @@ async def _scan_api(source: Dict[str, Any], keywords: List[str]) -> List[RawJobP
             )
             if status_code >= 400:
                 raise ValueError(f"HTTP {status_code}")
+            _report_if_truncated(body)
             payload = json.loads(body)
     except Exception as exc:
         logger.warning("job_scout: API source %s failed: %s", source.get("id"), exc)
+        _report_source_problem(_fetch_failure_message(exc))
         return []
 
     items = payload if isinstance(payload, list) else (
@@ -243,6 +280,7 @@ async def _scan_rss(source: Dict[str, Any], keywords: List[str]) -> List[RawJobP
     config = source.get("config") or {}
     feed_url = config.get("feed_url")
     if not feed_url:
+        _report_source_problem("falta la URL del feed (feed_url)")
         return []
     title_format = config.get("title_format") or RSS_TITLE_FORMAT_NONE
 
@@ -261,7 +299,9 @@ async def _scan_rss(source: Dict[str, Any], keywords: List[str]) -> List[RawJobP
                 raise ValueError(f"HTTP {status_code}")
     except Exception as exc:
         logger.warning("job_scout: RSS source %s failed to fetch: %s", source.get("id"), exc)
+        _report_source_problem(_fetch_failure_message(exc))
         return []
+    _report_if_truncated(feed_content)
 
     try:
         parsed = await asyncio.wait_for(
@@ -270,6 +310,11 @@ async def _scan_rss(source: Dict[str, Any], keywords: List[str]) -> List[RawJobP
         )
     except Exception as exc:
         logger.warning("job_scout: RSS source %s failed to parse: %s", source.get("id"), exc)
+        _report_source_problem(f"no se pudo leer el feed: {exc}")
+        return []
+    # feedparser doesn't raise on HTML or garbage: it just finds no feed version.
+    if not getattr(parsed, "version", "") and not getattr(parsed, "entries", None):
+        _report_source_problem("el contenido no es un feed RSS/Atom válido")
         return []
 
     postings: List[RawJobPosting] = []
@@ -351,10 +396,12 @@ async def _scan_scraper(source: Dict[str, Any], keywords: List[str]) -> List[Raw
     url = config.get("url")
     selectors = config.get("selectors") or {}
     if not url or not selectors.get("item"):
+        _report_source_problem("falta la URL o el selector de avisos (url, selectors.item)")
         return []
 
     if not await _robots_txt_allows(url):
         logger.warning("job_scout: scraper source %s blocked by robots.txt", source.get("id"))
+        _report_source_problem("bloqueada por robots.txt")
         return []
 
     html: bytes = b""
@@ -368,8 +415,10 @@ async def _scan_scraper(source: Dict[str, Any], keywords: List[str]) -> List[Raw
             )
             if status_code >= 400:
                 raise ValueError(f"HTTP {status_code}")
+            _report_if_truncated(html)
     except Exception as exc:
         logger.warning("job_scout: scraper source %s failed: %s", source.get("id"), exc)
+        _report_source_problem(_fetch_failure_message(exc))
         return []
     finally:
         # Courtesy delay even on failure — keep request cadence to this host
@@ -503,7 +552,7 @@ async def score_relevance_batch(
 # ── Orchestration for one PipelineConfig ────────────────────────────────────
 async def scan_all_sources(pipeline_config: Dict[str, Any], run_id: str) -> Dict[str, Any]:
     """Scan every enabled source of a PipelineConfig, score and persist new
-    leads. Returns {leads_found, leads_new, errors, partial}.
+    leads. Returns {leads_found, leads_new, errors, partial, all_sources_failed}.
 
     `pipeline_config` is the raw Firestore document (has "id" and "userId",
     not the snake_case PipelineConfig schema field names — matches how
@@ -527,6 +576,7 @@ async def scan_all_sources(pipeline_config: Dict[str, Any], run_id: str) -> Dict
     leads_new = 0
     errors: List[Dict[str, Any]] = []
     partial = False
+    failed_sources = 0
 
     for source in sources:
         if evaluated_count >= MAX_RESULTS_PER_RUN:
@@ -542,18 +592,36 @@ async def scan_all_sources(pipeline_config: Dict[str, Any], run_id: str) -> Dict
             })
             break
 
+        problems: List[Dict[str, Any]] = []
+        problems_token = _source_problems.set(problems)
         try:
             postings = await _scan_source(source, keywords)
         except Exception as exc:
             partial = True
+            failed_sources += 1
             logger.warning("job_scout: source %s raised: %s", source.get("id"), exc)
             errors.append({
                 "agent": "job_scout",
                 "source_id": source.get("id"),
+                "source_name": source.get("name"),
                 "message": str(exc),
                 "timestamp": now_utc().isoformat(),
             })
             continue
+        finally:
+            _source_problems.reset(problems_token)
+
+        for problem in problems:
+            partial = True
+            errors.append({
+                "agent": "job_scout",
+                "source_id": source.get("id"),
+                "source_name": source.get("name"),
+                "message": problem["message"],
+                "timestamp": now_utc().isoformat(),
+            })
+        if any(problem["fatal"] for problem in problems):
+            failed_sources += 1
 
         postings = postings[:MAX_RESULTS_PER_SOURCE]
         postings = [p for p in postings if p.company_name.strip().lower() not in excluded_companies]
@@ -622,6 +690,7 @@ async def scan_all_sources(pipeline_config: Dict[str, Any], run_id: str) -> Dict
         "leads_new": leads_new,
         "errors": errors,
         "partial": partial,
+        "all_sources_failed": bool(sources) and failed_sources == len(sources),
     }
 
 
@@ -631,9 +700,12 @@ async def scan_all_sources(pipeline_config: Dict[str, Any], run_id: str) -> Dict
 # regardless of who invoked scan_all_sources.
 async def finalize_run(run_id: str, result: Dict[str, Any]) -> None:
     """Write scan_all_sources' result onto its PipelineRun doc."""
-    status_value = (
-        PipelineRunStatus.PARTIAL.value if result["partial"] else PipelineRunStatus.COMPLETED.value
-    )
+    if result.get("all_sources_failed"):
+        status_value = PipelineRunStatus.FAILED.value
+    elif result["partial"]:
+        status_value = PipelineRunStatus.PARTIAL.value
+    else:
+        status_value = PipelineRunStatus.COMPLETED.value
     await pipeline_runs_repo.update(run_id, {
         "status": status_value,
         "leads_found": result["leads_found"],
