@@ -641,9 +641,9 @@ async def test_test_source_accepts_api_key_only_in_encrypted_config(client):
         "config_encrypted": {"api_key": encryption_service.encrypt("rapid-key-123")},
     })
     doc = fake_config({"sources": [source]})
-    with patch(
-        "app.routers.pipeline.pipeline_configs_repo.get_by_user",
-        new_callable=AsyncMock, return_value=doc,
+    with (
+        patch("app.routers.pipeline.pipeline_configs_repo.get_by_user", new_callable=AsyncMock, return_value=doc),
+        patch("app.routers.pipeline.job_scout_service._scan_source", new_callable=AsyncMock, return_value=[]),
     ):
         resp = await client.post(f"{API}/sources/source-002/test")
     assert resp.status_code == 200
@@ -719,13 +719,56 @@ async def test_test_source_rejects_missing_fields_for_api(client):
 async def test_test_source_accepts_complete_config(client):
     source = fake_source({"config": {"feed_url": "https://indeed.com/rss?q=outsourcing"}})
     doc = fake_config({"sources": [source]})
-    with patch(
-        "app.routers.pipeline.pipeline_configs_repo.get_by_user",
-        new_callable=AsyncMock, return_value=doc,
+    with (
+        patch("app.routers.pipeline.pipeline_configs_repo.get_by_user", new_callable=AsyncMock, return_value=doc),
+        patch("app.routers.pipeline.job_scout_service._scan_source", new_callable=AsyncMock, return_value=[]),
     ):
         resp = await client.post(f"{API}/sources/source-001/test")
     assert resp.status_code == 200
     assert resp.json()["ok"] is True
+
+
+# RF13-D-001: «Probar conexión» lee la fuente de verdad (mismo adaptador del escaneo), sin red real aquí.
+RSS_DOS_AVISOS = (b'<?xml version="1.0"?><rss version="2.0"><channel><title>QA</title>'
+                  b'<item><title>Acme: Analista</title><link>https://x.example.com/1</link></item>'
+                  b'<item><title>Beta: Agente</title><link>https://x.example.com/2</link></item></channel></rss>')
+
+
+async def _probar_fuente(client, status_code: int, content: bytes) -> dict:
+    import httpx
+    from app.services import job_scout_service
+
+    class _Ctx:
+        async def __aenter__(self):
+            return httpx.Response(status_code, content=content, request=httpx.Request("GET", "https://qa.example.com/feed"))
+
+        async def __aexit__(self, *exc):
+            return False
+
+    doc = fake_config({"sources": [fake_source({"config": {"feed_url": "https://qa.example.com/feed"}})]})
+    with (
+        patch("app.routers.pipeline.pipeline_configs_repo.get_by_user", new_callable=AsyncMock, return_value=doc),
+        patch.object(httpx.AsyncClient, "stream", lambda self, *a, **k: _Ctx()),
+        patch.object(job_scout_service, "score_relevance_batch", new_callable=AsyncMock) as mock_score,
+    ):
+        resp = await client.post(f"{API}/sources/source-001/test")
+    mock_score.assert_not_called()  # probar una fuente nunca llama al modelo
+    assert resp.status_code == 200
+    return resp.json()
+
+
+@pytest.mark.asyncio
+async def test_test_source_reports_a_source_that_does_not_respond(client):
+    body = await _probar_fuente(client, 404, b"not found")
+    assert body["ok"] is False
+    assert "HTTP 404" in body["reason"]
+
+
+@pytest.mark.asyncio
+async def test_test_source_reads_the_postings_of_a_working_source(client):
+    body = await _probar_fuente(client, 200, RSS_DOS_AVISOS)
+    assert body["ok"] is True
+    assert body["postings_read"] == 2
 
 
 # ── Encryption roundtrip ───────────────────────────────────────────────────────

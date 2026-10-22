@@ -324,11 +324,13 @@ async def test_source(
     source_id: str,
     user: CurrentUser = Depends(get_current_user),
 ):
-    """Validate the source has the config fields its source_type needs.
+    """Check the source's config fields, then actually read it with the same
+    adapter a scan uses (SSRF-checked fetch, robots.txt for scrapers) —
+    without scoring or saving anything, so no model call is made.
 
-    This is a static shape check only — no external call is made. A real
-    connectivity check happens when the source is actually scanned, as part
-    of a run (POST /pipeline/runs → JobScoutService).
+    Returns {ok, postings_read, reason, warnings}; the screen builds the
+    message in the user's language. A source that doesn't respond or isn't
+    a valid feed/JSON/page comes back with ok=false and the reason.
     """
     doc = await _get_or_create_doc(user.sub)
     sources = list(doc.get("sources") or [])
@@ -352,7 +354,23 @@ async def test_source(
             },
         )
 
-    return {"ok": True, "message": f"Source '{source['name']}' has all required fields for {source_type.value}."}
+    problems: List[Dict[str, Any]] = []
+    problems_token = job_scout_service._source_problems.set(problems)
+    try:
+        postings = await job_scout_service._scan_source(source, doc.get("keywords") or [])
+    except Exception as exc:  # noqa: BLE001 — a probe reports, it never 500s
+        problems.append({"message": str(exc) or type(exc).__name__, "fatal": True})
+        postings = []
+    finally:
+        job_scout_service._source_problems.reset(problems_token)
+
+    fatal = [problem["message"] for problem in problems if problem["fatal"]]
+    return {
+        "ok": not fatal,
+        "postings_read": len(postings),
+        "reason": "; ".join(fatal),
+        "warnings": [problem["message"] for problem in problems if not problem["fatal"]],
+    }
 
 
 # ── Pipeline runs (Fase 2 — Agente 1 only, always manual) ──────────────────

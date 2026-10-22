@@ -309,8 +309,15 @@ export default function PipelineSettingsTab({ isDark = false }) {
   const testSource = async (sourceId) => {
     setSourceTesting(sourceId);
     try {
+      // The source is actually read (RF13-D-001); the server sends data, the text is built here.
       const { data } = await pipelineApi.testSource(sourceId);
-      toast.success(data?.message || t("settings.pipelineTab.toastSourceReady"));
+      const warnings = (data?.warnings || []).join(" · ");
+      if (data?.ok) {
+        const message = t("settings.pipelineTab.toastSourceResponds").replace("{n}", data.postings_read ?? 0);
+        toast.success(warnings ? `${message} (${warnings})` : message);
+      } else {
+        toast.error(t("settings.pipelineTab.toastSourceNotResponding").replace("{reason}", data?.reason || "—"));
+      }
     } catch (error) {
       const missingFields = error?.response?.data?.detail?.missing_fields;
       const message = Array.isArray(missingFields) && missingFields.length
