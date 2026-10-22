@@ -339,10 +339,7 @@ export default function LeadList() {
                   </td>
                   <td className="px-4 py-3 text-gray-700">
                     {lead.company_name?.trim() ? lead.company_name : (
-                      <>
-                        <span className="text-gray-400" title={t("leads.unknownCompany")} aria-hidden="true">—</span>
-                        <span className="sr-only">{t("leads.unknownCompany")}</span>
-                      </>
+                      <span className="text-gray-400 italic">{t("leads.unknownCompany")}</span>
                     )}
                   </td>
                   <td className="px-4 py-3"><ScoreBadge score={lead.relevance_score} /></td>
