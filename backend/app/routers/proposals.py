@@ -1,11 +1,13 @@
 import logging
 import os
+import re
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Optional, Union
 from xml.sax.saxutils import escape
 
+import httpx
 from bs4 import BeautifulSoup
 from docx import Document
 from docx.enum.table import WD_TABLE_ALIGNMENT
@@ -48,6 +50,7 @@ from app.services import crm_service, deepseek_service
 from app.workers.tasks.proposal_tasks import _lang_code, format_usd
 from app.services.crm_service import (
     CrmAuthError,
+    CrmError,
     CrmProviderError,
     CrmTimeoutError,
 )
@@ -1205,6 +1208,22 @@ async def create_proposal_version(
     return version
 
 
+_CRM_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+async def _record_crm_failure(proposal_id: str, existing_sync: dict, provider: str, error: str, partial: dict) -> None:
+    """Registra el fallo en crmSync conservando los IDs del CRM ya vinculados (y los creados
+    a medias en este intento), para que un reenvío actualice en vez de duplicar."""
+    await proposals_repo.update(proposal_id, {"crmSync": {
+        **existing_sync,
+        **partial,
+        "provider": provider,
+        "status": "failed",
+        "error": error,
+        "syncedAt": datetime.now(timezone.utc).isoformat(),
+    }})
+
+
 @router.post("/{proposal_id}/send-to-crm")
 async def send_proposal_to_crm(
     proposal_id: str,
@@ -1213,11 +1232,16 @@ async def send_proposal_to_crm(
 ):
     proposal = await _get_proposal_for_user(proposal_id, user.sub)
 
-    client_email = proposal.get("clientEmail")
+    client_email = (proposal.get("clientEmail") or "").strip()
     if not client_email:
         raise HTTPException(
             status_code=400,
             detail="La propuesta no tiene un email de cliente. Edítala para agregarlo antes de enviarla al CRM.",
+        )
+    if not _CRM_EMAIL_RE.match(client_email):
+        raise HTTPException(
+            status_code=400,
+            detail="El email del cliente no tiene un formato válido. Corrígelo antes de enviarla al CRM.",
         )
 
     requested_provider = (body.provider or "").strip().lower() or None
@@ -1244,6 +1268,7 @@ async def send_proposal_to_crm(
     if client is None:
         raise HTTPException(status_code=400, detail="No hay una integración de CRM configurada en Ajustes.")
 
+    partial: dict = {}
     try:
         if provider == "hubspot":
             hubspot = client
@@ -1252,6 +1277,7 @@ async def send_proposal_to_crm(
                 name=proposal.get("clientName"),
                 company=proposal.get("clientCompany"),
             )
+            partial["hubspotContactId"] = contact_id
             deal_id = await hubspot.upsert_deal(
                 deal_id=existing_sync.get("hubspotDealId"),
                 dealname=proposal.get("title"),
@@ -1269,11 +1295,13 @@ async def send_proposal_to_crm(
             salesforce = client
             account_name = proposal.get("clientCompany") or proposal.get("clientName") or "Untitled Account"
             account_id = await salesforce.upsert_account(account_name)
+            partial["salesforceAccountId"] = account_id
             contact_id = await salesforce.upsert_contact(
                 email=client_email,
                 name=proposal.get("clientName"),
                 account_id=account_id,
             )
+            partial["salesforceContactId"] = contact_id
             opportunity_id = await salesforce.upsert_opportunity(
                 opportunity_id=existing_sync.get("salesforceOpportunityId"),
                 name=proposal.get("title"),
@@ -1289,18 +1317,23 @@ async def send_proposal_to_crm(
                 "salesforceContactId": contact_id,
                 "salesforceOpportunityId": opportunity_id,
             }
-    except CrmAuthError as exc:
-        raise HTTPException(status_code=401, detail=str(exc)) from exc
-    except CrmTimeoutError as exc:
-        raise HTTPException(status_code=504, detail=str(exc)) from exc
-    except CrmProviderError as exc:
-        await proposals_repo.update(proposal_id, {"crmSync": {
-            "provider": provider,
-            "status": "failed",
-            "error": str(exc),
-            "syncedAt": datetime.now(timezone.utc).isoformat(),
-        }})
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except CrmError as exc:
+        partial.update(getattr(exc, "partial_ids", None) or {})
+        if isinstance(exc, CrmAuthError):
+            code = 401
+        elif isinstance(exc, CrmTimeoutError):
+            code = 504
+        else:
+            code = 502
+        await _record_crm_failure(proposal_id, existing_sync, provider, str(exc), partial)
+        raise HTTPException(status_code=code, detail=str(exc)) from exc
+    except httpx.HTTPError as exc:
+        # CRM caído / sin red / DNS: antes escapaba como 500 sin mensaje.
+        label = "HubSpot" if provider == "hubspot" else "Salesforce"
+        detail = f"No se pudo conectar con {label}. Revisa que el servicio esté disponible e inténtalo de nuevo."
+        logger.warning("send-to-crm: fallo de conexión con %s: %r", label, exc)
+        await _record_crm_failure(proposal_id, existing_sync, provider, detail, partial)
+        raise HTTPException(status_code=502, detail=detail) from exc
 
     return await proposals_repo.update(proposal_id, {"crmSync": crm_sync})
 
