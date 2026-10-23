@@ -98,3 +98,6 @@ backend/scripts/migrations/backups/
 # Propuestas BPO de ejemplo (se regeneran con backend/scripts/gen_propuestas_bpo_ejemplo.py) y temporales de Word
 backend/tests/fixtures/propuestas_bpo/
 ~$*
+.claude
+graphify-out
+.serena
