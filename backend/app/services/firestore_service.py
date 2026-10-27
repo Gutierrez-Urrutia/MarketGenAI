@@ -38,6 +38,12 @@ from google.cloud.firestore_v1 import AsyncDocumentReference
 
 from app.config import settings
 from app.schemas.contact import ContactCreate
+from app.schemas.proposal import (
+    PROPOSAL_STATUS_VALUES,
+    StatusChangeError,
+    decide_cambio_estado,
+    normalize_proposal_status,
+)
 
 logger = logging.getLogger("marketgen.firestore")
 
@@ -398,7 +404,116 @@ class PasswordResetTokensRepo(FirestoreRepo):
 
 
 class ProposalsRepo(FirestoreRepo):
+    """Propuestas. Al leer, `proposal_status` se normaliza en memoria a los
+    códigos de RF-VTA-05 (valores viejos y campo ausente); nunca se reescribe en
+    Firestore desde aquí: eso es trabajo de la migración."""
+
     collection = "proposals"
+    audit_collection = "auditLogs"
+
+    @staticmethod
+    def _normalize(doc: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        if doc is None:
+            return None
+        raw = doc.get("proposal_status")
+        normalized = normalize_proposal_status(raw)
+        if normalized not in PROPOSAL_STATUS_VALUES:
+            logger.warning(
+                "proposals/%s: proposal_status desconocido %r; se deja tal cual (requiere migración)",
+                doc.get("id"), raw,
+            )
+        if normalized != raw:
+            doc = {**doc, "proposal_status": normalized}
+        return doc
+
+    async def get(self, doc_id: str) -> Optional[Dict[str, Any]]:
+        return self._normalize(await super().get(doc_id))
+
+    async def list(self, *args, **kwargs) -> List[Dict[str, Any]]:
+        return [self._normalize(doc) for doc in await super().list(*args, **kwargs)]
+
+    @staticmethod
+    def plan_status_change(
+        proposal: Optional[Dict[str, Any]],
+        target: Any,
+        *,
+        actor_id: str,
+        actor_roles: List[str],
+        actor_is_admin: bool,
+        method: str,
+        path: str,
+        ip: Optional[str],
+        timestamp: str,
+        audit_id: str,
+    ) -> Dict[str, Any]:
+        """Pura. Lo que la transacción de change_status debe hacer con la propuesta
+        leída (sin normalizar). Devuelve {"not_found": True}, {"error": StatusChangeError}
+        o {"new_status", "audit_log"} con el registro de auditoría a escribir."""
+        if proposal is None:
+            return {"not_found": True}
+        previous = normalize_proposal_status(proposal.get("proposal_status"))
+        owner_id = proposal.get("userId")
+        decision = decide_cambio_estado(previous, target, owner_id == actor_id, actor_is_admin)
+        if isinstance(decision, StatusChangeError):
+            return {"error": decision}
+        return {
+            "new_status": decision.value,
+            "audit_log": {
+                "id": audit_id,
+                "action": "proposal_status_changed",
+                "proposalId": proposal.get("id"),
+                "previousStatus": previous,
+                "newStatus": decision.value,
+                "userId": actor_id,
+                "roles": list(actor_roles),
+                "ownerId": owner_id,
+                "method": method,
+                "path": path,
+                "ip": ip,
+                "timestamp": timestamp,
+            },
+        }
+
+    async def change_status(
+        self,
+        proposal_id: str,
+        target: Any,
+        *,
+        actor_id: str,
+        actor_roles: List[str],
+        actor_is_admin: bool,
+        method: str,
+        path: str,
+        ip: Optional[str],
+    ) -> Dict[str, Any]:
+        """Cambia `proposal_status` y escribe su registro de auditoría en una sola
+        transacción: si el registro falla, el cambio tampoco se guarda. Devuelve
+        {"not_found": True}, {"error": StatusChangeError} o {"proposal": doc}."""
+        ref = self._doc(proposal_id)
+        audit_id = str(uuid.uuid4())
+        audit_ref = self.db.collection(self.audit_collection).document(audit_id)
+        transaction = self.db.transaction()
+
+        @firestore.async_transactional
+        async def _txn(txn):
+            snap = await ref.get(transaction=txn)
+            proposal = snap.to_dict() if snap.exists else None
+            plan = self.plan_status_change(
+                proposal, target,
+                actor_id=actor_id, actor_roles=actor_roles, actor_is_admin=actor_is_admin,
+                method=method, path=path, ip=ip,
+                # Mismo formato que middleware/audit.py: admin.py ordena por este campo.
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                audit_id=audit_id,
+            )
+            if "new_status" not in plan:
+                return plan
+            updated_at = now_utc()
+            txn.update(ref, {"proposal_status": plan["new_status"], "updatedAt": updated_at})
+            txn.set(audit_ref, plan["audit_log"])
+            return {"proposal": {**proposal, "proposal_status": plan["new_status"], "updatedAt": updated_at}}
+
+        return await _txn(transaction)
 
 
 class CampaignsRepo(FirestoreRepo):

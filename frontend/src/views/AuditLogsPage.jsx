@@ -2,9 +2,14 @@ import { Badge, Btn, Card, Field, Input } from "@/components/dashboard/ui";
 import { RefreshIcon, SearchIcon } from "@/components/dashboard/icons";
 import api, { authTokenStore } from "@/api/axios";
 import { canViewAuditLogs } from "@/utils/permissions";
+import { proposalStatusLabelKey } from "@/features/proposals/proposalStatus";
 import { useEffect, useState } from "react";
+import { useI18n } from "@/hooks/useI18n";
+
+const PROPOSAL_STATUS_CHANGED = "proposal_status_changed";
 
 export function AuditLogsPage() {
+  const { t } = useI18n();
   const [logs, setLogs] = useState([]);
   const [userId, setUserId] = useState("");
   const [loading, setLoading] = useState(false);
@@ -103,7 +108,16 @@ export function AuditLogsPage() {
                 <tr key={log.id} className="hover:bg-gray-50">
                   <td className="whitespace-nowrap px-4 py-4 text-gray-700">{formatTimestamp(log.timestamp)}</td>
                   <td className="whitespace-nowrap px-4 py-4 font-medium text-gray-900">{log.userId || "-"}</td>
-                  <td className="px-4 py-4 text-gray-700">{log.action || "-"}</td>
+                  <td className="px-4 py-4 text-gray-700">
+                    {log.action === PROPOSAL_STATUS_CHANGED ? (
+                      <>
+                        <div>{t("auditLogs.proposalStatusChanged")}</div>
+                        <div className="text-[11px] text-gray-500">
+                          {t(proposalStatusLabelKey(log.previousStatus))} → {t(proposalStatusLabelKey(log.newStatus))}
+                        </div>
+                      </>
+                    ) : (log.action || "-")}
+                  </td>
                   <td className="whitespace-nowrap px-4 py-4">
                     <Badge label={log.method || "-"} color={methodColor(log.method)} />
                   </td>
