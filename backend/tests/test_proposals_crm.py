@@ -148,7 +148,9 @@ async def test_send_to_crm_auth_error_returns_401(client):
         resp = await client.post(f"{API}/proposal-001/send-to-crm", json={})
 
     assert resp.status_code == 401
-    update_proposal.assert_not_awaited()
+    # RF04-D-001: el error queda registrado en la propuesta (nunca como "synced")
+    saved = update_proposal.await_args.args[1]["crmSync"]
+    assert saved["status"] == "failed" and "API key" in saved["error"]
 
 
 @pytest.mark.asyncio
@@ -158,6 +160,7 @@ async def test_send_to_crm_timeout_returns_504(client):
         patch("app.routers.proposals.proposals_repo.get", new_callable=AsyncMock, return_value=proposal),
         patch("app.routers.proposals.settings_repo.get_by_user", new_callable=AsyncMock, return_value=fake_settings()),
         patch("app.routers.proposals.crm_service.build_client_from_stored") as build_client,
+        patch("app.routers.proposals.proposals_repo.update", new_callable=AsyncMock) as update_proposal,
     ):
         hubspot = build_client.return_value
         hubspot.upsert_contact = AsyncMock(side_effect=CrmTimeoutError("Timeout al conectar con HubSpot"))
@@ -165,6 +168,7 @@ async def test_send_to_crm_timeout_returns_504(client):
         resp = await client.post(f"{API}/proposal-001/send-to-crm", json={})
 
     assert resp.status_code == 504
+    assert update_proposal.await_args.args[1]["crmSync"]["status"] == "failed"
 
 
 @pytest.mark.asyncio
@@ -327,7 +331,7 @@ async def test_send_to_crm_salesforce_auth_error_returns_401(client):
         resp = await client.post(f"{API}/proposal-001/send-to-crm", json={"provider": "salesforce"})
 
     assert resp.status_code == 401
-    update_proposal.assert_not_awaited()
+    assert update_proposal.await_args.args[1]["crmSync"]["status"] == "failed"
 
 
 @pytest.mark.asyncio
@@ -349,3 +353,76 @@ async def test_send_to_crm_provider_error_marks_sync_failed(client):
     saved_crm_sync = update_proposal.await_args.args[1]["crmSync"]
     assert saved_crm_sync["status"] == "failed"
     assert "500" in saved_crm_sync["error"]
+
+
+def _hubspot_ctx(proposal, update_mock):
+    return (
+        patch("app.routers.proposals.proposals_repo.get", new_callable=AsyncMock, return_value=proposal),
+        patch("app.routers.proposals.settings_repo.get_by_user", new_callable=AsyncMock, return_value=fake_settings()),
+        patch("app.routers.proposals.crm_service.build_client_from_stored"),
+        patch("app.routers.proposals.proposals_repo.update", update_mock),
+    )
+
+
+@pytest.mark.asyncio
+async def test_send_to_crm_connection_error_returns_502_and_is_recorded(client):
+    """RF04-D-002: CRM caído (conexión rechazada) ya no escapa como 500 sin mensaje."""
+    import httpx
+    proposal = fake_proposal({"clientEmail": "client@example.com"})
+    update = AsyncMock()
+    p1, p2, p3, p4 = _hubspot_ctx(proposal, update)
+    with p1, p2, p3 as build_client, p4:
+        build_client.return_value.upsert_contact = AsyncMock(side_effect=httpx.ConnectError("refused"))
+        resp = await client.post(f"{API}/proposal-001/send-to-crm", json={})
+    assert resp.status_code == 502
+    assert "No se pudo conectar con HubSpot" in resp.json()["detail"]
+    assert update.await_args.args[1]["crmSync"]["status"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_send_to_crm_failure_keeps_linked_ids(client):
+    """RF04-D-003: un reenvío fallido no borra el ID del negocio ya vinculado."""
+    proposal = fake_proposal({
+        "clientEmail": "client@example.com",
+        "crmSync": {"provider": "hubspot", "status": "synced", "hubspotContactId": "c-1", "hubspotDealId": "deal-99"},
+    })
+    update = AsyncMock()
+    p1, p2, p3, p4 = _hubspot_ctx(proposal, update)
+    with p1, p2, p3 as build_client, p4:
+        build_client.return_value.upsert_contact = AsyncMock(side_effect=CrmProviderError("HubSpot respondió con error 500"))
+        resp = await client.post(f"{API}/proposal-001/send-to-crm", json={})
+    assert resp.status_code == 502
+    saved = update.await_args.args[1]["crmSync"]
+    assert saved["status"] == "failed" and saved["hubspotDealId"] == "deal-99"
+
+
+@pytest.mark.asyncio
+async def test_send_to_crm_partial_failure_saves_created_deal_id(client):
+    """RF04-D-003: si el negocio se creó pero falló la asociación, su ID se guarda."""
+    proposal = fake_proposal({"clientEmail": "client@example.com"})
+    update = AsyncMock()
+    p1, p2, p3, p4 = _hubspot_ctx(proposal, update)
+    with p1, p2, p3 as build_client, p4:
+        err = CrmProviderError("HubSpot respondió con error 500")
+        err.partial_ids = {"hubspotDealId": "deal-new"}
+        build_client.return_value.upsert_contact = AsyncMock(return_value="contact-1")
+        build_client.return_value.upsert_deal = AsyncMock(side_effect=err)
+        resp = await client.post(f"{API}/proposal-001/send-to-crm", json={})
+    assert resp.status_code == 502
+    saved = update.await_args.args[1]["crmSync"]
+    assert saved["hubspotContactId"] == "contact-1" and saved["hubspotDealId"] == "deal-new"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_email", ["   ", "no-es-un-correo", "a@b"])
+async def test_send_to_crm_rejects_blank_or_malformed_email(client, bad_email):
+    """RF04-D-004: se rechaza con 400 antes de llamar al CRM."""
+    proposal = fake_proposal({"clientEmail": bad_email})
+    with (
+        patch("app.routers.proposals.proposals_repo.get", new_callable=AsyncMock, return_value=proposal),
+        patch("app.routers.proposals.crm_service.build_client_from_stored") as build_client,
+    ):
+        resp = await client.post(f"{API}/proposal-001/send-to-crm", json={})
+    assert resp.status_code == 400
+    assert "email" in resp.json()["detail"].lower()
+    build_client.assert_not_called()

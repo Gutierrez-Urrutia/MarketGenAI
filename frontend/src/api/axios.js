@@ -211,7 +211,13 @@ api.interceptors.response.use(
     const status = error.response?.status
     const originalRequest = error.config
 
-    if (status === 401 && originalRequest && !originalRequest._retry) {
+    // Un 401 de una llamada marcada como crmRequest (send-to-crm) solo es de sesión si trae el mensaje de
+    // autenticación de la app; el 401 por credenciales vencidas del CRM no debe renovar ni cerrar la sesión.
+    const detail401 = error.response?.data?.detail
+    const isCrmProviderAuthError = Boolean(originalRequest?.crmRequest)
+      && !(typeof detail401 === 'string' && /could not validate credentials|not authenticated/i.test(detail401))
+
+    if (status === 401 && originalRequest && !originalRequest._retry && !isCrmProviderAuthError) {
       originalRequest._retry = true
 
       // This request went out with a token that has since been replaced (a
@@ -237,7 +243,8 @@ api.interceptors.response.use(
       toast.error('You do not have permission to perform this action.')
     }
 
-    if (status >= 500) {
+    // suppressServerErrorToast: el llamador muestra su propio mensaje (p. ej. el detalle del CRM en send-to-crm)
+    if (status >= 500 && !originalRequest?.suppressServerErrorToast) {
       toast.error('Server error. Please try again.')
     }
 
