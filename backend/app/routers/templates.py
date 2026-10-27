@@ -1,9 +1,14 @@
-"""Templates router — manage reusable prompt/content templates."""
+"""Templates router — manage reusable prompt/content templates.
+
+Plantillas de propuesta (RF-VTA-07): se clasifican por línea de servicio e industria,
+traen un bloque de condiciones comerciales y, al aplicarse, completan las variables
+estándar con datos de la propuesta y del cliente."""
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from docx import Document
 
@@ -13,11 +18,19 @@ except ImportError:  # pragma: no cover - dependency is declared in requirements
     PdfReader = None
 
 from app.dependencies.auth import CurrentUser, get_current_user
+from app.routers.customers import _get_customer_for_user
+from app.routers.proposals import (
+    _get_proposal_for_user, _localized_date, _proposal_cover_fields, _resolve_total_amount,
+)
 from app.schemas.template import (
     TemplateCreate, TemplateUpdate, TemplateOut, TemplateListResponse,
-    ApplyTemplateRequest,
+    ApplyTemplateRequest, ApplyTemplateResponse, Industry, ServiceType, TemplateType,
 )
 from app.services.firestore_service import templates_repo
+from app.services.template_service import (
+    catalog, classification_labels, default_commercial_terms, lang_code,
+    render_placeholders, with_defaults,
+)
 
 router = APIRouter(prefix="/templates", tags=["Templates"])
 
@@ -34,7 +47,67 @@ async def _get_template_for_user(template_id: str, user: CurrentUser) -> dict:
     if not template:
         raise HTTPException(status_code=404, detail="Template not found.")
     _assert_owner(template, user)
-    return template
+    return with_defaults(template)
+
+
+def _matches(template: dict, service_type: Optional[ServiceType], industry: Optional[Industry], search: Optional[str]) -> bool:
+    if service_type and template["serviceType"] != service_type.value:
+        return False
+    if industry and template["industry"] != industry.value:
+        return False
+    if search:
+        s = search.lower()
+        return s in template.get("name", "").lower() or s in (template.get("description") or "").lower()
+    return True
+
+
+async def _variables_from_sources(body: ApplyTemplateRequest, template: dict, user: CurrentUser) -> dict[str, Any]:
+    """Variables estándar desde la propuesta y el cliente. El cliente del CRM pisa la
+    copia que guarda la propuesta, y los valores manuales de `body.variables` pisan todo."""
+    values: dict[str, Any] = {}
+    language = body.language
+    service_type = template["serviceType"]
+    industry = template["industry"]
+
+    if body.proposalId:
+        proposal = await _get_proposal_for_user(body.proposalId, user.sub)
+        cover = _proposal_cover_fields(proposal)
+        language = language or cover["language"]
+        service_type = proposal.get("serviceType") or service_type
+        industry = proposal.get("industry") or industry
+        values.update({
+            "propuesta_titulo": proposal.get("title"),
+            "cliente_nombre":   cover["client"],
+            "cliente_empresa":  proposal.get("clientCompany"),
+            "cliente_email":    proposal.get("clientEmail"),
+            "monto_total":      cover["total_amount_display"] if _resolve_total_amount(proposal) is not None else None,
+            "fecha":            cover["issued_on"],
+            "valida_hasta":     cover["valid_until"],
+            "referencia":       cover["reference"],
+            "preparado_por":    proposal.get("issuedBy"),
+        })
+
+    if body.customerId:
+        customer = await _get_customer_for_user(body.customerId, user)
+        values.update({
+            "cliente_nombre":  customer.get("name"),
+            "cliente_empresa": customer.get("company"),
+            "cliente_email":   customer.get("email"),
+        })
+
+    lang = lang_code(language)
+    values.update(classification_labels(service_type, industry, lang))
+    values["fecha"] = values.get("fecha") or _localized_date(datetime.now(timezone.utc), lang)
+    values.update(body.variables)
+    return values
+
+
+# ── Catalog ───────────────────────────────────────────────────────────────────
+# Declarado antes de /{template_id} para que "catalog" no se tome como id.
+@router.get("/catalog")
+async def get_template_catalog(user: CurrentUser = Depends(get_current_user)):
+    """Líneas de servicio, industrias, variables estándar y condiciones comerciales base."""
+    return catalog()
 
 
 def _decode_text_file(content: bytes) -> str:
@@ -107,6 +180,8 @@ async def extract_template_file(
 @router.get("", response_model=TemplateListResponse)
 async def list_templates(
     template_type: Optional[str] = Query(None, alias="type"),
+    service_type:  Optional[ServiceType] = Query(None, alias="serviceType"),
+    industry:      Optional[Industry]    = Query(None),
     search:        Optional[str] = Query(None),
     include_public: bool         = Query(True),
     limit:         int           = Query(20, ge=1, le=100),
@@ -117,10 +192,18 @@ async def list_templates(
     if template_type:
         filters.append(("type", "==", template_type))
 
-    user_templates = await templates_repo.list(
-        filters=filters, order_by="usageCount",
-        order_direction="DESCENDING", limit=limit, offset=offset,
-    )
+    # Servicio e industria se filtran en memoria: las plantillas anteriores a RF-VTA-07
+    # no tienen esos campos en Firestore y solo los reciben en with_defaults. Con
+    # filtros + order_by el repo ya trae la lista completa y ordena en memoria, así
+    # que pedirla sin límite no cambia la consulta.
+    user_templates = [
+        t for t in map(with_defaults, await templates_repo.list(
+            filters=filters, order_by="usageCount", order_direction="DESCENDING", limit=0,
+        ))
+        if _matches(t, service_type, industry, search)
+    ]
+    total = len(user_templates)
+    user_templates = user_templates[offset:offset + limit]
 
     public_templates = []
     if include_public:
@@ -128,21 +211,15 @@ async def list_templates(
         if template_type:
             pub_filters.append(("type", "==", template_type))
         public_templates = await templates_repo.list(
-            filters=pub_filters, order_by="usageCount",
-            order_direction="DESCENDING", limit=10,
+            filters=pub_filters, order_by="usageCount", order_direction="DESCENDING", limit=0,
         )
-        # Deduplicate: remove public templates user already owns
-        user_ids = {t["id"] for t in user_templates}
-        public_templates = [t for t in public_templates if t["id"] not in user_ids]
+        # Deduplicate: remove public templates the user owns (they are already listed or filtered out)
+        public_templates = [
+            t for t in map(with_defaults, public_templates)
+            if t.get("userId") != user.sub and _matches(t, service_type, industry, search)
+        ][:10]
 
-    all_templates = user_templates + public_templates
-
-    if search:
-        s = search.lower()
-        all_templates = [t for t in all_templates if s in t.get("name", "").lower() or s in (t.get("description") or "").lower()]
-
-    total = await templates_repo.count(filters=[("userId", "==", user.sub)])
-    return TemplateListResponse(items=all_templates, total=total)
+    return TemplateListResponse(items=user_templates + public_templates, total=total)
 
 
 # ── Create ────────────────────────────────────────────────────────────────────
@@ -151,10 +228,12 @@ async def create_template(
     body: TemplateCreate,
     user: CurrentUser = Depends(get_current_user),
 ):
-    data = body.model_dump()
+    data = body.model_dump(mode="json")
+    if body.type == TemplateType.proposal and not (body.commercialTerms or "").strip():
+        data["commercialTerms"] = default_commercial_terms()
     data["userId"] = user.sub
     data["usageCount"] = 0
-    return await templates_repo.create(data)
+    return with_defaults(await templates_repo.create(data))
 
 
 # ── Get one ───────────────────────────────────────────────────────────────────
@@ -178,7 +257,16 @@ async def update_template(
         raise HTTPException(status_code=404, detail="Template not found.")
     if template.get("userId") != user.sub:
         raise HTTPException(status_code=403, detail="Only the owner can edit this template.")
-    return await templates_repo.update(template_id, body.model_dump(exclude_none=True))
+    if (
+        template.get("type") == TemplateType.proposal.value
+        and body.commercialTerms is not None
+        and not body.commercialTerms.strip()
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="Proposal templates must include commercial terms.",
+        )
+    return with_defaults(await templates_repo.update(template_id, body.model_dump(mode="json", exclude_none=True)))
 
 
 # ── Delete ────────────────────────────────────────────────────────────────────
@@ -196,20 +284,28 @@ async def delete_template(
 
 
 # ── Apply template (fill in variables) ───────────────────────────────────────
-@router.post("/{template_id}/apply")
+@router.post("/{template_id}/apply", response_model=ApplyTemplateResponse)
 async def apply_template(
     template_id: str,
     body:        ApplyTemplateRequest,
     user:        CurrentUser = Depends(get_current_user),
 ):
     """
-    Substitute {variable} placeholders in the template content with provided values.
-    Returns the rendered content string.
+    Substitute {variable} placeholders in the template content and commercial terms.
+    Standard variables are filled from `proposalId` / `customerId`; `variables` overrides them.
+    Placeholders left without a value stay in the text and are listed in `missingVariables`.
     """
     template = await _get_template_for_user(template_id, user)
-    content = template["content"]
-    for key, value in body.variables.items():
-        content = content.replace(f"{{{key}}}", str(value))
+    values = await _variables_from_sources(body, template, user)
+    rendered, missing = render_placeholders(template["content"], values)
+    terms, missing_terms = render_placeholders(template.get("commercialTerms"), values)
     # Increment usage counter
     await templates_repo.update(template_id, {"usageCount": template.get("usageCount", 0) + 1})
-    return {"rendered": content, "templateId": template_id}
+    return ApplyTemplateResponse(
+        templateId=template_id,
+        rendered=rendered,
+        commercialTerms=terms,
+        serviceType=template["serviceType"],
+        industry=template["industry"],
+        missingVariables=missing + [name for name in missing_terms if name not in missing],
+    )
