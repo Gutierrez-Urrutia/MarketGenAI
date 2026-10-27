@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from app.routers import templates as templates_router
-from tests.conftest import FAKE_USER_SUB
+from tests.conftest import FAKE_USER_SUB, fake_job
 
 API = "/api/v1/templates"
 
@@ -333,6 +333,112 @@ async def test_apply_with_foreign_customer_is_forbidden(client):
     ):
         resp = await client.post(f"{API}/tmpl-001/apply", json={"customerId": "cust-001"})
     assert resp.status_code == 403
+
+
+# ── RF-VTA-07: plantilla aplicada al generar una propuesta ────────────────────
+
+@pytest.mark.asyncio
+async def test_generate_proposal_with_template_passes_rendered_template_to_worker(client):
+    proposal = fake_proposal({"serviceType": "collections"})
+    tmpl = fake_template({
+        "content": "Propuesta para {cliente_empresa}, plazo {plazo_meses} meses.",
+        "commercialTerms": "Total {monto_total}.\nPago a 30 días.",
+        "serviceType": "back_office",
+        "industry": "healthcare",
+    })
+    with (
+        patch("app.routers.proposals.proposals_repo.get", new_callable=AsyncMock, return_value=proposal),
+        patch("app.routers.proposals.proposals_repo.update", new_callable=AsyncMock, return_value=proposal) as proposal_update,
+        patch("app.routers.templates.templates_repo.get", new_callable=AsyncMock, return_value=tmpl),
+        patch("app.routers.templates.templates_repo.update", new_callable=AsyncMock, return_value=tmpl),
+        patch("app.routers.proposals.jobs_repo.create_job", new_callable=AsyncMock, return_value=fake_job("proposal_generation")),
+        patch("app.routers.proposals.task_generate_proposal.delay") as delay_mock,
+    ):
+        resp = await client.post("/api/v1/proposals/prop-abcd1234/generate", json={
+            "language": "es",
+            "templateId": "tmpl-001",
+            "templateVariables": {"plazo_meses": 12},
+            "templateContent": "texto inyectado por el cliente",
+        })
+    assert resp.status_code == 202
+    options = delay_mock.call_args.args[5]
+    assert options["templateContent"] == "Propuesta para Acme (copia en la propuesta), plazo 12 meses."
+    assert options["commercialTerms"] == "Total $21.950 USD.\nPago a 30 días."
+    proposal_update.assert_awaited_once_with("prop-abcd1234", {
+        "templateId": "tmpl-001", "serviceType": "collections", "industry": "healthcare",
+    })
+
+
+@pytest.mark.asyncio
+async def test_generate_proposal_without_template_drops_client_template_text(client):
+    with (
+        patch("app.routers.proposals.proposals_repo.get", new_callable=AsyncMock, return_value=fake_proposal()),
+        patch("app.routers.proposals.jobs_repo.create_job", new_callable=AsyncMock, return_value=fake_job("proposal_generation")),
+        patch("app.routers.proposals.task_generate_proposal.delay") as delay_mock,
+    ):
+        resp = await client.post("/api/v1/proposals/prop-abcd1234/generate", json={
+            "templateContent": "x", "commercialTerms": "y",
+        })
+    assert resp.status_code == 202
+    options = delay_mock.call_args.args[5]
+    assert "templateContent" not in options and "commercialTerms" not in options
+
+
+@pytest.mark.asyncio
+async def test_generate_proposal_with_foreign_template_is_forbidden(client):
+    with (
+        patch("app.routers.proposals.proposals_repo.get", new_callable=AsyncMock, return_value=fake_proposal()),
+        patch("app.routers.templates.templates_repo.get", new_callable=AsyncMock, return_value=fake_template({"userId": "other-user"})),
+        patch("app.routers.proposals.task_generate_proposal.delay") as delay_mock,
+    ):
+        resp = await client.post("/api/v1/proposals/prop-abcd1234/generate", json={"templateId": "tmpl-001"})
+    assert resp.status_code == 403
+    delay_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_generated_content_uses_template_and_its_commercial_terms(tmp_path):
+    from app.routers.proposals import _generate_proposal_content
+
+    llm_html = (
+        "<h1>T</h1><h2>Precios y Condiciones Comerciales</h2><p>[[PRICING_TABLE]]</p>"
+        "<p>[[COMMERCIAL_TERMS]]</p><h2>Condiciones Generales</h2><ul><li>x</li></ul>"
+    )
+    with (
+        patch("app.routers.proposals._output_dir", return_value=tmp_path),
+        patch("app.routers.proposals.deepseek_service.generate_text", new_callable=AsyncMock, return_value=llm_html) as generate_text,
+    ):
+        result = await _generate_proposal_content(
+            "Propuesta", "Acme", "Cobranza", language="es",
+            template_content="Enfocar en recupero temprano para Acme.",
+            commercial_terms="- Pago a 30 días <neto>\n\n• Vigencia 60 días",
+        )
+    html = result["content"]
+    assert "[[COMMERCIAL_TERMS]]" not in html and "[[PRICING_TABLE]]" not in html
+    assert "<ul><li>Pago a 30 días &lt;neto&gt;</li><li>Vigencia 60 días</li></ul>" in html
+    assert html.index("pricing-table") < html.index("Pago a 30 días") < html.index("Condiciones Generales")
+    prompt = generate_text.await_args.args[0]
+    assert "Enfocar en recupero temprano para Acme." in prompt
+    assert "do not write commercial terms yourself" in prompt
+    assert "state the currency (USD)" not in prompt
+
+
+def test_commercial_terms_fallback_goes_after_pricing_table():
+    from app.workers.tasks.proposal_tasks import build_pricing_table_html, inject_commercial_terms, inject_pricing_table
+
+    content = inject_pricing_table("<h2>A</h2><p>x</p><h2>B</h2><p>y</p>", build_pricing_table_html(None, None, "es"))
+    out = inject_commercial_terms(content, "Pago a 30 días")
+    assert out.index("pricing-table") < out.index("Pago a 30 días") < out.index("<h2>B</h2>")
+    assert inject_commercial_terms(content, "  \n ") == content
+
+
+def test_cover_shows_service_and_industry_from_proposal():
+    from app.routers.proposals import _proposal_cover_fields
+
+    cover = _proposal_cover_fields(fake_proposal({"serviceType": "back_office", "industry": "healthcare"}))
+    assert (cover["service_line"], cover["industry"]) == ("Back office", "Salud")
+    legacy = _proposal_cover_fields(fake_proposal({"serviceType": "B2B Operations"}))
+    assert (legacy["service_line"], legacy["industry"]) == ("", "")
 
 
 @pytest.mark.asyncio

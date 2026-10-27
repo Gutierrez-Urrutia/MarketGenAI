@@ -1,6 +1,8 @@
 import { ProposalDocumentPreview } from "@/features/proposals/ProposalDocumentPreview";
 import { calculateProposalTotal, formatUsd, normalizeLineItem, normalizeProposalDocument } from "@/features/proposals/proposalDocument";
 import { createProposal, generateProposalById, updateProposal } from "@/api/proposalsApi";
+import { templatesApi } from "@/api/axios";
+import { catalogLabel, extractVariables } from "@/features/proposals/templateVariables";
 import { announceProposalGeneration } from "@/features/proposals/generationNotifier";
 import { exportProposalDocument } from "@/features/proposals/proposalExport";
 import { proposalDocumentToHtml } from "@/features/proposals/proposalHtml";
@@ -27,12 +29,47 @@ export function OpportunityProposalModal({ opportunity, onClose }) {
   const [editingPreview, setEditingPreview] = useState(false);
   const [customerEmail, setCustomerEmail] = useState("");
   const [teamSizing, setTeamSizing] = useState("");
+  // RF-VTA-07: plantilla, clasificación y valores de las variables propias de la plantilla.
+  const [templates, setTemplates] = useState([]);
+  const [templateCatalog, setTemplateCatalog] = useState(null);
+  const [templateId, setTemplateId] = useState("");
+  const [serviceType, setServiceType] = useState("");
+  const [industry, setIndustry] = useState("");
+  const [templateValues, setTemplateValues] = useState({});
   const mountedRef = useRef(true);
   const backgroundRef = useRef(false);
   useEffect(() => {
     mountedRef.current = true;
     return () => { mountedRef.current = false; };
   }, []);
+  useEffect(() => {
+    // Las plantillas son opcionales: si no cargan, se genera con la estructura estándar.
+    const quiet = { suppressPermissionToast: true };
+    templatesApi.catalog(quiet).then(({ data }) => mountedRef.current && setTemplateCatalog(data)).catch(() => {});
+    templatesApi.list({ type: "proposal", limit: 100 }, quiet)
+      .then(({ data }) => mountedRef.current && setTemplates(data?.items || []))
+      .catch(() => {});
+  }, []);
+  const selectedTemplate = templates.find((template) => template.id === templateId) || null;
+  const standardVariableNames = new Set(Object.values(templateCatalog?.standardVariables || {}).flat());
+  const templateCustomVariables = selectedTemplate
+    ? extractVariables(selectedTemplate.content, selectedTemplate.commercialTerms).filter((name) => !standardVariableNames.has(name))
+    : [];
+  const classificationLabel = (options, value) => catalogLabel((options || []).find((option) => option.value === value), activeLanguage);
+  const chooseTemplate = (id) => {
+    const template = templates.find((item) => item.id === id);
+    setTemplateId(id);
+    setTemplateValues({});
+    if (template) {
+      setServiceType(template.serviceType || "");
+      setIndustry(template.industry || "");
+    }
+  };
+  const templateRequestFields = () => ({
+    serviceType: serviceType || undefined,
+    industry: industry || undefined,
+    templateId: templateId || undefined,
+  });
   const { toasts, setToast, removeToast, pauseToast, resumeToast } = useToastQueue();
   const proposalPreviewRef = useRef(null);
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -46,7 +83,7 @@ export function OpportunityProposalModal({ opportunity, onClose }) {
     customer: opportunity?.company || "",
     customerEmail,
     customerCompany: opportunity?.company || "",
-    template: "NoonDalton Standard Proposal",
+    template: selectedTemplate?.name || "NoonDalton Standard Proposal",
     date: new Date().toISOString().slice(0, 10),
     tags: opportunityTags.join(", "),
   };
@@ -164,8 +201,8 @@ export function OpportunityProposalModal({ opportunity, onClose }) {
       stage: opportunity?.stage || "N/A",
       score: opportunity?.score,
       totalAmount: pricingTotal,
-      industry: profile.industry,
-      serviceLine: proposalForm.template,
+      industry: classificationLabel(templateCatalog?.industries, industry) || profile.industry,
+      serviceLine: classificationLabel(templateCatalog?.serviceTypes, serviceType) || proposalForm.template,
       executiveSummary: `${proposalForm.customer} has a qualified opportunity to ${profile.executiveFocus}. NoonDalton proposes a focused AI-enabled delivery model that combines workflow automation, specialist execution, and management visibility. This proposal is based on the current opportunity for ${opportunity?.job || "the identified need"}, with a pipeline stage of ${opportunity?.stage || "N/A"} and a qualification score of ${opportunity?.score || "N/A"}%.`,
       problemsIdentified: profile.problems,
       proposedSolution: `${profile.solution} The solution will be configured around ${opportunityTags.length ? opportunityTags.join(", ") : "the client's core operating requirements"} and will use relevant existing content such as ${contentUsed} when appropriate.`,
@@ -206,6 +243,7 @@ export function OpportunityProposalModal({ opportunity, onClose }) {
     clientEmail: proposalForm.customerEmail || undefined,
     clientCompany: proposalForm.customerCompany || undefined,
     template: proposalForm.template,
+    ...templateRequestFields(),
     tags: opportunityTags,
     pricing_rows: pricingRows,
     lineItems: pricingRows.map(normalizeLineItem),
@@ -275,6 +313,8 @@ export function OpportunityProposalModal({ opportunity, onClose }) {
         clientName: proposalForm.customer,
         customer: proposalForm.customer,
         template: proposalForm.template,
+        ...templateRequestFields(),
+        templateVariables: templateId ? templateValues : undefined,
         tags: opportunityTags,
         lineItems: pricingRows.map(normalizeLineItem),
         totalAmount: total.totalAmount,
@@ -437,7 +477,42 @@ export function OpportunityProposalModal({ opportunity, onClose }) {
                 <Input type="email" value={customerEmail} onChange={(event) => setCustomerEmail(event.target.value)} placeholder="client@company.com" />
               </Field>
               <Field label={t("opportunitiesPage.proposalModal.proposalName")}><Input value={proposalForm.name} readOnly /></Field>
-              <Field label={t("opportunitiesPage.proposalModal.template")}><Input value={proposalForm.template} readOnly /></Field>
+              <Field label={t("opportunitiesPage.proposalModal.template")} hint={t("opportunitiesPage.proposalModal.templateHint")}>
+                <Select aria-label={t("opportunitiesPage.proposalModal.template")} value={templateId} onChange={(event) => chooseTemplate(event.target.value)}>
+                  <option value="">{t("opportunitiesPage.proposalModal.templateNone")}</option>
+                  {templates.map((template) => (
+                    <option key={template.id} value={template.id}>
+                      {[template.name, classificationLabel(templateCatalog?.serviceTypes, template.serviceType), classificationLabel(templateCatalog?.industries, template.industry)].filter(Boolean).join(" · ")}
+                    </option>
+                  ))}
+                </Select>
+              </Field>
+              <Field label={t("opportunitiesPage.proposalModal.serviceType")}>
+                <Select aria-label={t("opportunitiesPage.proposalModal.serviceType")} value={serviceType} onChange={(event) => setServiceType(event.target.value)}>
+                  <option value="">{t("opportunitiesPage.proposalModal.notSpecified")}</option>
+                  {(templateCatalog?.serviceTypes || []).map((option) => <option key={option.value} value={option.value}>{catalogLabel(option, activeLanguage)}</option>)}
+                </Select>
+              </Field>
+              <Field label={t("opportunitiesPage.proposalModal.industry")}>
+                <Select aria-label={t("opportunitiesPage.proposalModal.industry")} value={industry} onChange={(event) => setIndustry(event.target.value)}>
+                  <option value="">{t("opportunitiesPage.proposalModal.notSpecified")}</option>
+                  {(templateCatalog?.industries || []).map((option) => <option key={option.value} value={option.value}>{catalogLabel(option, activeLanguage)}</option>)}
+                </Select>
+              </Field>
+              {templateCustomVariables.length > 0 && (
+                <div className="col-span-2">
+                  <Field label={t("opportunitiesPage.proposalModal.templateVariables")} hint={t("opportunitiesPage.proposalModal.templateVariablesHint")}>
+                    <div className="grid grid-cols-2 gap-2">
+                      {templateCustomVariables.map((name) => (
+                        <label key={name} className="text-xs">
+                          <span className="block font-mono text-gray-500 mb-1">{`{${name}}`}</span>
+                          <Input aria-label={`{${name}}`} value={templateValues[name] || ""} onChange={(event) => setTemplateValues((current) => ({ ...current, [name]: event.target.value }))} />
+                        </label>
+                      ))}
+                    </div>
+                  </Field>
+                </div>
+              )}
               <Field label={t("opportunitiesPage.proposalModal.tags")}><Input value={proposalForm.tags} readOnly /></Field>
               <Field label={activeLanguage === "es" ? "Idioma de la propuesta" : activeLanguage === "pt" ? "Idioma da proposta" : "Proposal language"}>
                 <Select value={proposalLanguage} onChange={(event) => setProposalLanguage(event.target.value)}>

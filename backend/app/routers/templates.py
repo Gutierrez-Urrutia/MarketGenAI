@@ -295,6 +295,12 @@ async def apply_template(
     Standard variables are filled from `proposalId` / `customerId`; `variables` overrides them.
     Placeholders left without a value stay in the text and are listed in `missingVariables`.
     """
+    return await render_template_for_user(template_id, body, user)
+
+
+async def render_template_for_user(template_id: str, body: ApplyTemplateRequest, user: CurrentUser) -> ApplyTemplateResponse:
+    """Aplica la plantilla (con control de acceso) y suma un uso. También lo usa la
+    generación de propuestas (routers/proposals.py) cuando recibe `templateId`."""
     template = await _get_template_for_user(template_id, user)
     values = await _variables_from_sources(body, template, user)
     rendered, missing = render_placeholders(template["content"], values)
