@@ -5,7 +5,7 @@
  */
 import { useEffect, useRef, useState } from "react";
 import toast from "react-hot-toast";
-import { Radar, Loader2, RefreshCw } from "lucide-react";
+import { Radar, Loader2, RefreshCw, ArrowUp, ArrowDown } from "lucide-react";
 
 import { leadsApi, pipelineApi } from "@/api/axios";
 import { useI18n } from "@/hooks/useI18n";
@@ -64,6 +64,52 @@ function FoundAtCell({ value }) {
   );
 }
 
+// Sortable columns and the direction of their first click. The backend
+// already returns the default order (found, newest first), so "found" starts
+// ascending; score starts with the best leads. Third click: back to default.
+const SORT_COLUMNS = [
+  { key: "job_title", labelKey: "leads.columnTitle", firstDir: "asc" },
+  { key: "company_name", labelKey: "leads.columnCompany", firstDir: "asc" },
+  { key: "relevance_score", labelKey: "leads.columnScore", firstDir: "desc" },
+  { key: "status", labelKey: "leads.columnStatus", firstDir: "asc" },
+  { key: "created_at", labelKey: "leads.columnFound", firstDir: "asc" },
+];
+
+export function nextSort(sort, column) {
+  if (!sort || sort.key !== column.key) return { key: column.key, dir: column.firstDir };
+  if (sort.dir === column.firstDir) return { key: column.key, dir: column.firstDir === "asc" ? "desc" : "asc" };
+  return null;
+}
+
+const compareText = (a, b) => a.localeCompare(b, undefined, { sensitivity: "base", numeric: true });
+
+function foundTime(value) {
+  const time = value ? new Date(value).getTime() : NaN;
+  return Number.isNaN(time) ? null : time;
+}
+
+// Sorts on every render over the leads the backend sent (at most
+// LEADS_LIMIT, already filtered). Blank companies and missing dates always
+// go last; ties keep the backend order (found, newest first) since the sort
+// is stable. Status sorts by the label the user sees.
+export function sortLeads(leads, sort, t) {
+  if (!sort) return leads;
+  const sign = sort.dir === "asc" ? 1 : -1;
+  const valueOf = {
+    job_title: (lead) => (lead.job_title || "").trim(),
+    company_name: (lead) => (lead.company_name || "").trim() || null,
+    relevance_score: (lead) => lead.relevance_score ?? 0,
+    status: (lead) => t(`leads.status.${lead.status}`),
+    created_at: (lead) => foundTime(lead.created_at),
+  }[sort.key];
+  return [...leads].sort((a, b) => {
+    const va = valueOf(a);
+    const vb = valueOf(b);
+    if (va === null || vb === null) return (va === null) - (vb === null);
+    return sign * (typeof va === "string" ? compareText(va, vb) : va - vb);
+  });
+}
+
 // Derived on every render (no effect): when the list shrinks under the page
 // being shown, that page is clamped to the last one that still exists.
 export function paginate(items, page, pageSize = PAGE_SIZE) {
@@ -106,6 +152,7 @@ export default function LeadList() {
   const [statusFilter, setStatusFilter] = useState("");
   const [minScore, setMinScore] = useState("");
   const [page, setPage] = useState(1);
+  const [sort, setSort] = useState(null);
   const pollRef = useRef(null);
   const mountedRef = useRef(true);
   // The poll outlives renders, so it must read the *current* filters, not the
@@ -253,7 +300,13 @@ export default function LeadList() {
     }
   };
 
-  const { pageCount, currentPage, firstIndex, pageItems: pageLeads } = paginate(leads, page);
+  const sortedLeads = sortLeads(leads, sort, t);
+  const { pageCount, currentPage, firstIndex, pageItems: pageLeads } = paginate(sortedLeads, page);
+
+  const changeSort = (column) => {
+    setSort((current) => nextSort(current, column));
+    setPage(1);
+  };
 
   return (
     <div className="space-y-4">
@@ -319,11 +372,33 @@ export default function LeadList() {
             <thead>
               <tr className="text-left text-xs text-gray-500 border-b border-gray-100">
                 <th className="px-4 py-3 text-right">#</th>
-                <th className="px-4 py-3">{t("leads.columnTitle")}</th>
-                <th className="px-4 py-3">{t("leads.columnCompany")}</th>
-                <th className="px-4 py-3">{t("leads.columnScore")}</th>
-                <th className="px-4 py-3">{t("leads.columnStatus")}</th>
-                <th className="px-4 py-3">{t("leads.columnFound")}</th>
+                {SORT_COLUMNS.map((column) => {
+                  const label = t(column.labelKey);
+                  const dir = sort?.key === column.key ? sort.dir : null;
+                  const Arrow = dir === "asc" ? ArrowUp : ArrowDown;
+                  return (
+                    <th
+                      key={column.key}
+                      className="px-4 py-3"
+                      aria-sort={dir === "asc" ? "ascending" : dir === "desc" ? "descending" : "none"}
+                    >
+                      <button
+                        type="button"
+                        onClick={() => changeSort(column)}
+                        title={t("leads.sortBy").replace("{column}", label)}
+                        className={`inline-flex items-center gap-1 hover:text-gray-800 ${dir ? "text-gray-800 font-semibold" : ""}`}
+                      >
+                        {label}
+                        {dir && (
+                          <Arrow
+                            size={12}
+                            aria-label={t(dir === "asc" ? "leads.sortAscending" : "leads.sortDescending")}
+                          />
+                        )}
+                      </button>
+                    </th>
+                  );
+                })}
               </tr>
             </thead>
             <tbody>
