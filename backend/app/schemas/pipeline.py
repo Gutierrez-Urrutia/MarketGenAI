@@ -20,6 +20,7 @@ class SourceType(str, Enum):
     RSS = "rss"
     SCRAPER = "scraper"
     WEBHOOK = "webhook"
+    JSEARCH = "jsearch"
 
 
 # Fields each source_type needs in `JobSource.config` for /sources/{id}/test
@@ -30,6 +31,7 @@ SOURCE_TYPE_REQUIRED_CONFIG_FIELDS: Dict[SourceType, List[str]] = {
     SourceType.RSS: ["feed_url"],
     SourceType.SCRAPER: ["url", "selectors"],
     SourceType.WEBHOOK: [],
+    SourceType.JSEARCH: ["api_key"],
 }
 
 # Config fields that hold secrets (API keys, tokens) and must be encrypted at
@@ -41,17 +43,21 @@ SOURCE_TYPE_SECRET_CONFIG_FIELDS: Dict[SourceType, List[str]] = {
     SourceType.RSS: [],
     SourceType.SCRAPER: [],
     SourceType.WEBHOOK: [],
+    SourceType.JSEARCH: ["api_key"],
 }
 
 # The `config` field that holds the URL a source fetches from, per
 # source_type. Validated for SSRF safety (app.core.url_safety) both at
 # save time (routers/pipeline.py) and at fetch time (job_scout_service.py).
 # WEBHOOK has none — it's push, this system never initiates a request to it.
+# JSEARCH has none either: its endpoint is fixed in code
+# (pipeline_constants.JSEARCH_SEARCH_URL), never taken from the user.
 SOURCE_TYPE_URL_FIELDS: Dict[SourceType, Optional[str]] = {
     SourceType.API: "base_url",
     SourceType.RSS: "feed_url",
     SourceType.SCRAPER: "url",
     SourceType.WEBHOOK: None,
+    SourceType.JSEARCH: None,
 }
 
 # How an RSS source's entry titles are split into (job_title, company),

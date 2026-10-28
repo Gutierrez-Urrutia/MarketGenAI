@@ -32,6 +32,13 @@ from pydantic import ValidationError
 
 from app.core import url_safety
 from app.core.pipeline_constants import (
+    JSEARCH_API_HOST,
+    JSEARCH_DEFAULT_COUNTRY,
+    JSEARCH_DEFAULT_LANGUAGE,
+    JSEARCH_DEFAULT_NUM_PAGES,
+    JSEARCH_FETCH_TIMEOUT_SECONDS,
+    JSEARCH_MAX_PAGES,
+    JSEARCH_SEARCH_URL,
     MAX_RESULTS_PER_RUN,
     MAX_RESULTS_PER_SOURCE,
     MAX_SOURCE_RESPONSE_BYTES,
@@ -70,6 +77,18 @@ _SCORE_SYSTEM_PROMPT = (
 # into run.errors. A fatal problem means nothing could be read from the source;
 # a non-fatal one (truncated response) still keeps what was read.
 _source_problems: ContextVar[Optional[List[Dict[str, Any]]]] = ContextVar("job_scout_source_problems", default=None)
+
+
+# Monotonic deadline of the run being scanned (RUN_TIME_BUDGET_SECONDS from
+# its start), set by scan_all_sources around each source. An adapter that
+# makes several requests (JSearch pages) checks it before each extra one.
+# Unset (None) outside a run, e.g. in the /sources/{id}/test probe.
+_run_deadline: ContextVar[Optional[float]] = ContextVar("job_scout_run_deadline", default=None)
+
+
+def _run_budget_exhausted() -> bool:
+    deadline = _run_deadline.get()
+    return deadline is not None and time.monotonic() >= deadline
 
 
 def _report_source_problem(message: str, *, fatal: bool = True) -> None:
@@ -453,6 +472,136 @@ async def _scan_scraper(source: Dict[str, Any], keywords: List[str]) -> List[Raw
     return postings
 
 
+# JSearch (RapidAPI) aggregates LinkedIn, Indeed and other boards. Unlike the
+# generic API adapter, its URL and auth headers are fixed here — the user only
+# supplies the api_key (encrypted at rest) and a few query settings.
+def _jsearch_jobs(payload: Any) -> List[Any]:
+    """The postings of one JSearch response: `data.jobs`, or `data` itself
+    when the provider returns it as a list."""
+    if not isinstance(payload, dict):
+        return []
+    data = payload.get("data")
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict) and isinstance(data.get("jobs"), list):
+        return data["jobs"]
+    return []
+
+
+def _jsearch_apply_link(item: Dict[str, Any]) -> str:
+    link = str(item.get("job_apply_link") or "").strip()
+    if link:
+        return link
+    options = item.get("apply_options")
+    if isinstance(options, list) and options and isinstance(options[0], dict):
+        return str(options[0].get("apply_link") or "").strip()
+    return ""
+
+
+def _jsearch_location(item: Dict[str, Any]) -> Optional[str]:
+    """`City, Country` when both are given, else `job_location`; None when
+    nothing usable is left (empty, or the provider's "Anywhere")."""
+    city = str(item.get("job_city") or "").strip()
+    country = str(item.get("job_country") or "").strip()
+    location = f"{city}, {country}" if city and country else str(item.get("job_location") or "").strip()
+    if not location or location.lower() == "anywhere":
+        return None
+    return location
+
+
+def _jsearch_failure_message(exc: Exception) -> str:
+    # Never includes the request itself: its headers carry the api_key.
+    if isinstance(exc, httpx.TimeoutException):
+        return f"tiempo de espera agotado ({JSEARCH_FETCH_TIMEOUT_SECONDS} s)"
+    return _fetch_failure_message(exc)
+
+
+def _jsearch_status_message(status_code: int) -> str:
+    if status_code == 403:
+        return "clave de API inválida o sin suscripción a JSearch (HTTP 403)"
+    if status_code == 429:
+        return "cuota de JSearch agotada (HTTP 429)"
+    return f"JSearch respondió HTTP {status_code}"
+
+
+async def _scan_jsearch(source: Dict[str, Any], keywords: List[str]) -> List[RawJobPosting]:
+    config = source.get("config") or {}
+    api_key = _resolve_source_secrets(source).get("api_key")
+    if not api_key:
+        _report_source_problem("falta la clave de API (api_key)")
+        return []
+    query = " ".join(str(k).strip() for k in keywords[:5] if str(k).strip())
+    if not query:
+        _report_source_problem("no hay palabras clave configuradas para la búsqueda")
+        return []
+
+    try:
+        num_pages = int(config.get("num_pages") or JSEARCH_DEFAULT_NUM_PAGES)
+    except (TypeError, ValueError):
+        num_pages = JSEARCH_DEFAULT_NUM_PAGES
+    num_pages = max(1, min(num_pages, JSEARCH_MAX_PAGES))
+    base_params: Dict[str, Any] = {
+        "query": query,
+        "country": config.get("country") or JSEARCH_DEFAULT_COUNTRY,
+        "language": config.get("language") or JSEARCH_DEFAULT_LANGUAGE,
+        "num_pages": 1,
+    }
+    if config.get("date_posted"):
+        base_params["date_posted"] = config["date_posted"]
+    headers = {"X-RapidAPI-Key": api_key, "X-RapidAPI-Host": JSEARCH_API_HOST}
+
+    postings: List[RawJobPosting] = []
+    async with httpx.AsyncClient(timeout=JSEARCH_FETCH_TIMEOUT_SECONDS) as client:
+        # One request per page, so the run budget and the per-source cap are
+        # checked before paying for each extra page.
+        for page in range(1, num_pages + 1):
+            if page > 1 and (len(postings) >= MAX_RESULTS_PER_SOURCE or _run_budget_exhausted()):
+                break
+            message: Optional[str] = None
+            try:
+                status_code, body = await url_safety.safe_get_bytes(
+                    client, JSEARCH_SEARCH_URL, headers=headers, params={**base_params, "page": page},
+                    max_bytes=MAX_SOURCE_RESPONSE_BYTES,
+                )
+                if status_code >= 400:
+                    message = _jsearch_status_message(status_code)
+                else:
+                    _report_if_truncated(body)
+                    payload = json.loads(body)
+            except Exception as exc:
+                message = _jsearch_failure_message(exc)
+            if message is not None:
+                logger.warning("job_scout: JSearch source %s page %d failed: %s", source.get("id"), page, message)
+                # Only the first page failing means nothing was read from the source.
+                if page == 1:
+                    _report_source_problem(message)
+                else:
+                    _report_source_problem(f"página {page}: {message}", fatal=False)
+                break
+
+            jobs = _jsearch_jobs(payload)
+            if not jobs:
+                break  # no more results: later pages would be empty too
+            for item in jobs:
+                if len(postings) >= MAX_RESULTS_PER_SOURCE:
+                    break
+                if not isinstance(item, dict):
+                    continue
+                title = str(item.get("job_title") or "").strip()
+                company = str(item.get("employer_name") or "").strip()
+                if not title or not company:
+                    continue
+                postings.append(RawJobPosting(
+                    job_title=title,
+                    company_name=company,
+                    job_description=str(item.get("job_description") or "")[:POSTING_DESCRIPTION_MAX_CHARS],
+                    job_url=_sanitize_job_url(_jsearch_apply_link(item)),
+                    location=_jsearch_location(item),
+                    source_id=source["id"],
+                ))
+    return postings
+
+
 async def _scan_source(source: Dict[str, Any], keywords: List[str]) -> List[RawJobPosting]:
     source_type = SourceType(source["source_type"])
     if source_type == SourceType.API:
@@ -461,6 +610,8 @@ async def _scan_source(source: Dict[str, Any], keywords: List[str]) -> List[RawJ
         return await _scan_rss(source, keywords)
     if source_type == SourceType.SCRAPER:
         return await _scan_scraper(source, keywords)
+    if source_type == SourceType.JSEARCH:
+        return await _scan_jsearch(source, keywords)
     return []  # WEBHOOK is push, not pull — nothing to scan here.
 
 
@@ -594,6 +745,7 @@ async def scan_all_sources(pipeline_config: Dict[str, Any], run_id: str) -> Dict
 
         problems: List[Dict[str, Any]] = []
         problems_token = _source_problems.set(problems)
+        deadline_token = _run_deadline.set(started_at + RUN_TIME_BUDGET_SECONDS)
         try:
             postings = await _scan_source(source, keywords)
         except Exception as exc:
@@ -610,6 +762,7 @@ async def scan_all_sources(pipeline_config: Dict[str, Any], run_id: str) -> Dict
             continue
         finally:
             _source_problems.reset(problems_token)
+            _run_deadline.reset(deadline_token)
 
         for problem in problems:
             partial = True

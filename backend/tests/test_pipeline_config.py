@@ -771,6 +771,181 @@ async def test_test_source_reads_the_postings_of_a_working_source(client):
     assert body["postings_read"] == 2
 
 
+# ── JSearch sources ────────────────────────────────────────────────────────────
+
+JSEARCH_KEY = "rapid-jsearch-key-456"
+
+
+def _jsearch_source(config: dict | None = None, **overrides) -> dict:
+    return fake_source({
+        "id": "source-js",
+        "name": "JSearch",
+        "source_type": "jsearch",
+        "config": config if config is not None else {},
+        "config_encrypted": {"api_key": encryption_service.encrypt(JSEARCH_KEY)},
+        **overrides,
+    })
+
+
+@pytest.mark.asyncio
+async def test_create_jsearch_source_encrypts_api_key_and_never_returns_it(client):
+    with (
+        patch("app.routers.pipeline.pipeline_configs_repo.get_by_user", new_callable=AsyncMock, return_value=fake_config()),
+        patch("app.routers.pipeline.pipeline_configs_repo.upsert_for_user", new_callable=AsyncMock) as mock_upsert,
+    ):
+        mock_upsert.side_effect = lambda user_id, payload: fake_config(payload)
+        resp = await client.post(f"{API}/sources", json={
+            "name": "JSearch",
+            "source_type": "jsearch",
+            "config": {"api_key": JSEARCH_KEY, "country": "gb", "language": "en", "num_pages": 2},
+        })
+
+    assert resp.status_code == 201
+    persisted = mock_upsert.call_args.args[1]["sources"][0]
+    assert persisted["source_type"] == "jsearch"
+    assert persisted["config"] == {"country": "gb", "language": "en", "num_pages": 2}
+    encrypted_token = persisted["config_encrypted"]["api_key"]
+    assert encryption_service.decrypt(encrypted_token) == JSEARCH_KEY
+
+    assert JSEARCH_KEY not in resp.text
+    assert encrypted_token not in resp.text
+    body_source = resp.json()["sources"][0]
+    assert "config_encrypted" not in body_source
+    assert body_source["configured_secret_fields"] == ["api_key"]
+
+    with patch("app.routers.pipeline.pipeline_configs_repo.get_by_user", new_callable=AsyncMock,
+               return_value=fake_config({"sources": [persisted]})):
+        get_resp = await client.get(API)
+    assert get_resp.status_code == 200
+    assert JSEARCH_KEY not in get_resp.text
+    assert encrypted_token not in get_resp.text
+
+
+@pytest.mark.asyncio
+async def test_update_jsearch_source_keeps_stored_api_key(client):
+    source = _jsearch_source({"num_pages": 1})
+    stored_token = source["config_encrypted"]["api_key"]
+    with (
+        patch("app.routers.pipeline.pipeline_configs_repo.get_by_user", new_callable=AsyncMock,
+              return_value=fake_config({"sources": [source]})),
+        patch("app.routers.pipeline.pipeline_configs_repo.upsert_for_user", new_callable=AsyncMock) as mock_upsert,
+    ):
+        mock_upsert.side_effect = lambda user_id, payload: fake_config(payload)
+        resp = await client.put(f"{API}/sources/source-js", json={"config": {"num_pages": 3}})
+
+    assert resp.status_code == 200
+    persisted = mock_upsert.call_args.args[1]["sources"][0]
+    assert persisted["config_encrypted"]["api_key"] == stored_token
+    assert JSEARCH_KEY not in resp.text and stored_token not in resp.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("config, detail_fragment", [
+    ({"num_pages": 4}, "num_pages"),
+    ({"num_pages": 0}, "num_pages"),
+    ({"num_pages": "2"}, "num_pages"),
+    ({"date_posted": "yesterday"}, "date_posted"),
+    ({"country": "GBR"}, "country"),
+    ({"country": "g1"}, "country"),
+    ({"country": ""}, "country"),
+    ({"language": "english"}, "language"),
+    ({"language": 12}, "language"),
+])
+async def test_create_jsearch_source_rejects_invalid_config(client, config, detail_fragment):
+    with (
+        patch("app.routers.pipeline.pipeline_configs_repo.get_by_user", new_callable=AsyncMock, return_value=fake_config()),
+        patch("app.routers.pipeline.pipeline_configs_repo.upsert_for_user", new_callable=AsyncMock) as mock_upsert,
+    ):
+        resp = await client.post(f"{API}/sources", json={
+            "name": "JSearch", "source_type": "jsearch", "config": {"api_key": JSEARCH_KEY, **config},
+        })
+    assert resp.status_code == 422
+    assert detail_fragment in resp.json()["detail"]
+    assert JSEARCH_KEY not in resp.text
+    mock_upsert.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_update_jsearch_source_rejects_invalid_country(client):
+    with (
+        patch("app.routers.pipeline.pipeline_configs_repo.get_by_user", new_callable=AsyncMock,
+              return_value=fake_config({"sources": [_jsearch_source()]})),
+        patch("app.routers.pipeline.pipeline_configs_repo.upsert_for_user", new_callable=AsyncMock) as mock_upsert,
+    ):
+        resp = await client.put(f"{API}/sources/source-js", json={"config": {"country": "United Kingdom"}})
+    assert resp.status_code == 422
+    assert "country" in resp.json()["detail"]
+    mock_upsert.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_test_jsearch_source_without_api_key_lists_it_as_missing(client):
+    source = _jsearch_source(config_encrypted={})
+    with patch("app.routers.pipeline.pipeline_configs_repo.get_by_user", new_callable=AsyncMock,
+               return_value=fake_config({"sources": [source]})):
+        resp = await client.post(f"{API}/sources/source-js/test")
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["missing_fields"] == ["api_key"]
+
+
+async def _probar_jsearch(client, keywords: list, status_code: int = 200, content: bytes = b"") -> tuple:
+    import httpx
+    from app.services import job_scout_service
+
+    calls = []
+
+    class _Ctx:
+        async def __aenter__(self):
+            return httpx.Response(status_code, content=content, request=httpx.Request("GET", "https://jsearch.p.rapidapi.com/search"))
+
+        async def __aexit__(self, *exc):
+            return False
+
+    def fake_stream(self, method, url, **kwargs):
+        calls.append(str(url))
+        return _Ctx()
+
+    doc = fake_config({"keywords": keywords, "sources": [_jsearch_source()]})
+    with (
+        patch("app.routers.pipeline.pipeline_configs_repo.get_by_user", new_callable=AsyncMock, return_value=doc),
+        patch.object(httpx.AsyncClient, "stream", fake_stream),
+        patch.object(job_scout_service, "score_relevance_batch", new_callable=AsyncMock) as mock_score,
+    ):
+        resp = await client.post(f"{API}/sources/source-js/test")
+    mock_score.assert_not_called()
+    assert resp.status_code == 200
+    assert JSEARCH_KEY not in resp.text
+    return resp.json(), calls
+
+
+@pytest.mark.asyncio
+async def test_test_jsearch_source_reads_postings(client):
+    import json
+    content = json.dumps({"data": {"jobs": [
+        {"job_title": "Agent", "employer_name": "Acme", "job_apply_link": "https://acme.example.com/1"},
+        {"job_title": "Clerk", "employer_name": "Globex", "job_apply_link": "https://globex.example.com/2"},
+    ]}}).encode()
+    body, calls = await _probar_jsearch(client, ["BPO"], 200, content)
+    assert body["ok"] is True
+    assert body["postings_read"] == 2
+    assert calls == ["https://jsearch.p.rapidapi.com/search"]
+
+
+@pytest.mark.asyncio
+async def test_test_jsearch_source_reports_invalid_key(client):
+    body, _ = await _probar_jsearch(client, ["BPO"], 403, b'{"message": "not subscribed"}')
+    assert body["ok"] is False
+    assert body["reason"] == "clave de API inválida o sin suscripción a JSearch (HTTP 403)"
+
+
+@pytest.mark.asyncio
+async def test_test_jsearch_source_without_keywords_gives_a_clear_reason(client):
+    body, calls = await _probar_jsearch(client, [])
+    assert body["ok"] is False
+    assert body["reason"] == "no hay palabras clave configuradas para la búsqueda"
+    assert calls == []  # nothing is sent to the provider without a query
+
+
 # ── Encryption roundtrip ───────────────────────────────────────────────────────
 
 def test_encryption_roundtrip():

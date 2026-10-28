@@ -23,6 +23,8 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, sta
 
 from app.core import url_safety
 from app.core.pipeline_constants import (
+    JSEARCH_DATE_POSTED_OPTIONS,
+    JSEARCH_MAX_PAGES,
     RUN_CONSIDERED_DEAD_AFTER_SECONDS,
     TASK_ENQUEUE_TIMEOUT_SECONDS,
 )
@@ -116,6 +118,32 @@ def _validate_source_title_format(source_type: SourceType, config: Dict[str, Any
             detail=f"Invalid title_format {value!r}; expected one of {list(RSS_TITLE_FORMATS)}.",
         )
 
+
+
+def _validate_jsearch_config(source_type: SourceType, config: Dict[str, Any]) -> None:
+    """For JSearch sources, the optional query settings must be values the
+    provider accepts: `num_pages` an integer 1..JSEARCH_MAX_PAGES,
+    `date_posted` one of JSEARCH_DATE_POSTED_OPTIONS, and `country` /
+    `language` two-letter codes. Absent fields fall back to the adapter's
+    defaults (job_scout_service._scan_jsearch)."""
+    if source_type != SourceType.JSEARCH:
+        return
+    config = config or {}
+
+    def _reject(detail: str) -> None:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=detail)
+
+    if "num_pages" in config:
+        value = config["num_pages"]
+        if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= JSEARCH_MAX_PAGES:
+            _reject(f"num_pages must be an integer between 1 and {JSEARCH_MAX_PAGES}.")
+    if config.get("date_posted") not in (None, "") and config["date_posted"] not in JSEARCH_DATE_POSTED_OPTIONS:
+        _reject(f"Invalid date_posted {config['date_posted']!r}; expected one of {list(JSEARCH_DATE_POSTED_OPTIONS)}.")
+    for field in ("country", "language"):
+        if field in config:
+            value = config[field]
+            if not (isinstance(value, str) and len(value) == 2 and value.isascii() and value.isalpha()):
+                _reject(f"{field} must be a two-letter code (e.g. 'gb', 'en').")
 
 def _split_source_config(
     source_type: SourceType, config: Dict[str, Any]
@@ -253,6 +281,7 @@ async def create_source(
     sources = list(doc.get("sources") or [])
     await _validate_source_url(body.source_type, body.config)
     _validate_source_title_format(body.source_type, body.config)
+    _validate_jsearch_config(body.source_type, body.config)
     plaintext_config, encrypted_config = _split_source_config(body.source_type, body.config)
     new_source = {
         "id": new_id(),
@@ -286,6 +315,7 @@ async def update_source(
         effective_type = SourceType(updates.get("source_type", source["source_type"]))
         await _validate_source_url(effective_type, updates["config"])
         _validate_source_title_format(effective_type, updates["config"])
+        _validate_jsearch_config(effective_type, updates["config"])
         plaintext_config, encrypted_config = _split_source_config(effective_type, updates["config"])
         # The screen never gets a stored secret back, so a secret field that is
         # absent or empty here means "keep it" — not "delete it". A legacy
