@@ -66,13 +66,15 @@ POSTING_DESCRIPTION_MAX_CHARS = 600
 
 # ── JSearch adapter (RapidAPI — LinkedIn, Indeed and other job boards) ──────
 # The endpoint is fixed here, never taken from the user's source config.
-JSEARCH_SEARCH_URL = "https://jsearch.p.rapidapi.com/search"
+# /search-v2 replaced /search (now 404); it pages by cursor, not page numbers.
+JSEARCH_SEARCH_URL = "https://jsearch.p.rapidapi.com/search-v2"
 JSEARCH_API_HOST = "jsearch.p.rapidapi.com"
 # JSearch aggregates several boards per request and is slower than a plain
 # feed, so it gets a longer per-request budget than SOURCE_FETCH_TIMEOUT_SECONDS.
 # RUN_TIME_BUDGET_SECONDS still bounds the whole run.
 JSEARCH_FETCH_TIMEOUT_SECONDS = 45
 # Each page is a separate request (and a separate billed call on RapidAPI).
+# num_pages is only this adapter's own page cap; it is never sent to JSearch.
 JSEARCH_MAX_PAGES = 3
 JSEARCH_DEFAULT_NUM_PAGES = 1
 JSEARCH_DEFAULT_COUNTRY = "gb"

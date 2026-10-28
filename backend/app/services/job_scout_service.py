@@ -482,6 +482,14 @@ async def _scan_scraper(source: Dict[str, Any], keywords: List[str]) -> List[Raw
 # JSearch (RapidAPI) aggregates LinkedIn, Indeed and other boards. Unlike the
 # generic API adapter, its URL and auth headers are fixed here — the user only
 # supplies the api_key (encrypted at rest) and a few query settings.
+def _jsearch_cursor(payload: Any) -> str:
+    """The cursor for the next page (`data.cursor`); empty when there is none."""
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if isinstance(data, dict) and isinstance(data.get("cursor"), str):
+        return data["cursor"].strip()
+    return ""
+
+
 def _jsearch_jobs(payload: Any) -> List[Any]:
     """The postings of one JSearch response: `data.jobs`, or `data` itself
     when the provider returns it as a list."""
@@ -523,12 +531,39 @@ def _jsearch_failure_message(exc: Exception) -> str:
     return _fetch_failure_message(exc)
 
 
-def _jsearch_status_message(status_code: int) -> str:
+_JSEARCH_PROVIDER_DETAIL_MAX_CHARS = 200
+
+
+def _jsearch_provider_detail(body: bytes, api_key: str) -> str:
+    """The provider's own reason for an error: only `message` or
+    `error.message` of a JSON body, cut to 200 characters. Never the
+    request (its headers carry the key), and the key is masked in case
+    the provider echoes it back."""
+    try:
+        payload = json.loads(body)
+    except Exception:
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    detail = payload.get("message")
+    if not isinstance(detail, str) and isinstance(payload.get("error"), dict):
+        detail = payload["error"].get("message")
+    if not isinstance(detail, str):
+        return ""
+    detail = " ".join(detail.split())
+    if api_key:
+        detail = detail.replace(api_key, "***")
+    return detail[:_JSEARCH_PROVIDER_DETAIL_MAX_CHARS]
+
+
+def _jsearch_status_message(status_code: int, detail: str = "") -> str:
     if status_code == 403:
-        return "clave de API inválida o sin suscripción a JSearch (HTTP 403)"
-    if status_code == 429:
-        return "cuota de JSearch agotada (HTTP 429)"
-    return f"JSearch respondió HTTP {status_code}"
+        message = "clave de API inválida o sin suscripción a JSearch (HTTP 403)"
+    elif status_code == 429:
+        message = "cuota de JSearch agotada (HTTP 429)"
+    else:
+        message = f"JSearch respondió HTTP {status_code}"
+    return f"{message}: {detail}" if detail else message
 
 
 async def _scan_jsearch(source: Dict[str, Any], keywords: List[str]) -> List[RawJobPosting]:
@@ -551,27 +586,29 @@ async def _scan_jsearch(source: Dict[str, Any], keywords: List[str]) -> List[Raw
         "query": query,
         "country": config.get("country") or JSEARCH_DEFAULT_COUNTRY,
         "language": config.get("language") or JSEARCH_DEFAULT_LANGUAGE,
-        "num_pages": 1,
     }
     if config.get("date_posted"):
         base_params["date_posted"] = config["date_posted"]
     headers = {"X-RapidAPI-Key": api_key, "X-RapidAPI-Host": JSEARCH_API_HOST}
 
     postings: List[RawJobPosting] = []
+    cursor = ""
     async with httpx.AsyncClient(timeout=JSEARCH_FETCH_TIMEOUT_SECONDS) as client:
         # One request per page, so the run budget and the per-source cap are
-        # checked before paying for each extra page.
+        # checked before paying for each extra page. The first page has no
+        # cursor; each next one sends the cursor of the previous response.
         for page in range(1, num_pages + 1):
-            if page > 1 and (len(postings) >= MAX_RESULTS_PER_SOURCE or _run_budget_exhausted()):
+            if page > 1 and (not cursor or len(postings) >= MAX_RESULTS_PER_SOURCE or _run_budget_exhausted()):
                 break
+            params = {**base_params, "cursor": cursor} if page > 1 else base_params
             message: Optional[str] = None
             try:
                 status_code, body = await url_safety.safe_get_bytes(
-                    client, JSEARCH_SEARCH_URL, headers=headers, params={**base_params, "page": page},
+                    client, JSEARCH_SEARCH_URL, headers=headers, params=params,
                     max_bytes=MAX_SOURCE_RESPONSE_BYTES,
                 )
                 if status_code >= 400:
-                    message = _jsearch_status_message(status_code)
+                    message = _jsearch_status_message(status_code, _jsearch_provider_detail(body, api_key))
                 else:
                     _report_if_truncated(body)
                     payload = json.loads(body)
@@ -587,6 +624,7 @@ async def _scan_jsearch(source: Dict[str, Any], keywords: List[str]) -> List[Raw
                 break
 
             jobs = _jsearch_jobs(payload)
+            cursor = _jsearch_cursor(payload)
             if not jobs:
                 break  # no more results: later pages would be empty too
             for item in jobs:

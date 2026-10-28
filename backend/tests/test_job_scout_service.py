@@ -1081,8 +1081,10 @@ def _jsearch_job(**overrides) -> dict:
     return base
 
 
-def _jsearch_body(jobs: list, *, as_list: bool = False) -> bytes:
-    return json.dumps({"status": "OK", "data": jobs if as_list else {"jobs": jobs}}).encode()
+def _jsearch_body(jobs: list, *, as_list: bool = False, cursor: str | None = "cursor-next") -> bytes:
+    """Shape of GET /search-v2: {status, request_id, parameters, data: {jobs, cursor}}."""
+    data: object = jobs if as_list else {"jobs": jobs, **({"cursor": cursor} if cursor is not None else {})}
+    return json.dumps({"status": "OK", "request_id": "req-1", "parameters": {}, "data": data}).encode()
 
 
 def _jsearch_stream(pages: list, calls: list):
@@ -1184,10 +1186,10 @@ async def test_scan_jsearch_sends_fixed_url_rapidapi_headers_and_query(jsearch_s
     _, calls, _ = await _scan_jsearch_with(source, [(200, _jsearch_body([_jsearch_job()]))],
                                            keywords=["a", "b", "c", "d", "e", "f"])
     assert len(calls) == 1
-    assert calls[0]["url"] == "https://jsearch.p.rapidapi.com/search"
+    assert calls[0]["url"] == "https://jsearch.p.rapidapi.com/search-v2"
     assert calls[0]["headers"] == {"X-RapidAPI-Key": JSEARCH_KEY, "X-RapidAPI-Host": "jsearch.p.rapidapi.com"}
-    assert calls[0]["params"] == {"query": "a b c d e", "country": "us", "language": "es",
-                                  "date_posted": "week", "num_pages": 1, "page": 1}
+    # First page: no cursor, and never page/num_pages (search-v2 pages by cursor).
+    assert calls[0]["params"] == {"query": "a b c d e", "country": "us", "language": "es", "date_posted": "week"}
 
 
 @pytest.mark.asyncio
@@ -1216,11 +1218,43 @@ async def test_scan_jsearch_uses_its_own_45s_timeout(jsearch_source):
 @pytest.mark.parametrize("num_pages, expected_calls", [(None, 1), (2, 2), (3, 3), (5, 3), (0, 1)])
 async def test_scan_jsearch_caps_num_pages(jsearch_source, num_pages, expected_calls):
     config = {} if num_pages is None else {"num_pages": num_pages}
-    pages = [(200, _jsearch_body([_jsearch_job(job_title=f"Job {i}")])) for i in range(5)]
+    pages = [(200, _jsearch_body([_jsearch_job(job_title=f"Job {i}")], cursor=f"c{i + 1}")) for i in range(5)]
     postings, calls, _ = await _scan_jsearch_with(jsearch_source(config), pages)
-    assert [c["params"]["page"] for c in calls] == list(range(1, expected_calls + 1))
-    assert all(c["params"]["num_pages"] == 1 for c in calls)
+    assert len(calls) == expected_calls
+    assert [c["params"].get("cursor") for c in calls] == [None, "c1", "c2"][:expected_calls]
+    assert all("page" not in c["params"] and "num_pages" not in c["params"] for c in calls)
     assert len(postings) == expected_calls
+
+
+@pytest.mark.asyncio
+async def test_scan_jsearch_sends_the_previous_cursor_on_page_2(jsearch_source):
+    pages = [
+        (200, _jsearch_body([_jsearch_job(job_title="Job 1")], cursor="abc123==")),
+        (200, _jsearch_body([_jsearch_job(job_title="Job 2")], cursor=None)),
+    ]
+    postings, calls, problems = await _scan_jsearch_with(jsearch_source({"country": "us", "num_pages": 3}), pages)
+    assert len(calls) == 2
+    assert "cursor" not in calls[0]["params"]
+    assert calls[1]["params"] == {"query": "BPO customer support", "country": "us", "language": "en", "cursor": "abc123=="}
+    assert [p.job_title for p in postings] == ["Job 1", "Job 2"]
+    assert problems == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cursor", [None, "", "   "])
+async def test_scan_jsearch_stops_when_a_page_has_no_cursor(jsearch_source, cursor):
+    pages = [(200, _jsearch_body([_jsearch_job()], cursor=cursor)), (200, _jsearch_body([_jsearch_job()]))]
+    postings, calls, problems = await _scan_jsearch_with(jsearch_source({"num_pages": 3}), pages)
+    assert len(calls) == 1
+    assert len(postings) == 1
+    assert problems == []
+
+
+@pytest.mark.asyncio
+async def test_scan_jsearch_data_as_a_list_has_no_cursor_so_paging_stops(jsearch_source):
+    pages = [(200, _jsearch_body([_jsearch_job()], as_list=True)), (200, _jsearch_body([_jsearch_job()]))]
+    postings, calls, _ = await _scan_jsearch_with(jsearch_source({"num_pages": 3}), pages)
+    assert (len(calls), len(postings)) == (1, 1)
 
 
 @pytest.mark.asyncio
@@ -1254,9 +1288,14 @@ async def test_scan_jsearch_does_not_request_extra_page_when_run_budget_is_exhau
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("response, expected", [
-    ((403, b'{"message": "You are not subscribed to this API."}'), "clave de API inválida o sin suscripción a JSearch (HTTP 403)"),
-    ((429, b'{"message": "Too many requests"}'), "cuota de JSearch agotada (HTTP 429)"),
+    ((403, b'{"message": "You are not subscribed to this API."}'),
+     "clave de API inválida o sin suscripción a JSearch (HTTP 403): You are not subscribed to this API."),
+    ((429, b'{"message": "Too many requests"}'), "cuota de JSearch agotada (HTTP 429): Too many requests"),
+    ((404, b'{"message": "Endpoint \'/search\' does not exist"}'),
+     "JSearch respondió HTTP 404: Endpoint '/search' does not exist"),
+    ((404, b'{"error": {"code": 404, "message": "Not Found"}}'), "JSearch respondió HTTP 404: Not Found"),
     ((500, b"oops"), "JSearch respondió HTTP 500"),
+    ((500, b'{"status": "ERROR"}'), "JSearch respondió HTTP 500"),
     ((200, b"<html>not json</html>"), "la respuesta no es JSON válido"),
     (httpx.ReadTimeout("timed out"), "tiempo de espera agotado (45 s)"),
     (httpx.ConnectError("refused"), "error de red (ConnectError)"),
@@ -1267,6 +1306,19 @@ async def test_scan_jsearch_reports_failures_clearly(jsearch_source, caplog, res
     assert postings == []
     assert problems == [{"message": expected, "fatal": True}]
     assert JSEARCH_KEY not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_scan_jsearch_provider_reason_is_cut_to_200_chars_and_never_shows_the_key(jsearch_source):
+    reason = f"Invalid key {JSEARCH_KEY} " + "x" * 500
+    postings, _, problems = await _scan_jsearch_with(
+        jsearch_source(), [(401, json.dumps({"message": reason, "headers": {"X-RapidAPI-Key": JSEARCH_KEY}}).encode())],
+    )
+    message = problems[0]["message"]
+    prefix = "JSearch respondió HTTP 401: "
+    assert message.startswith(prefix + "Invalid key *** xxx")
+    assert len(message) == len(prefix) + 200
+    assert JSEARCH_KEY not in message
 
 
 @pytest.mark.asyncio
@@ -1293,8 +1345,8 @@ async def test_scan_jsearch_without_api_key_or_keywords(jsearch_source):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("status_code, expected", [
-    (403, "clave de API inválida o sin suscripción a JSearch (HTTP 403)"),
-    (429, "cuota de JSearch agotada (HTTP 429)"),
+    (403, "clave de API inválida o sin suscripción a JSearch (HTTP 403): nope"),
+    (429, "cuota de JSearch agotada (HTTP 429): nope"),
 ])
 async def test_scan_all_sources_jsearch_403_429_do_not_break_the_run(jsearch_source, caplog, status_code, expected):
     sources = [jsearch_source(source_id="js"), _rss_source("vacia", "https://vacia.example.com/feed")]

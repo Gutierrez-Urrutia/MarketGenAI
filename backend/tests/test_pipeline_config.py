@@ -896,7 +896,7 @@ async def _probar_jsearch(client, keywords: list, status_code: int = 200, conten
 
     class _Ctx:
         async def __aenter__(self):
-            return httpx.Response(status_code, content=content, request=httpx.Request("GET", "https://jsearch.p.rapidapi.com/search"))
+            return httpx.Response(status_code, content=content, request=httpx.Request("GET", "https://jsearch.p.rapidapi.com/search-v2"))
 
         async def __aexit__(self, *exc):
             return False
@@ -928,14 +928,21 @@ async def test_test_jsearch_source_reads_postings(client):
     body, calls = await _probar_jsearch(client, ["BPO"], 200, content)
     assert body["ok"] is True
     assert body["postings_read"] == 2
-    assert calls == ["https://jsearch.p.rapidapi.com/search"]
+    assert calls == ["https://jsearch.p.rapidapi.com/search-v2"]
 
 
 @pytest.mark.asyncio
 async def test_test_jsearch_source_reports_invalid_key(client):
     body, _ = await _probar_jsearch(client, ["BPO"], 403, b'{"message": "not subscribed"}')
     assert body["ok"] is False
-    assert body["reason"] == "clave de API inválida o sin suscripción a JSearch (HTTP 403)"
+    assert body["reason"] == "clave de API inválida o sin suscripción a JSearch (HTTP 403): not subscribed"
+
+
+@pytest.mark.asyncio
+async def test_test_jsearch_source_404_includes_the_provider_reason(client):
+    body, _ = await _probar_jsearch(client, ["BPO"], 404, b'{"message": "Endpoint \'/search\' does not exist"}')
+    assert body["ok"] is False
+    assert body["reason"] == "JSearch respondió HTTP 404: Endpoint '/search' does not exist"
 
 
 @pytest.mark.asyncio
