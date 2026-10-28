@@ -1545,12 +1545,25 @@ def test_score_prompt_defines_a_lead_as_a_potential_client_company():
     assert "empresa de outsourcing/BPO" in svc._SCORE_SYSTEM_PROMPT
 
 
-def test_score_prompt_exclusion_rule_caps_competitors_but_not_staffing_agencies():
+# RF14-D-006: recruitment/staffing agencies are direct competitors too.
+def test_score_prompt_exclusion_rule_caps_every_direct_competitor_at_0_2():
     prompt = svc._score_prompt([fake_posting()], ["customer service"])
-    assert ("si la empresa que publica la vacante es ella misma un BPO, un call center o una empresa "
-            "de outsourcing (competidor directo de NoonDalton), asigna un relevance_score máximo de 0.2") in prompt
-    assert "Las agencias de reclutamiento o staffing NO se excluyen" in prompt
-    assert "califícalas según el cargo" in prompt
+    [rule] = _prompt_lines(prompt, "Regla de exclusión: ")
+    assert rule == (
+        "Regla de exclusión: si la empresa que publica la vacante es ella misma un BPO, un call center, "
+        "una empresa de outsourcing o una agencia de reclutamiento, selección de personal o staffing "
+        "(competidores directos de NoonDalton, que también ofrece servicios de recursos humanos), "
+        "asigna un relevance_score máximo de 0.2, aunque el cargo encaje con los servicios."
+    )
+    for competitor in ["un BPO", "un call center", "una empresa de outsourcing",
+                       "agencia de reclutamiento", "selección de personal", "staffing"]:
+        assert competitor in rule
+
+
+def test_score_prompt_no_longer_spares_recruitment_or_staffing_agencies():
+    prompt = svc._score_prompt([fake_posting()], ["customer service"])
+    assert "NO se excluyen" not in prompt
+    assert "califícalas según el cargo" not in prompt
 
 
 def test_score_prompt_has_the_scale_and_the_fixed_list_of_services():
@@ -1561,11 +1574,18 @@ def test_score_prompt_has_the_scale_and_the_fixed_list_of_services():
     [services_line] = _prompt_lines(prompt, "Servicios de NoonDalton: ")
     for service in [
         "atención al cliente y call center", "sales support (calificación de leads, seguimiento, CRM)",
-        "reclutamiento y RR. HH.", "soporte técnico y de software", "procesamiento de datos y back office",
+        "reclutamiento y RR. HH.", "desarrollo de software, infraestructura y soporte técnico",
+        "procesamiento de datos y back office",
         "underwriting de préstamos", "operaciones de e-commerce (pedidos, inventario, envíos)",
         "procesamiento de seguros (reclamos, renovaciones)",
     ]:
         assert service in services_line
+
+
+def test_services_include_software_development_and_infrastructure():
+    [services_line] = _prompt_lines(svc._score_prompt([fake_posting()], []), "Servicios de NoonDalton: ")
+    assert "desarrollo de software, infraestructura y soporte técnico" in services_line
+    assert "soporte técnico y de software" not in services_line
 
 
 def test_score_prompt_services_line_does_not_contain_the_keywords():
