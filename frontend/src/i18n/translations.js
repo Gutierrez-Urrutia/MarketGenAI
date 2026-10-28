@@ -804,7 +804,7 @@ export const translations = {
       pipelineTab: {
         statusTitle: "Prospecting Pipeline",
         statusActive: "Manual scan",
-        statusInactive: "Inactive — enable to start",
+        statusInactive: "Inactive",
         keywordsTitle: "Specializations & Keywords",
         keywordsDesc: "Define NoonDalton's services and target industries",
         serviceKeywordsLabel: "Service keywords",
@@ -920,8 +920,8 @@ export const translations = {
     // Leads (Fase 2 — Agente 1 output)
     leads: {
       title: "Leads",
-      subtitle: "Job postings found by Agente 1, scored for relevance to NoonDalton.",
-      runScan: "Run Agente 1 now",
+      subtitle: "Job postings found in the scan, scored for relevance to NoonDalton.",
+      runScan: "Scan jobs",
       running: "Scanning sources...",
       scanStarted: "Scan started.",
       scanCompleted: "Scan completed: {new} new lead(s) out of {found} evaluated.",
@@ -1798,7 +1798,7 @@ export const translations = {
       pipelineTab: {
         statusTitle: "Pipeline de Prospección",
         statusActive: "Escaneo manual",
-        statusInactive: "Inactivo — actívalo para comenzar",
+        statusInactive: "Inactivo",
         keywordsTitle: "Especializaciones y Palabras Clave",
         keywordsDesc: "Define los servicios de NoonDalton y las industrias objetivo",
         serviceKeywordsLabel: "Palabras clave de servicios",
@@ -1914,8 +1914,8 @@ export const translations = {
     // Leads (Fase 2 — salida del Agente 1)
     leads: {
       title: "Leads",
-      subtitle: "Vacantes encontradas por el Agente 1, evaluadas por relevancia para NoonDalton.",
-      runScan: "Ejecutar Agente 1 ahora",
+      subtitle: "Vacantes encontradas en el escaneo, evaluadas por relevancia para NoonDalton.",
+      runScan: "Escanear vacantes",
       running: "Escaneando fuentes...",
       scanStarted: "Escaneo iniciado.",
       scanCompleted: "Escaneo completado: {new} lead(s) nuevo(s) de {found} evaluados.",
@@ -2828,7 +2828,7 @@ export const translations = {
       pipelineTab: {
         statusTitle: "Pipeline de Prospecção",
         statusActive: "Varredura manual",
-        statusInactive: "Inativo — ative para começar",
+        statusInactive: "Inativo",
         keywordsTitle: "Especializações e Palavras-chave",
         keywordsDesc: "Defina os serviços da NoonDalton e os setores-alvo",
         serviceKeywordsLabel: "Palavras-chave de serviços",
@@ -2944,8 +2944,8 @@ export const translations = {
     // Leads (Fase 2 — saída do Agente 1)
     leads: {
       title: "Leads",
-      subtitle: "Vagas encontradas pelo Agente 1, avaliadas por relevância para a NoonDalton.",
-      runScan: "Executar Agente 1 agora",
+      subtitle: "Vagas encontradas na varredura, avaliadas por relevância para a NoonDalton.",
+      runScan: "Escanear vagas",
       running: "Escaneando fontes...",
       scanStarted: "Escaneamento iniciado.",
       scanCompleted: "Escaneamento concluído: {new} lead(s) novo(s) de {found} avaliados.",

@@ -42,6 +42,13 @@ describe("PipelineSettingsTab status text", () => {
     expect(translations.pt.settings.pipelineTab.statusActive).toBe("Varredura manual");
   });
 
+  // RF14-D-009: the toggle does not affect the scan button, so "inactive" invites nothing.
+  it("uses the plain inactive texts", () => {
+    expect(translations.es.settings.pipelineTab.statusInactive).toBe("Inactivo");
+    expect(translations.en.settings.pipelineTab.statusInactive).toBe("Inactive");
+    expect(translations.pt.settings.pipelineTab.statusInactive).toBe("Inativo");
+  });
+
   it("keeps the toggle and the scan frequency field", async () => {
     pipelineApi.getConfig.mockResolvedValue({ data: { sources: [], is_active: true, scan_frequency_hours: 12 } });
     render(<PipelineSettingsTab />);
