@@ -37,6 +37,7 @@ from app.core.pipeline_constants import (
     JSEARCH_DEFAULT_LANGUAGE,
     JSEARCH_DEFAULT_NUM_PAGES,
     JSEARCH_FETCH_TIMEOUT_SECONDS,
+    JSEARCH_MAX_KEYWORDS,
     JSEARCH_MAX_PAGES,
     JSEARCH_SEARCH_URL,
     MAX_RESULTS_PER_RUN,
@@ -566,24 +567,46 @@ def _jsearch_status_message(status_code: int, detail: str = "") -> str:
     return f"{message}: {detail}" if detail else message
 
 
+async def _fetch_jsearch_page(
+    client: httpx.AsyncClient, headers: Dict[str, str], params: Dict[str, Any], api_key: str,
+) -> "tuple[Optional[Any], Optional[str]]":
+    """One JSearch request: (payload, None) on success, (None, message) on
+    failure. The message never carries the request (its headers hold the key)."""
+    try:
+        status_code, body = await url_safety.safe_get_bytes(
+            client, JSEARCH_SEARCH_URL, headers=headers, params=params,
+            max_bytes=MAX_SOURCE_RESPONSE_BYTES,
+        )
+        if status_code >= 400:
+            return None, _jsearch_status_message(status_code, _jsearch_provider_detail(body, api_key))
+        _report_if_truncated(body)
+        return json.loads(body), None
+    except Exception as exc:
+        return None, _jsearch_failure_message(exc)
+
+
 async def _scan_jsearch(source: Dict[str, Any], keywords: List[str]) -> List[RawJobPosting]:
     config = source.get("config") or {}
     api_key = _resolve_source_secrets(source).get("api_key")
     if not api_key:
         _report_source_problem("falta la clave de API (api_key)")
         return []
-    query = " ".join(str(k).strip() for k in keywords[:5] if str(k).strip())
-    if not query:
+    # JSearch matches the whole `query` as one phrase, so joining keywords
+    # finds almost nothing: each keyword is its own query instead.
+    queries = [str(k).strip() for k in keywords if str(k).strip()][:JSEARCH_MAX_KEYWORDS]
+    if not queries:
         _report_source_problem("no hay palabras clave configuradas para la búsqueda")
         return []
 
+    # num_pages is the depth per keyword; JSEARCH_MAX_PAGES caps the requests
+    # of the whole source, spent in rounds: page 1 of every keyword first,
+    # then further pages while the cap allows.
     try:
         num_pages = int(config.get("num_pages") or JSEARCH_DEFAULT_NUM_PAGES)
     except (TypeError, ValueError):
         num_pages = JSEARCH_DEFAULT_NUM_PAGES
     num_pages = max(1, min(num_pages, JSEARCH_MAX_PAGES))
     base_params: Dict[str, Any] = {
-        "query": query,
         "country": config.get("country") or JSEARCH_DEFAULT_COUNTRY,
         "language": config.get("language") or JSEARCH_DEFAULT_LANGUAGE,
     }
@@ -592,58 +615,85 @@ async def _scan_jsearch(source: Dict[str, Any], keywords: List[str]) -> List[Raw
     headers = {"X-RapidAPI-Key": api_key, "X-RapidAPI-Host": JSEARCH_API_HOST}
 
     postings: List[RawJobPosting] = []
-    cursor = ""
-    async with httpx.AsyncClient(timeout=JSEARCH_FETCH_TIMEOUT_SECONDS) as client:
-        # One request per page, so the run budget and the per-source cap are
-        # checked before paying for each extra page. The first page has no
-        # cursor; each next one sends the cursor of the previous response.
-        for page in range(1, num_pages + 1):
-            if page > 1 and (not cursor or len(postings) >= MAX_RESULTS_PER_SOURCE or _run_budget_exhausted()):
-                break
-            params = {**base_params, "cursor": cursor} if page > 1 else base_params
-            message: Optional[str] = None
-            try:
-                status_code, body = await url_safety.safe_get_bytes(
-                    client, JSEARCH_SEARCH_URL, headers=headers, params=params,
-                    max_bytes=MAX_SOURCE_RESPONSE_BYTES,
-                )
-                if status_code >= 400:
-                    message = _jsearch_status_message(status_code, _jsearch_provider_detail(body, api_key))
-                else:
-                    _report_if_truncated(body)
-                    payload = json.loads(body)
-            except Exception as exc:
-                message = _jsearch_failure_message(exc)
-            if message is not None:
-                logger.warning("job_scout: JSearch source %s page %d failed: %s", source.get("id"), page, message)
-                # Only the first page failing means nothing was read from the source.
-                if page == 1:
-                    _report_source_problem(message)
-                else:
-                    _report_source_problem(f"página {page}: {message}", fatal=False)
-                break
+    seen_fingerprints: set = set()
+    cursors: Dict[str, str] = {}
+    finished: set = set()
+    first_page_failures: List[str] = []
+    later_page_failures: List[str] = []
+    requests_made = 0
+    answered_queries = 0
 
-            jobs = _jsearch_jobs(payload)
-            cursor = _jsearch_cursor(payload)
-            if not jobs:
-                break  # no more results: later pages would be empty too
-            for item in jobs:
-                if len(postings) >= MAX_RESULTS_PER_SOURCE:
+    async with httpx.AsyncClient(timeout=JSEARCH_FETCH_TIMEOUT_SECONDS) as client:
+        for page in range(1, num_pages + 1):
+            for query in queries:
+                if query in finished:
+                    continue
+                if page > 1 and not cursors.get(query):
+                    finished.add(query)
+                    continue
+                # Checked before paying for each request after the first one.
+                if requests_made and (
+                    requests_made >= JSEARCH_MAX_PAGES
+                    or len(postings) >= MAX_RESULTS_PER_SOURCE
+                    or _run_budget_exhausted()
+                ):
                     break
-                if not isinstance(item, dict):
+                params = {"query": query, **base_params}
+                if page > 1:
+                    params["cursor"] = cursors[query]
+                requests_made += 1
+                payload, message = await _fetch_jsearch_page(client, headers, params, api_key)
+                if message is not None:
+                    logger.warning(
+                        "job_scout: JSearch source %s keyword %r page %d failed: %s",
+                        source.get("id"), query, page, message,
+                    )
+                    if page == 1:
+                        first_page_failures.append(f"palabra clave «{query}»: {message}")
+                    else:
+                        later_page_failures.append(f"palabra clave «{query}», página {page}: {message}")
+                    finished.add(query)
                     continue
-                title = str(item.get("job_title") or "").strip()
-                company = str(item.get("employer_name") or "").strip()
-                if not title or not company:
+
+                answered_queries += 1
+                jobs = _jsearch_jobs(payload)
+                cursors[query] = _jsearch_cursor(payload)
+                if not jobs:
+                    finished.add(query)  # no more results: later pages would be empty too
                     continue
-                postings.append(RawJobPosting(
-                    job_title=title,
-                    company_name=company,
-                    job_description=str(item.get("job_description") or "")[:POSTING_DESCRIPTION_MAX_CHARS],
-                    job_url=_sanitize_job_url(_jsearch_apply_link(item)),
-                    location=_jsearch_location(item),
-                    source_id=source["id"],
-                ))
+                for item in jobs:
+                    if len(postings) >= MAX_RESULTS_PER_SOURCE:
+                        break
+                    if not isinstance(item, dict):
+                        continue
+                    title = str(item.get("job_title") or "").strip()
+                    company = str(item.get("employer_name") or "").strip()
+                    if not title or not company:
+                        continue
+                    # The same posting often comes back for several keywords.
+                    fingerprint = compute_fingerprint(company, title)
+                    if fingerprint in seen_fingerprints:
+                        continue
+                    seen_fingerprints.add(fingerprint)
+                    postings.append(RawJobPosting(
+                        job_title=title,
+                        company_name=company,
+                        job_description=str(item.get("job_description") or "")[:POSTING_DESCRIPTION_MAX_CHARS],
+                        job_url=_sanitize_job_url(_jsearch_apply_link(item)),
+                        location=_jsearch_location(item),
+                        source_id=source["id"],
+                    ))
+            else:
+                continue
+            break  # a cap was reached inside the round: no more requests at all
+
+    # The source is down only when no keyword got an answer; otherwise a
+    # failing keyword is a warning and the others' postings stay.
+    all_failed = answered_queries == 0
+    for message in first_page_failures:
+        _report_source_problem(message, fatal=all_failed)
+    for message in later_page_failures:
+        _report_source_problem(message, fatal=False)
     return postings
 
 

@@ -74,8 +74,12 @@ JSEARCH_API_HOST = "jsearch.p.rapidapi.com"
 # RUN_TIME_BUDGET_SECONDS still bounds the whole run.
 JSEARCH_FETCH_TIMEOUT_SECONDS = 45
 # Each page is a separate request (and a separate billed call on RapidAPI).
-# num_pages is only this adapter's own page cap; it is never sent to JSearch.
+# Cap on the requests of one source per run, across all its keywords. A
+# source's num_pages is the depth per keyword; it is never sent to JSearch.
 JSEARCH_MAX_PAGES = 3
+# JSearch matches a query as one phrase, so each keyword is its own query;
+# only the first ones are used, and they share JSEARCH_MAX_PAGES.
+JSEARCH_MAX_KEYWORDS = 3
 JSEARCH_DEFAULT_NUM_PAGES = 1
 JSEARCH_DEFAULT_COUNTRY = "gb"
 JSEARCH_DEFAULT_LANGUAGE = "en"

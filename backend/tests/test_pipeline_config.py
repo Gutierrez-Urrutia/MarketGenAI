@@ -935,14 +935,14 @@ async def test_test_jsearch_source_reads_postings(client):
 async def test_test_jsearch_source_reports_invalid_key(client):
     body, _ = await _probar_jsearch(client, ["BPO"], 403, b'{"message": "not subscribed"}')
     assert body["ok"] is False
-    assert body["reason"] == "clave de API inválida o sin suscripción a JSearch (HTTP 403): not subscribed"
+    assert body["reason"] == "palabra clave «BPO»: clave de API inválida o sin suscripción a JSearch (HTTP 403): not subscribed"
 
 
 @pytest.mark.asyncio
 async def test_test_jsearch_source_404_includes_the_provider_reason(client):
     body, _ = await _probar_jsearch(client, ["BPO"], 404, b'{"message": "Endpoint \'/search\' does not exist"}')
     assert body["ok"] is False
-    assert body["reason"] == "JSearch respondió HTTP 404: Endpoint '/search' does not exist"
+    assert body["reason"] == "palabra clave «BPO»: JSearch respondió HTTP 404: Endpoint '/search' does not exist"
 
 
 @pytest.mark.asyncio
