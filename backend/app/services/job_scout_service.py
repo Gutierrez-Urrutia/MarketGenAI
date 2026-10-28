@@ -39,7 +39,11 @@ from app.core.pipeline_constants import (
     JSEARCH_DEFAULT_NUM_PAGES,
     JSEARCH_FETCH_TIMEOUT_SECONDS,
     JSEARCH_MAX_KEYWORDS,
+    JSEARCH_MAX_NUM_PAGES,
     JSEARCH_MAX_PAGES,
+    JSEARCH_MAX_RESULTS_PER_KEYWORD,
+    JSEARCH_MAX_RESULTS_PER_SOURCE,
+    JSEARCH_MIN_REQUEST_SECONDS,
     JSEARCH_SEARCH_URL,
     MAX_RESULTS_PER_RUN,
     MAX_RESULTS_PER_SOURCE,
@@ -112,6 +116,12 @@ _run_deadline: ContextVar[Optional[float]] = ContextVar("job_scout_run_deadline"
 def _run_budget_exhausted() -> bool:
     deadline = _run_deadline.get()
     return deadline is not None and time.monotonic() >= deadline
+
+
+def _run_budget_left() -> Optional[float]:
+    """Seconds left in the run's budget, or None outside a run."""
+    deadline = _run_deadline.get()
+    return None if deadline is None else deadline - time.monotonic()
 
 
 def _report_source_problem(message: str, *, fatal: bool = True) -> None:
@@ -590,18 +600,26 @@ def _jsearch_status_message(status_code: int, detail: str = "") -> str:
 
 async def _fetch_jsearch_page(
     client: httpx.AsyncClient, headers: Dict[str, str], params: Dict[str, Any], api_key: str,
+    time_limit: Optional[float] = None,
 ) -> "tuple[Optional[Any], Optional[str]]":
     """One JSearch request: (payload, None) on success, (None, message) on
-    failure. The message never carries the request (its headers hold the key)."""
+    failure. The message never carries the request (its headers hold the key).
+    `time_limit` (what is left of the run budget) cuts the request short of
+    JSEARCH_FETCH_TIMEOUT_SECONDS so it cannot overrun the run."""
     try:
-        status_code, body = await url_safety.safe_get_bytes(
-            client, JSEARCH_SEARCH_URL, headers=headers, params=params,
-            max_bytes=MAX_SOURCE_RESPONSE_BYTES,
+        status_code, body = await asyncio.wait_for(
+            url_safety.safe_get_bytes(
+                client, JSEARCH_SEARCH_URL, headers=headers, params=params,
+                max_bytes=MAX_SOURCE_RESPONSE_BYTES,
+            ),
+            timeout=time_limit,
         )
         if status_code >= 400:
             return None, _jsearch_status_message(status_code, _jsearch_provider_detail(body, api_key))
         _report_if_truncated(body)
         return json.loads(body), None
+    except asyncio.TimeoutError:
+        return None, "presupuesto de tiempo de la ejecución agotado durante la consulta"
     except Exception as exc:
         return None, _jsearch_failure_message(exc)
 
@@ -614,10 +632,13 @@ async def _scan_jsearch(source: Dict[str, Any], keywords: List[str]) -> List[Raw
         return []
     # JSearch matches the whole `query` as one phrase, so joining keywords
     # finds almost nothing: each keyword is its own query instead.
-    queries = [str(k).strip() for k in keywords if str(k).strip()][:JSEARCH_MAX_KEYWORDS]
+    all_queries = [str(k).strip() for k in keywords if str(k).strip()]
+    queries = all_queries[:JSEARCH_MAX_KEYWORDS]
     if not queries:
         _report_source_problem("no hay palabras clave configuradas para la búsqueda")
         return []
+    if len(all_queries) > JSEARCH_MAX_KEYWORDS:
+        _report_source_problem(f"se usaron las {JSEARCH_MAX_KEYWORDS} primeras palabras clave", fatal=False)
 
     # num_pages is the depth per keyword; JSEARCH_MAX_PAGES caps the requests
     # of the whole source, spent in rounds: page 1 of every keyword first,
@@ -626,7 +647,7 @@ async def _scan_jsearch(source: Dict[str, Any], keywords: List[str]) -> List[Raw
         num_pages = int(config.get("num_pages") or JSEARCH_DEFAULT_NUM_PAGES)
     except (TypeError, ValueError):
         num_pages = JSEARCH_DEFAULT_NUM_PAGES
-    num_pages = max(1, min(num_pages, JSEARCH_MAX_PAGES))
+    num_pages = max(1, min(num_pages, JSEARCH_MAX_NUM_PAGES))
     base_params: Dict[str, Any] = {
         "country": config.get("country") or JSEARCH_DEFAULT_COUNTRY,
         "language": config.get("language") or JSEARCH_DEFAULT_LANGUAGE,
@@ -641,8 +662,10 @@ async def _scan_jsearch(source: Dict[str, Any], keywords: List[str]) -> List[Raw
     finished: set = set()
     first_page_failures: List[str] = []
     later_page_failures: List[str] = []
+    kept_per_query: Dict[str, int] = {}
     requests_made = 0
     answered_queries = 0
+    out_of_budget = False
 
     async with httpx.AsyncClient(timeout=JSEARCH_FETCH_TIMEOUT_SECONDS) as client:
         for page in range(1, num_pages + 1):
@@ -652,18 +675,27 @@ async def _scan_jsearch(source: Dict[str, Any], keywords: List[str]) -> List[Raw
                 if page > 1 and not cursors.get(query):
                     finished.add(query)
                     continue
+                if kept_per_query.get(query, 0) >= JSEARCH_MAX_RESULTS_PER_KEYWORD:
+                    finished.add(query)
+                    continue
                 # Checked before paying for each request after the first one.
                 if requests_made and (
                     requests_made >= JSEARCH_MAX_PAGES
-                    or len(postings) >= MAX_RESULTS_PER_SOURCE
-                    or _run_budget_exhausted()
+                    or len(postings) >= JSEARCH_MAX_RESULTS_PER_SOURCE
                 ):
+                    break
+                budget_left = _run_budget_left()
+                if budget_left is not None and budget_left < JSEARCH_MIN_REQUEST_SECONDS:
+                    out_of_budget = True
                     break
                 params = {"query": query, **base_params}
                 if page > 1:
                     params["cursor"] = cursors[query]
                 requests_made += 1
-                payload, message = await _fetch_jsearch_page(client, headers, params, api_key)
+                payload, message = await _fetch_jsearch_page(
+                    client, headers, params, api_key,
+                    time_limit=None if budget_left is None else min(JSEARCH_FETCH_TIMEOUT_SECONDS, budget_left),
+                )
                 if message is not None:
                     logger.warning(
                         "job_scout: JSearch source %s keyword %r page %d failed: %s",
@@ -683,7 +715,10 @@ async def _scan_jsearch(source: Dict[str, Any], keywords: List[str]) -> List[Raw
                     finished.add(query)  # no more results: later pages would be empty too
                     continue
                 for item in jobs:
-                    if len(postings) >= MAX_RESULTS_PER_SOURCE:
+                    if (
+                        len(postings) >= JSEARCH_MAX_RESULTS_PER_SOURCE
+                        or kept_per_query.get(query, 0) >= JSEARCH_MAX_RESULTS_PER_KEYWORD
+                    ):
                         break
                     if not isinstance(item, dict):
                         continue
@@ -696,6 +731,7 @@ async def _scan_jsearch(source: Dict[str, Any], keywords: List[str]) -> List[Raw
                     if fingerprint in seen_fingerprints:
                         continue
                     seen_fingerprints.add(fingerprint)
+                    kept_per_query[query] = kept_per_query.get(query, 0) + 1
                     postings.append(RawJobPosting(
                         job_title=title,
                         company_name=company,
@@ -715,7 +751,22 @@ async def _scan_jsearch(source: Dict[str, Any], keywords: List[str]) -> List[Raw
         _report_source_problem(message, fatal=all_failed)
     for message in later_page_failures:
         _report_source_problem(message, fatal=False)
+    if out_of_budget:
+        not_queried = [q for q in queries if q not in cursors and q not in finished]
+        if not_queried:
+            _report_source_problem(
+                f"presupuesto de tiempo de la ejecución agotado: no se consultaron {len(not_queried)} "
+                f"palabra(s) clave ({', '.join(not_queried)})",
+                fatal=False,
+            )
     return postings
+
+
+def _max_results_for(source: Dict[str, Any]) -> int:
+    """Postings kept per source: JSearch gathers several keywords' worth."""
+    if source.get("source_type") == SourceType.JSEARCH.value:
+        return JSEARCH_MAX_RESULTS_PER_SOURCE
+    return MAX_RESULTS_PER_SOURCE
 
 
 async def _scan_source(source: Dict[str, Any], keywords: List[str]) -> List[RawJobPosting]:
@@ -837,6 +888,10 @@ async def score_relevance_batch(
 
     results = {}
     for idx, posting in enumerate(postings):
+        if _run_budget_exhausted():
+            # Out of run budget: the rest are not scored (score 0, discarded).
+            results[idx] = {"relevance_score": 0.0, "matched_keywords": [], "reasoning": "run_budget_exhausted"}
+            continue
         single = await _call_deepseek_for_scores([posting], keywords)
         if single and isinstance(single[0], dict):
             results[idx] = single[0]
@@ -924,7 +979,7 @@ async def scan_all_sources(pipeline_config: Dict[str, Any], run_id: str) -> Dict
         if any(problem["fatal"] for problem in problems):
             failed_sources += 1
 
-        postings = postings[:MAX_RESULTS_PER_SOURCE]
+        postings = postings[:_max_results_for(source)]
         postings = [p for p in postings if p.company_name.strip().lower() not in excluded_companies]
 
         candidates: List[tuple] = []
@@ -954,7 +1009,11 @@ async def scan_all_sources(pipeline_config: Dict[str, Any], run_id: str) -> Dict
                 })
                 break
             batch = candidates[batch_start:batch_start + RELEVANCE_SCORING_BATCH_SIZE]
-            scores = await score_relevance_batch([c[0] for c in batch], keywords)
+            deadline_token = _run_deadline.set(started_at + RUN_TIME_BUDGET_SECONDS)
+            try:
+                scores = await score_relevance_batch([c[0] for c in batch], keywords)
+            finally:
+                _run_deadline.reset(deadline_token)
             for idx, (posting, fingerprint) in enumerate(batch):
                 result = scores.get(idx, {})
                 try:

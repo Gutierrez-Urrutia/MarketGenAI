@@ -24,7 +24,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, sta
 from app.core import url_safety
 from app.core.pipeline_constants import (
     JSEARCH_DATE_POSTED_OPTIONS,
-    JSEARCH_MAX_PAGES,
+    JSEARCH_MAX_NUM_PAGES,
     RUN_CONSIDERED_DEAD_AFTER_SECONDS,
     TASK_ENQUEUE_TIMEOUT_SECONDS,
 )
@@ -122,7 +122,7 @@ def _validate_source_title_format(source_type: SourceType, config: Dict[str, Any
 
 def _validate_jsearch_config(source_type: SourceType, config: Dict[str, Any]) -> None:
     """For JSearch sources, the optional query settings must be values the
-    provider accepts: `num_pages` an integer 1..JSEARCH_MAX_PAGES,
+    provider accepts: `num_pages` an integer 1..JSEARCH_MAX_NUM_PAGES,
     `date_posted` one of JSEARCH_DATE_POSTED_OPTIONS, and `country` /
     `language` two-letter codes. Absent fields fall back to the adapter's
     defaults (job_scout_service._scan_jsearch)."""
@@ -135,8 +135,8 @@ def _validate_jsearch_config(source_type: SourceType, config: Dict[str, Any]) ->
 
     if "num_pages" in config:
         value = config["num_pages"]
-        if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= JSEARCH_MAX_PAGES:
-            _reject(f"num_pages must be an integer between 1 and {JSEARCH_MAX_PAGES}.")
+        if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= JSEARCH_MAX_NUM_PAGES:
+            _reject(f"num_pages must be an integer between 1 and {JSEARCH_MAX_NUM_PAGES}.")
     if config.get("date_posted") not in (None, "") and config["date_posted"] not in JSEARCH_DATE_POSTED_OPTIONS:
         _reject(f"Invalid date_posted {config['date_posted']!r}; expected one of {list(JSEARCH_DATE_POSTED_OPTIONS)}.")
     for field in ("country", "language"):
@@ -387,7 +387,11 @@ async def test_source(
     problems: List[Dict[str, Any]] = []
     problems_token = job_scout_service._source_problems.set(problems)
     try:
-        postings = await job_scout_service._scan_source(source, doc.get("keywords") or [])
+        keywords = doc.get("keywords") or []
+        if source_type == SourceType.JSEARCH:
+            # Each JSearch keyword is a billed request: the probe only needs one.
+            keywords = [k for k in keywords if str(k).strip()][:1]
+        postings = await job_scout_service._scan_source(source, keywords)
     except Exception as exc:  # noqa: BLE001 — a probe reports, it never 500s
         problems.append({"message": str(exc) or type(exc).__name__, "fatal": True})
         postings = []

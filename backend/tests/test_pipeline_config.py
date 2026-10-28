@@ -946,6 +946,42 @@ async def test_test_jsearch_source_404_includes_the_provider_reason(client):
 
 
 @pytest.mark.asyncio
+async def test_test_jsearch_source_uses_only_the_first_keyword(client):
+    import httpx
+    from app.services import job_scout_service
+
+    queries = []
+
+    class _Ctx:
+        async def __aenter__(self):
+            body = b'{"data": {"jobs": [{"job_title": "Agent", "employer_name": "Acme"}]}}'
+            return httpx.Response(200, content=body, request=httpx.Request("GET", "https://jsearch.p.rapidapi.com/search-v2"))
+
+        async def __aexit__(self, *exc):
+            return False
+
+    def fake_stream(self, method, url, params=None, **kwargs):
+        queries.append((params or {}).get("query"))
+        return _Ctx()
+
+    keywords = [" ", "customer service", "call center", "data entry"] + [f"kw{i}" for i in range(8)]
+    doc = fake_config({"keywords": keywords, "sources": [_jsearch_source()]})
+    with (
+        patch("app.routers.pipeline.pipeline_configs_repo.get_by_user", new_callable=AsyncMock, return_value=doc),
+        patch.object(httpx.AsyncClient, "stream", fake_stream),
+        patch.object(job_scout_service, "score_relevance_batch", new_callable=AsyncMock) as mock_score,
+    ):
+        resp = await client.post(f"{API}/sources/source-js/test")
+
+    assert resp.status_code == 200
+    assert queries == ["customer service"]  # 1 request, the first non-blank keyword
+    body = resp.json()
+    assert body["ok"] is True and body["postings_read"] == 1
+    assert body["warnings"] == []  # the "first 8 keywords" warning is for runs, not the probe
+    mock_score.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_test_jsearch_source_without_keywords_gives_a_clear_reason(client):
     body, calls = await _probar_jsearch(client, [])
     assert body["ok"] is False

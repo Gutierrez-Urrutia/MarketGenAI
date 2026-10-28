@@ -2,6 +2,7 @@
 (httpx, feedparser, DeepSeek, Firestore) are mocked."""
 from __future__ import annotations
 
+import asyncio
 import json
 import socket
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -1184,8 +1185,8 @@ async def test_scan_jsearch_sends_fixed_url_rapidapi_headers_and_query(jsearch_s
     source = jsearch_source({"base_url": "https://evil.example.com", "country": "us", "language": "es",
                              "date_posted": "week"})
     pages = [(200, _jsearch_body([_jsearch_job(job_title=f"Job {i}")], cursor=None)) for i in range(3)]
-    _, calls, _ = await _scan_jsearch_with(source, pages, keywords=["a", "b", "c", "d", "e", "f"])
-    # One query per keyword (never joined into one phrase), only the first 3.
+    _, calls, _ = await _scan_jsearch_with(source, pages, keywords=["a", "b", "c"])
+    # One query per keyword (never joined into one phrase).
     assert len(calls) == 3
     for call, keyword in zip(calls, ["a", "b", "c"]):
         assert call["url"] == "https://jsearch.p.rapidapi.com/search-v2"
@@ -1275,29 +1276,69 @@ async def test_scan_jsearch_dedupes_the_same_offer_across_queries(jsearch_source
 
 
 @pytest.mark.asyncio
-async def test_scan_jsearch_uses_only_the_first_3_keywords(jsearch_source):
-    pages = [(200, _jsearch_body([_jsearch_job(job_title=f"Job {i}")], cursor=None)) for i in range(5)]
-    _, calls, _ = await _scan_jsearch_with(jsearch_source(), pages, keywords=["a", " ", "b", "c", "d", "e"])
-    assert [c["params"]["query"] for c in calls] == ["a", "b", "c"]
+async def test_scan_jsearch_8_keywords_are_8_queries(jsearch_source):
+    keywords = [f"kw{i}" for i in range(1, 9)]
+    pages = [(200, _jsearch_body([_jsearch_job(job_title=f"Job {i}")], cursor=None)) for i in range(8)]
+    postings, calls, problems = await _scan_jsearch_with(jsearch_source(), pages, keywords=keywords)
+    assert [c["params"]["query"] for c in calls] == keywords
+    assert len(postings) == 8
+    assert problems == []
 
 
 @pytest.mark.asyncio
-async def test_scan_jsearch_total_cap_of_3_requests_spent_page_1_first(jsearch_source):
+async def test_scan_jsearch_uses_only_the_first_8_keywords_and_warns(jsearch_source):
+    keywords = ["a", " ", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k"]  # 11 non-blank
+    pages = [(200, _jsearch_body([_jsearch_job(job_title=f"Job {i}")], cursor=None)) for i in range(11)]
+    postings, calls, problems = await _scan_jsearch_with(jsearch_source(), pages, keywords=keywords)
+    assert [c["params"]["query"] for c in calls] == ["a", "b", "c", "d", "e", "f", "g", "h"]
+    assert len(postings) == 8
+    assert problems == [{"message": "se usaron las 8 primeras palabras clave", "fatal": False}]
+
+
+@pytest.mark.asyncio
+async def test_scan_all_sources_more_than_8_keywords_warns_without_stopping_the_run(jsearch_source):
+    async def fake_generate_text(prompt, **kwargs):
+        return json.dumps([{"id": i, "relevance_score": 0.9, "matched_keywords": []} for i in range(8)])
+
+    keywords = [f"kw{i}" for i in range(1, 11)]
+    with (
+        patch.object(httpx.AsyncClient, "stream", _stream_by_url({
+            "https://jsearch.p.rapidapi.com": (200, _jsearch_body([_jsearch_job()], cursor=None)),
+        })),
+        patch.object(svc, "_is_duplicate", new_callable=AsyncMock, return_value=False),
+        patch.object(svc.deepseek_service, "generate_text", fake_generate_text),
+        patch.object(svc.leads_repo, "create", new_callable=AsyncMock),
+    ):
+        result = await svc.scan_all_sources(
+            fake_pipeline_config({"keywords": keywords, "sources": [jsearch_source()]}), "run-1",
+        )
+    assert [e["message"] for e in result["errors"]] == ["se usaron las 8 primeras palabras clave"]
+    assert result["all_sources_failed"] is False
+    assert result["leads_new"] == 1  # the same offer for every keyword is kept once
+
+
+@pytest.mark.asyncio
+async def test_scan_jsearch_total_cap_of_8_requests_spent_page_1_first(jsearch_source):
     def page(name):
         return (200, _jsearch_body([_jsearch_job(job_title=name)], cursor=f"{name}-next"))
-    pages = [page("kw1-p1"), page("kw2-p1"), page("kw1-p2"), page("kw2-p2"), page("kw1-p3")]
-    postings, calls, _ = await _scan_jsearch_with(jsearch_source({"num_pages": 3}), pages, keywords=["kw1", "kw2"])
+    keywords = ["kw1", "kw2", "kw3"]
+    pages = [page(f"{kw}-p{n}") for n in (1, 2, 3) for kw in keywords]  # 9 available
+    postings, calls, _ = await _scan_jsearch_with(jsearch_source({"num_pages": 3}), pages, keywords=keywords)
+    # Rounds: page 1 of each keyword, then page 2, then page 3 until 8 requests.
     assert [(c["params"]["query"], c["params"].get("cursor")) for c in calls] == [
-        ("kw1", None), ("kw2", None), ("kw1", "kw1-p1-next"),
+        ("kw1", None), ("kw2", None), ("kw3", None),
+        ("kw1", "kw1-p1-next"), ("kw2", "kw2-p1-next"), ("kw3", "kw3-p1-next"),
+        ("kw1", "kw1-p2-next"), ("kw2", "kw2-p2-next"),
     ]
-    assert [p.job_title for p in postings] == ["kw1-p1", "kw2-p1", "kw1-p2"]
+    assert len(postings) == 8
 
 
 @pytest.mark.asyncio
-async def test_scan_jsearch_3_keywords_never_ask_for_a_second_page(jsearch_source):
-    pages = [(200, _jsearch_body([_jsearch_job(job_title=f"Job {i}")], cursor="more")) for i in range(6)]
-    _, calls, _ = await _scan_jsearch_with(jsearch_source({"num_pages": 3}), pages, keywords=["a", "b", "c"])
-    assert [(c["params"]["query"], c["params"].get("cursor")) for c in calls] == [("a", None), ("b", None), ("c", None)]
+async def test_scan_jsearch_8_keywords_never_ask_for_a_second_page(jsearch_source):
+    keywords = [f"kw{i}" for i in range(1, 9)]
+    pages = [(200, _jsearch_body([_jsearch_job(job_title=f"Job {i}")], cursor="more")) for i in range(16)]
+    _, calls, _ = await _scan_jsearch_with(jsearch_source({"num_pages": 3}), pages, keywords=keywords)
+    assert [(c["params"]["query"], c["params"].get("cursor")) for c in calls] == [(kw, None) for kw in keywords]
 
 
 @pytest.mark.asyncio
@@ -1336,9 +1377,64 @@ async def test_scan_jsearch_stops_all_queries_when_the_run_budget_is_exhausted(j
         postings, calls, problems = await _scan_jsearch_with(jsearch_source(), pages, keywords=["kw1", "kw2", "kw3"])
     finally:
         svc._run_deadline.reset(token)
-    assert [c["params"]["query"] for c in calls] == ["kw1"]
-    assert len(postings) == 1
-    assert problems == []
+    assert (postings, calls) == ([], [])
+    assert problems == [{
+        "message": "presupuesto de tiempo de la ejecución agotado: no se consultaron 3 palabra(s) clave (kw1, kw2, kw3)",
+        "fatal": False,
+    }]
+
+
+@pytest.mark.asyncio
+async def test_scan_jsearch_budget_cuts_the_remaining_queries_without_breaking(jsearch_source):
+    pages = [(200, _jsearch_body([_jsearch_job(job_title=f"Job {i}")], cursor=None)) for i in range(4)]
+    budget = iter([100.0, 50.0, 4.0])  # seconds left before each request
+    with patch.object(svc, "_run_budget_left", side_effect=lambda: next(budget)):
+        postings, calls, problems = await _scan_jsearch_with(
+            jsearch_source(), pages, keywords=["kw1", "kw2", "kw3", "kw4"],
+        )
+    assert [c["params"]["query"] for c in calls] == ["kw1", "kw2"]
+    assert [p.job_title for p in postings] == ["Job 0", "Job 1"]
+    assert problems == [{
+        "message": "presupuesto de tiempo de la ejecución agotado: no se consultaron 2 palabra(s) clave (kw3, kw4)",
+        "fatal": False,
+    }]
+
+
+@pytest.mark.asyncio
+async def test_scan_jsearch_request_time_limit_is_bounded_by_the_budget_left(jsearch_source):
+    limits = []
+    real_wait_for = asyncio.wait_for
+
+    async def spy_wait_for(awaitable, timeout):
+        limits.append(timeout)
+        return await real_wait_for(awaitable, timeout)
+
+    pages = [(200, _jsearch_body([_jsearch_job(job_title=f"Job {i}")], cursor=None)) for i in range(3)]
+    budget = iter([200.0, 12.5])
+    with (
+        patch.object(svc, "_run_budget_left", side_effect=lambda: next(budget)),
+        patch.object(svc.asyncio, "wait_for", spy_wait_for),
+    ):
+        await _scan_jsearch_with(jsearch_source(), pages, keywords=["kw1", "kw2"])
+    assert limits == [45, 12.5]
+
+
+@pytest.mark.asyncio
+async def test_scan_jsearch_request_cut_by_the_budget_is_a_clear_problem(jsearch_source):
+    async def slow(*args, **kwargs):
+        await asyncio.sleep(1)
+
+    with (
+        patch.object(svc, "JSEARCH_MIN_REQUEST_SECONDS", 0),
+        patch.object(svc, "_run_budget_left", return_value=0.01),  # 10 ms left, the request needs 1 s
+        patch.object(svc.url_safety, "safe_get_bytes", slow),
+    ):
+        postings, _, problems = await _scan_jsearch_with(jsearch_source(), [])
+    assert postings == []
+    assert problems == [{
+        "message": "palabra clave «BPO»: presupuesto de tiempo de la ejecución agotado durante la consulta",
+        "fatal": True,
+    }]
 
 
 @pytest.mark.asyncio
@@ -1368,23 +1464,92 @@ async def test_scan_jsearch_stops_paging_on_an_empty_page(jsearch_source):
 
 
 @pytest.mark.asyncio
-async def test_scan_jsearch_keeps_at_most_30_postings_and_skips_extra_pages(jsearch_source):
-    many = [_jsearch_job(job_title=f"Job {i}") for i in range(40)]
-    postings, calls, _ = await _scan_jsearch_with(jsearch_source({"num_pages": 3}), [(200, _jsearch_body(many))] * 3)
-    assert len(postings) == svc.MAX_RESULTS_PER_SOURCE == 30
-    assert len(calls) == 1
+async def test_scan_jsearch_keeps_at_most_5_postings_per_keyword_so_every_keyword_adds(jsearch_source):
+    keywords = [f"kw{i}" for i in range(1, 9)]
+    pages = [
+        (200, _jsearch_body([_jsearch_job(job_title=f"{kw} job {n}") for n in range(10)], cursor="more"))
+        for kw in keywords
+    ]
+    postings, calls, _ = await _scan_jsearch_with(jsearch_source({"num_pages": 3}), pages, keywords=keywords)
+    assert len(calls) == 8  # page 1 of each keyword; each one already gave its 5
+    assert len(postings) == svc.JSEARCH_MAX_RESULTS_PER_SOURCE == 40
+    for kw in keywords:
+        assert [p.job_title for p in postings if p.job_title.startswith(f"{kw} ")] == [f"{kw} job {n}" for n in range(5)]
+
+
+@pytest.mark.asyncio
+async def test_scan_jsearch_per_keyword_cap_counts_only_new_offers(jsearch_source):
+    shared = [_jsearch_job(job_title=f"Shared {n}") for n in range(3)]
+    pages = [
+        (200, _jsearch_body(shared + [_jsearch_job(job_title=f"A {n}") for n in range(5)], cursor=None)),
+        (200, _jsearch_body(shared + [_jsearch_job(job_title=f"B {n}") for n in range(5)], cursor=None)),
+    ]
+    postings, _, _ = await _scan_jsearch_with(jsearch_source(), pages, keywords=["kwA", "kwB"])
+    assert [p.job_title for p in postings] == [
+        "Shared 0", "Shared 1", "Shared 2", "A 0", "A 1",  # kwA: 5 kept
+        "B 0", "B 1", "B 2", "B 3", "B 4",  # kwB: repeats skipped, then 5 new
+    ]
+
+
+@pytest.mark.asyncio
+async def test_scan_jsearch_keyword_with_few_offers_asks_for_its_next_page(jsearch_source):
+    pages = [
+        (200, _jsearch_body([_jsearch_job(job_title="kw1 a")], cursor="kw1-next")),
+        (200, _jsearch_body([_jsearch_job(job_title=f"kw2 {n}") for n in range(6)], cursor="kw2-next")),
+        (200, _jsearch_body([_jsearch_job(job_title="kw1 b")], cursor=None)),
+    ]
+    postings, calls, _ = await _scan_jsearch_with(jsearch_source({"num_pages": 2}), pages, keywords=["kw1", "kw2"])
+    # kw2 already has its 5 on page 1, so only kw1 gets a page 2.
+    assert [(c["params"]["query"], c["params"].get("cursor")) for c in calls] == [
+        ("kw1", None), ("kw2", None), ("kw1", "kw1-next"),
+    ]
+    assert [p.job_title for p in postings] == ["kw1 a", "kw2 0", "kw2 1", "kw2 2", "kw2 3", "kw2 4", "kw1 b"]
+
+
+@pytest.mark.asyncio
+async def test_scan_all_sources_keeps_40_jsearch_postings_but_30_for_other_sources(jsearch_source):
+    keywords = [f"kw{i}" for i in range(1, 9)]
+    api_body = json.dumps({"data": [{"title": f"api {n}", "company": "Globex"} for n in range(50)]}).encode()
+    captured = []
+
+    async def fake_score(postings, keywords):
+        captured.extend(postings)
+        return {i: {"relevance_score": 0.0} for i in range(len(postings))}
+
+    calls = {"n": 0}
+
+    def fake_stream(self, method, url, headers=None, params=None, **kwargs):
+        if str(url).startswith("https://jsearch.p.rapidapi.com"):
+            calls["n"] += 1
+            body = _jsearch_body([_jsearch_job(job_title=f"{params['query']} {n}") for n in range(10)], cursor=None)
+            return _FakeStreamCtx(_stream_response(200, content=body, url=str(url)))
+        return _FakeStreamCtx(_stream_response(200, content=api_body, url=str(url)))
+
+    api = fake_source({"id": "api", "config": {"base_url": "https://api.example.com/jobs"}})
+    with (
+        patch.object(httpx.AsyncClient, "stream", fake_stream),
+        patch.object(svc, "_is_duplicate", new_callable=AsyncMock, return_value=False),
+        patch.object(svc, "score_relevance_batch", side_effect=fake_score),
+        patch.object(svc.leads_repo, "create", new_callable=AsyncMock),
+    ):
+        result = await svc.scan_all_sources(
+            fake_pipeline_config({"keywords": keywords, "sources": [jsearch_source(), api]}), "run-1",
+        )
+    assert calls["n"] == 8
+    assert len([p for p in captured if p.source_id == "jsearch-1"]) == 40
+    assert len([p for p in captured if p.source_id == "api"]) == 30
+    assert result["leads_found"] == 70
 
 
 @pytest.mark.asyncio
 async def test_scan_jsearch_does_not_request_extra_page_when_run_budget_is_exhausted(jsearch_source):
-    pages = [(200, _jsearch_body([_jsearch_job()]))] * 3
-    token = svc._run_deadline.set(svc.time.monotonic() - 1)
-    try:
-        postings, calls, _ = await _scan_jsearch_with(jsearch_source({"num_pages": 3}), pages)
-    finally:
-        svc._run_deadline.reset(token)
+    pages = [(200, _jsearch_body([_jsearch_job(job_title=f"Job {i}")])) for i in range(3)]
+    budget = iter([100.0, 1.0])
+    with patch.object(svc, "_run_budget_left", side_effect=lambda: next(budget)):
+        postings, calls, problems = await _scan_jsearch_with(jsearch_source({"num_pages": 3}), pages)
     assert len(calls) == 1
     assert len(postings) == 1
+    assert problems == []  # the keyword was queried; only its extra pages were skipped
 
 
 @pytest.mark.asyncio
@@ -1662,6 +1827,46 @@ async def test_scoring_sends_the_new_system_prompt_and_still_parses_the_same_jso
     assert captured["system_prompt"] == svc._SCORE_SYSTEM_PROMPT
     assert "Regla de exclusión" in captured["prompt"]
     assert scores[0]["relevance_score"] == 0.15
+
+
+@pytest.mark.asyncio
+async def test_scoring_fallback_stops_calling_deepseek_once_the_run_budget_is_spent():
+    calls = []
+
+    async def fake_generate_text(prompt, **kwargs):
+        calls.append(prompt)
+        return "not json"  # the batch fails to parse -> per-item fallback
+
+    postings = [fake_posting(job_title=f"Job {i}") for i in range(3)]
+    token = svc._run_deadline.set(svc.time.monotonic() - 1)
+    try:
+        with patch.object(svc.deepseek_service, "generate_text", fake_generate_text):
+            scores = await svc.score_relevance_batch(postings, ["BPO"])
+    finally:
+        svc._run_deadline.reset(token)
+
+    assert len(calls) == 1  # only the batch call; no per-item calls out of budget
+    assert scores == {i: {"relevance_score": 0.0, "matched_keywords": [], "reasoning": "run_budget_exhausted"}
+                      for i in range(3)}
+
+
+@pytest.mark.asyncio
+async def test_scan_all_sources_scoring_runs_under_the_run_deadline():
+    seen = []
+
+    async def fake_score(postings, keywords):
+        seen.append(svc._run_deadline.get())
+        return {i: {"relevance_score": 0.0} for i in range(len(postings))}
+
+    with (
+        patch.object(svc, "_scan_source", new_callable=AsyncMock, return_value=[fake_posting()]),
+        patch.object(svc, "_is_duplicate", new_callable=AsyncMock, return_value=False),
+        patch.object(svc, "score_relevance_batch", side_effect=fake_score),
+    ):
+        await svc.scan_all_sources(fake_pipeline_config(), "run-1")
+
+    assert len(seen) == 1 and seen[0] is not None
+    assert svc._run_deadline.get() is None  # reset after scoring
 
 
 def test_relevance_threshold_is_still_0_6():

@@ -74,13 +74,23 @@ JSEARCH_API_HOST = "jsearch.p.rapidapi.com"
 # RUN_TIME_BUDGET_SECONDS still bounds the whole run.
 JSEARCH_FETCH_TIMEOUT_SECONDS = 45
 # Each page is a separate request (and a separate billed call on RapidAPI).
-# Cap on the requests of one source per run, across all its keywords. A
-# source's num_pages is the depth per keyword; it is never sent to JSearch.
-JSEARCH_MAX_PAGES = 3
+# Cap on the requests of one source per run, across all its keywords: enough
+# for page 1 of every keyword.
+JSEARCH_MAX_PAGES = 8
 # JSearch matches a query as one phrase, so each keyword is its own query;
 # only the first ones are used, and they share JSEARCH_MAX_PAGES.
-JSEARCH_MAX_KEYWORDS = 3
+JSEARCH_MAX_KEYWORDS = 8
+# A source's num_pages: the depth per keyword (1..this). Never sent to JSearch.
+JSEARCH_MAX_NUM_PAGES = 3
 JSEARCH_DEFAULT_NUM_PAGES = 1
+# Postings kept per keyword and per JSearch source, so that every keyword
+# adds some (the first ones would otherwise fill the source cap alone).
+# 8 x 5 = 40 still fits RUN_TIME_BUDGET_SECONDS with batched scoring; the
+# other source types keep MAX_RESULTS_PER_SOURCE.
+JSEARCH_MAX_RESULTS_PER_KEYWORD = 5
+JSEARCH_MAX_RESULTS_PER_SOURCE = JSEARCH_MAX_KEYWORDS * JSEARCH_MAX_RESULTS_PER_KEYWORD
+# A JSearch request is not started with less run budget than this left.
+JSEARCH_MIN_REQUEST_SECONDS = 5
 JSEARCH_DEFAULT_COUNTRY = "gb"
 JSEARCH_DEFAULT_LANGUAGE = "en"
 JSEARCH_DATE_POSTED_OPTIONS = ("all", "today", "3days", "week", "month")
