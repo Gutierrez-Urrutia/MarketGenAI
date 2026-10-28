@@ -1529,3 +1529,120 @@ async def test_scan_all_sources_dedupes_repeated_posting_within_the_same_run():
 ])
 def test_split_rss_title_title_dash_company(title, expected):
     assert svc._split_rss_title(title, "title_dash_company") == expected
+
+
+# ── RF14-D-005: relevance prompt (lead definition, exclusion rule, scale) ────
+
+def _prompt_lines(prompt: str, prefix: str) -> list:
+    return [line for line in prompt.splitlines() if line.startswith(prefix)]
+
+
+def test_score_prompt_defines_a_lead_as_a_potential_client_company():
+    prompt = svc._score_prompt([fake_posting()], ["customer service"])
+    assert "Qué es un lead: una EMPRESA CLIENTE POTENCIAL que publica una vacante" in prompt
+    assert "servicio externalizado" in prompt
+    assert "CLIENTES POTENCIALES de NoonDalton" in svc._SCORE_SYSTEM_PROMPT
+    assert "empresa de outsourcing/BPO" in svc._SCORE_SYSTEM_PROMPT
+
+
+def test_score_prompt_exclusion_rule_caps_competitors_but_not_staffing_agencies():
+    prompt = svc._score_prompt([fake_posting()], ["customer service"])
+    assert ("si la empresa que publica la vacante es ella misma un BPO, un call center o una empresa "
+            "de outsourcing (competidor directo de NoonDalton), asigna un relevance_score máximo de 0.2") in prompt
+    assert "Las agencias de reclutamiento o staffing NO se excluyen" in prompt
+    assert "califícalas según el cargo" in prompt
+
+
+def test_score_prompt_has_the_scale_and_the_fixed_list_of_services():
+    prompt = svc._score_prompt([fake_posting()], ["customer service"])
+    assert "- 0.8 a 1.0: cargos operativos o de volumen en los servicios que NoonDalton ofrece" in prompt
+    assert "- 0.6 a 0.79: cargos relacionados con esos servicios, pero con una relación débil." in prompt
+    assert "- Menos de 0.6: cargos directivos o estratégicos, o de áreas que NoonDalton no cubre." in prompt
+    [services_line] = _prompt_lines(prompt, "Servicios de NoonDalton: ")
+    for service in [
+        "atención al cliente y call center", "sales support (calificación de leads, seguimiento, CRM)",
+        "reclutamiento y RR. HH.", "soporte técnico y de software", "procesamiento de datos y back office",
+        "underwriting de préstamos", "operaciones de e-commerce (pedidos, inventario, envíos)",
+        "procesamiento de seguros (reclamos, renovaciones)",
+    ]:
+        assert service in services_line
+
+
+def test_score_prompt_services_line_does_not_contain_the_keywords():
+    keywords = ["warehouse picker", "night shift nurse via linkedin"]
+    prompt = svc._score_prompt([fake_posting()], keywords)
+    [services_line] = _prompt_lines(prompt, "Servicios de NoonDalton: ")
+    assert "warehouse picker" not in services_line
+    assert "night shift nurse" not in services_line
+    assert "via" not in services_line
+
+
+def test_score_prompt_strips_via_site_only_in_the_prompt_and_leaves_keywords_untouched():
+    keywords = [
+        "customer service jobs in London via linkedin",
+        "customer service jobs in London VIA Indeed",
+        "data entry",
+        "  ",
+        "help desk via glassdoor.co.uk",
+    ]
+    original = list(keywords)
+    prompt = svc._score_prompt([fake_posting()], keywords)
+
+    assert keywords == original  # the list the sources are queried with is not modified
+    [keywords_line] = _prompt_lines(prompt, "Palabras clave de búsqueda (solo para matched_keywords): ")
+    assert keywords_line == (
+        "Palabras clave de búsqueda (solo para matched_keywords): "
+        "customer service jobs in London, data entry, help desk"
+    )
+    assert "via" not in keywords_line.lower()
+
+
+def test_score_prompt_keeps_a_via_inside_the_keyword():
+    prompt = svc._score_prompt([fake_posting()], ["sales via phone support"])
+    assert "(solo para matched_keywords): sales via phone" in prompt
+
+
+def test_score_prompt_without_keywords_has_no_keywords_line():
+    prompt = svc._score_prompt([fake_posting()], [])
+    assert _prompt_lines(prompt, "Palabras clave de búsqueda") == []
+    assert _prompt_lines(prompt, "Servicios de NoonDalton: ")
+
+
+def test_score_prompt_keeps_the_json_output_format_and_the_postings():
+    long_description = "d" * svc.POSTING_DESCRIPTION_MAX_CHARS
+    postings = [fake_posting(job_description=long_description), fake_posting(job_title="Back Office", company_name="Globex")]
+    prompt = svc._score_prompt(postings, ["BPO"])
+
+    assert prompt.endswith(
+        'Responde con un array JSON, un objeto por cada "id" de arriba, en este formato exacto:\n'
+        '[\n'
+        '  {"id": 0, "relevance_score": 0.0, "matched_keywords": ["keyword1"], '
+        '"reasoning": "Explicación breve", "suggested_value_prop": "Propuesta de valor"}\n'
+        ']'
+    )
+    items = json.loads(prompt.split("Vacantes:\n", 1)[1].split("\n\n", 1)[0])
+    assert items == [
+        {"id": 0, "job_title": "Data Entry Specialist", "company": "Acme Corp", "description": long_description},
+        {"id": 1, "job_title": "Back Office", "company": "Globex", "description": postings[1].job_description},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_scoring_sends_the_new_system_prompt_and_still_parses_the_same_json():
+    captured = {}
+
+    async def fake_generate_text(prompt, **kwargs):
+        captured["prompt"] = prompt
+        captured["system_prompt"] = kwargs.get("system_prompt")
+        return json.dumps([{"id": 0, "relevance_score": 0.15, "matched_keywords": [], "reasoning": "Es un BPO: exclusión"}])
+
+    with patch.object(svc.deepseek_service, "generate_text", fake_generate_text):
+        scores = await svc.score_relevance_batch([fake_posting()], ["customer service via linkedin"])
+
+    assert captured["system_prompt"] == svc._SCORE_SYSTEM_PROMPT
+    assert "Regla de exclusión" in captured["prompt"]
+    assert scores[0]["relevance_score"] == 0.15
+
+
+def test_relevance_threshold_is_still_0_6():
+    assert svc.RELEVANCE_SCORE_THRESHOLD == 0.6

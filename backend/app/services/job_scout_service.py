@@ -19,6 +19,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
 import time
 import urllib.robotparser
 from contextvars import ContextVar
@@ -69,8 +70,28 @@ logger = logging.getLogger("marketgen.pipeline.job_scout")
 
 _SCORE_SYSTEM_PROMPT = (
     "Eres un analista de ventas B2B para NoonDalton, empresa de outsourcing/BPO. "
+    "Tu tarea es calificar vacantes publicadas por otras empresas para encontrar "
+    "CLIENTES POTENCIALES de NoonDalton. "
     "Respondes ÚNICAMENTE con un array JSON válido, sin texto adicional antes ni después."
 )
+
+# What NoonDalton sells, for the relevance prompt (RF14-D-005). Fixed here on
+# purpose: the pipeline keywords are search queries for the sources, not a
+# description of the services.
+_NOONDALTON_SERVICES = (
+    "atención al cliente y call center; "
+    "sales support (calificación de leads, seguimiento, CRM); "
+    "reclutamiento y RR. HH.; "
+    "soporte técnico y de software; "
+    "procesamiento de datos y back office; "
+    "underwriting de préstamos; "
+    "operaciones de e-commerce (pedidos, inventario, envíos); "
+    "procesamiento de seguros (reclamos, renovaciones)"
+)
+
+# A trailing " via <site>" only steers the search to a job board; it is not
+# part of what the posting matched.
+_VIA_SITE_SUFFIX = re.compile(r"\s+via\s+\S+\s*$", re.IGNORECASE)
 
 
 # ── Problems of the source being scanned (RF13-D-003) ───────────────────────
@@ -720,8 +741,24 @@ def _clean_json_response(text: str) -> str:
     return cleaned.strip()
 
 
+def _prompt_keywords(keywords: List[str]) -> List[str]:
+    """Keywords as shown to the model: without the " via <site>" suffix and
+    without the repeats that leaves. Returns a new list; `keywords` (what
+    the sources are queried with) is never modified."""
+    cleaned: List[str] = []
+    for keyword in keywords:
+        text = _VIA_SITE_SUFFIX.sub("", str(keyword)).strip()
+        if text and text.lower() not in (seen.lower() for seen in cleaned):
+            cleaned.append(text)
+    return cleaned
+
+
 def _score_prompt(postings: List[RawJobPosting], keywords: List[str]) -> str:
-    services = ", ".join(keywords) if keywords else "outsourcing/BPO en general"
+    prompt_keywords = _prompt_keywords(keywords)
+    keywords_line = (
+        f"Palabras clave de búsqueda (solo para matched_keywords): {', '.join(prompt_keywords)}\n\n"
+        if prompt_keywords else ""
+    )
     items = [
         {
             "id": idx,
@@ -732,11 +769,24 @@ def _score_prompt(postings: List[RawJobPosting], keywords: List[str]) -> str:
         for idx, posting in enumerate(postings)
     ]
     return (
-        f"Servicios de NoonDalton: {services}\n\n"
-        "Analiza cada una de estas vacantes y determina si la empresa podría "
-        "beneficiarse de los servicios de NoonDalton (es decir, si la vacante "
-        "indica que la empresa busca talento que NoonDalton podría proveer "
-        "como servicio externalizado).\n\n"
+        f"Servicios de NoonDalton: {_NOONDALTON_SERVICES}.\n\n"
+        f"{keywords_line}"
+        "Qué es un lead: una EMPRESA CLIENTE POTENCIAL que publica una vacante para "
+        "un cargo que NoonDalton podría cubrir como servicio externalizado, en lugar "
+        "de que la empresa contrate directamente a esa persona. Califica si la empresa "
+        "que publica la vacante es un buen cliente potencial para esos servicios.\n\n"
+        "Regla de exclusión: si la empresa que publica la vacante es ella misma un BPO, "
+        "un call center o una empresa de outsourcing (competidor directo de NoonDalton), "
+        "asigna un relevance_score máximo de 0.2, aunque el cargo encaje con los servicios. "
+        "Las agencias de reclutamiento o staffing NO se excluyen por eso: califícalas "
+        "según el cargo, como a cualquier otra empresa.\n\n"
+        "Escala de relevance_score (de 0.0 a 1.0):\n"
+        "- 0.8 a 1.0: cargos operativos o de volumen en los servicios que NoonDalton "
+        "ofrece (la lista de arriba).\n"
+        "- 0.6 a 0.79: cargos relacionados con esos servicios, pero con una relación débil.\n"
+        "- Menos de 0.6: cargos directivos o estratégicos, o de áreas que NoonDalton no cubre.\n\n"
+        'En "reasoning" explica brevemente el puntaje y, si aplicaste la regla de '
+        "exclusión, indícalo.\n\n"
         f"Vacantes:\n{json.dumps(items, ensure_ascii=False)}\n\n"
         'Responde con un array JSON, un objeto por cada "id" de arriba, en este formato exacto:\n'
         '[\n'
