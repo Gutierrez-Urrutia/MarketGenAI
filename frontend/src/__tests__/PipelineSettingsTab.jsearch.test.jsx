@@ -136,6 +136,9 @@ describe("PipelineSettingsTab JSearch source", () => {
     expect(tab.sourceTypeJsearch).toBeTruthy();
     expect(tab.sourceFieldJsearchApiKeyHint).toMatch(/RapidAPI/);
     expect(tab.sourceFieldJsearchApiKeyHint).toContain(tab.testConnectionTitle);
+    // RF14-D-008: up to 8 keywords, 1 request per keyword per run, 1 per test.
+    expect(tab.sourceFieldJsearchApiKeyHint).toMatch(/\b8\b/);
+    expect(tab.sourceFieldJsearchApiKeyHint.match(/\b1\b/g)).toHaveLength(2);
     expect(tab.toastApiKeyRequired).toBeTruthy();
   });
 });
