@@ -7,7 +7,7 @@
 import { useEffect, useState } from "react";
 import toast from "react-hot-toast";
 import {
-  Radar, Search, Globe, Mail, Code, Rss, Plug,
+  Radar, Search, Globe, Mail, Code, Rss, Plug, Briefcase,
   Pencil, Trash2, Plus, Save, Zap, Loader2,
 } from "lucide-react";
 
@@ -16,7 +16,7 @@ import { useI18n } from "@/hooks/useI18n";
 
 const SOURCE_TYPE_FIELD_KEYS = {
   api: [
-    { key: "base_url", labelKey: "sourceFieldBaseUrl", placeholder: "https://jsearch.p.rapidapi.com" },
+    { key: "base_url", labelKey: "sourceFieldBaseUrl", placeholder: "https://api.ejemplo.com/jobs" },
     { key: "api_key", labelKey: "sourceFieldApiKey", type: "password" },
   ],
   rss: [
@@ -39,9 +39,15 @@ const SOURCE_TYPE_FIELD_KEYS = {
     { key: "selectors", labelKey: "sourceFieldCssSelectors", placeholder: ".job-title, .company-name" },
   ],
   webhook: [],
+  // JSearch (RapidAPI): the URL and query settings live in the backend
+  // (country, language, num_pages, date_posted keep their defaults there),
+  // so the only thing to configure here is the key.
+  jsearch: [
+    { key: "api_key", labelKey: "sourceFieldApiKey", type: "password", hintKey: "sourceFieldJsearchApiKeyHint" },
+  ],
 };
 
-const SOURCE_TYPE_ICON = { api: Code, rss: Rss, scraper: Globe, webhook: Plug };
+const SOURCE_TYPE_ICON = { api: Code, rss: Rss, scraper: Globe, webhook: Plug, jsearch: Briefcase };
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -282,8 +288,18 @@ export default function PipelineSettingsTab({ isDark = false }) {
       toast.error(t("settings.pipelineTab.toastSourceNameRequired"));
       return;
     }
+    let config = sourceForm.config;
+    if (sourceForm.source_type === "jsearch") {
+      // Only the key is sent; an empty field keeps the stored one (RF13-D-004).
+      const apiKey = (sourceForm.config?.api_key || "").trim();
+      if (!apiKey && !sourceForm.configuredSecretFields?.includes("api_key")) {
+        toast.error(t("settings.pipelineTab.toastApiKeyRequired"));
+        return;
+      }
+      config = apiKey ? { api_key: apiKey } : {};
+    }
     try {
-      const payload = { name: sourceForm.name.trim(), source_type: sourceForm.source_type, config: sourceForm.config };
+      const payload = { name: sourceForm.name.trim(), source_type: sourceForm.source_type, config };
       const { data } = sourceForm.id
         ? await pipelineApi.updateSource(sourceForm.id, payload)
         : await pipelineApi.createSource(payload);
@@ -402,6 +418,7 @@ export default function PipelineSettingsTab({ isDark = false }) {
                       <option value="rss">RSS</option>
                       <option value="scraper">Scraper</option>
                       <option value="webhook">Webhook</option>
+                      <option value="jsearch">{t("settings.pipelineTab.sourceTypeJsearch")}</option>
                     </Select>
                   </Field>
                 </div>
