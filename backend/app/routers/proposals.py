@@ -118,6 +118,9 @@ async def _apply_proposal_template(proposal: dict, options: dict, user: CurrentU
     options.pop("commercialTerms", None)
     template_id = options.get("templateId")
     if not template_id:
+        # Regenerada sin plantilla: que no vuelva a aparecer la anterior al reabrirla.
+        if proposal.get("templateId"):
+            await proposals_repo.update(proposal["id"], {"templateId": None, "templateVariables": None})
         return
     variables = options.get("templateVariables") or {}
     if not isinstance(variables, dict):
@@ -136,6 +139,7 @@ async def _apply_proposal_template(proposal: dict, options: dict, user: CurrentU
     options["commercialTerms"] = applied.commercialTerms
     await proposals_repo.update(proposal["id"], {
         "templateId": template_id,
+        "templateVariables": variables,  # para regenerar con los mismos valores
         "serviceType": proposal.get("serviceType") or applied.serviceType,
         "industry": proposal.get("industry") or applied.industry,
     })

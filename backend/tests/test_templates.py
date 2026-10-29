@@ -365,8 +365,23 @@ async def test_generate_proposal_with_template_passes_rendered_template_to_worke
     assert options["templateContent"] == "Propuesta para Acme (copia en la propuesta), plazo 12 meses."
     assert options["commercialTerms"] == "Total $21.950 USD.\nPago a 30 días."
     proposal_update.assert_awaited_once_with("prop-abcd1234", {
-        "templateId": "tmpl-001", "serviceType": "collections", "industry": "healthcare",
+        "templateId": "tmpl-001", "templateVariables": {"plazo_meses": 12},
+        "serviceType": "collections", "industry": "healthcare",
     })
+
+
+@pytest.mark.asyncio
+async def test_regenerate_without_template_clears_previous_template(client):
+    proposal = fake_proposal({"templateId": "tmpl-old", "templateVariables": {"x": "1"}})
+    with (
+        patch("app.routers.proposals.proposals_repo.get", new_callable=AsyncMock, return_value=proposal),
+        patch("app.routers.proposals.proposals_repo.update", new_callable=AsyncMock, return_value=proposal) as proposal_update,
+        patch("app.routers.proposals.jobs_repo.create_job", new_callable=AsyncMock, return_value=fake_job("proposal_generation")),
+        patch("app.routers.proposals.task_generate_proposal.delay"),
+    ):
+        resp = await client.post("/api/v1/proposals/prop-abcd1234/generate", json={})
+    assert resp.status_code == 202
+    proposal_update.assert_awaited_once_with("prop-abcd1234", {"templateId": None, "templateVariables": None})
 
 
 @pytest.mark.asyncio

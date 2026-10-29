@@ -43,6 +43,9 @@ beforeEach(() => {
   proposals.generateProposalById.mockResolvedValue({ id: "p1", content: "<p>x</p>", status: "generated" });
 });
 
+// El modal simula ~4 s de pasos de progreso antes de generar: más margen que los 5 s por defecto.
+const SLOW = 20000;
+
 describe("OpportunityProposalModal: plantilla de propuesta", () => {
   it("sin plantilla genera como antes y no envía templateId", async () => {
     render(<OpportunityProposalModal opportunity={opportunity} onClose={() => {}} />);
@@ -54,7 +57,7 @@ describe("OpportunityProposalModal: plantilla de propuesta", () => {
     expect(body.templateId).toBeUndefined();
     expect(body.templateVariables).toBeUndefined();
     expect(body.template).toBe("NoonDalton Standard Proposal");
-  });
+  }, SLOW);
 
   it("al elegir una plantilla toma su clasificación, pide sus variables propias y las envía", async () => {
     render(<OpportunityProposalModal opportunity={opportunity} onClose={() => {}} />);
@@ -79,7 +82,7 @@ describe("OpportunityProposalModal: plantilla de propuesta", () => {
       templateId: "t1", serviceType: "collections", industry: "general",
       templateVariables: { tramo_mora: "30-60 días" },
     });
-  });
+  }, SLOW);
 
   it("si no cargan las plantillas, se puede generar igual", async () => {
     templatesApi.list.mockRejectedValue(new Error("offline"));
@@ -88,5 +91,5 @@ describe("OpportunityProposalModal: plantilla de propuesta", () => {
     fireEvent.click(byText(/precios|pricing/i));
     fireEvent.click(byText(/borrador|draft/i));
     await waitFor(() => expect(proposals.generateProposalById).toHaveBeenCalled(), { timeout: 8000 });
-  });
+  }, SLOW);
 });

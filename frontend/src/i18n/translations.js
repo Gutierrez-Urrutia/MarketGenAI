@@ -674,13 +674,6 @@ export const translations = {
         failedToast: "The proposal could not be generated",
         teamSizing: "Planned team (optional)",
         teamSizingHint: "Roles and headcount, e.g. 10 agents, 1 supervisor. If empty, the system proposes the roles.",
-        templateNone: "No template (NoonDalton standard)",
-        templateHint: "Its content guides the draft and its commercial terms go into the pricing section.",
-        serviceType: "Service line",
-        industry: "Industry",
-        notSpecified: "Not specified",
-        templateVariables: "Template values",
-        templateVariablesHint: "These variables are not filled in automatically. Any left empty stay marked in the draft as assumptions to validate.",
         reviewNotice: "Review the commercial and legal conditions (exclusions, term, termination notice) before sending.",
         sourcesUsed: "Sources used",
         none: "None",
@@ -736,6 +729,16 @@ export const translations = {
     },
 
     // Settings
+    proposalTemplatePicker: {
+      template: "Template",
+      templateNone: "No template (NoonDalton standard)",
+      templateHint: "Its content guides the draft and its commercial terms go into the pricing section.",
+      serviceType: "Service line",
+      industry: "Industry",
+      notSpecified: "Not specified",
+      templateVariables: "Template values",
+      templateVariablesHint: "These variables are not filled in automatically. Any left empty stay marked in the draft as assumptions to validate.",
+    },
     settings: {
       title: "Settings",
       subtitle: "Configure language, templates, integrations, and app preferences",
@@ -1715,13 +1718,6 @@ export const translations = {
         failedToast: "No se pudo generar la propuesta",
         teamSizing: "Equipo previsto (opcional)",
         teamSizingHint: "Roles y dotación, por ejemplo 10 agentes, 1 supervisor. Si se deja vacío, el sistema propone los roles.",
-        templateNone: "Sin plantilla (estándar NoonDalton)",
-        templateHint: "Su contenido orienta el borrador y sus condiciones comerciales van en la sección de precios.",
-        serviceType: "Línea de servicio",
-        industry: "Industria",
-        notSpecified: "Sin especificar",
-        templateVariables: "Valores de la plantilla",
-        templateVariablesHint: "Estas variables no se completan solas. Las que dejes vacías quedan marcadas en el borrador como supuestos a validar.",
         reviewNotice: "Revisa las condiciones comerciales y legales (exclusiones, plazo, aviso de término) antes de enviar.",
         sourcesUsed: "Fuentes usadas",
         none: "Ninguno",
@@ -1777,6 +1773,16 @@ export const translations = {
     },
 
     // Configuración
+    proposalTemplatePicker: {
+      template: "Plantilla",
+      templateNone: "Sin plantilla (estándar NoonDalton)",
+      templateHint: "Su contenido orienta el borrador y sus condiciones comerciales van en la sección de precios.",
+      serviceType: "Línea de servicio",
+      industry: "Industria",
+      notSpecified: "Sin especificar",
+      templateVariables: "Valores de la plantilla",
+      templateVariablesHint: "Estas variables no se completan solas. Las que dejes vacías quedan marcadas en el borrador como supuestos a validar.",
+    },
     settings: {
       title: "Configuración",
       subtitle: "Configura idioma, plantillas, integraciones y preferencias de la aplicación",
@@ -2792,13 +2798,6 @@ export const translations = {
         failedToast: "Não foi possível gerar a proposta",
         teamSizing: "Equipe prevista (opcional)",
         teamSizingHint: "Funções e quantidade, por exemplo 10 agentes, 1 supervisor. Se vazio, o sistema propõe as funções.",
-        templateNone: "Sem modelo (padrão NoonDalton)",
-        templateHint: "Seu conteúdo orienta o rascunho e suas condições comerciais vão na seção de preços.",
-        serviceType: "Linha de serviço",
-        industry: "Indústria",
-        notSpecified: "Não especificado",
-        templateVariables: "Valores do modelo",
-        templateVariablesHint: "Estas variáveis não são preenchidas automaticamente. As que ficarem vazias aparecem no rascunho como premissas a validar.",
         reviewNotice: "Revise as condições comerciais e jurídicas (exclusões, prazo, aviso de término) antes de enviar.",
         sourcesUsed: "Fontes usadas",
         none: "Nenhum",
@@ -2854,6 +2853,16 @@ export const translations = {
     },
 
     // Configurações
+    proposalTemplatePicker: {
+      template: "Modelo",
+      templateNone: "Sem modelo (padrão NoonDalton)",
+      templateHint: "Seu conteúdo orienta o rascunho e suas condições comerciais vão na seção de preços.",
+      serviceType: "Linha de serviço",
+      industry: "Indústria",
+      notSpecified: "Não especificado",
+      templateVariables: "Valores do modelo",
+      templateVariablesHint: "Estas variáveis não são preenchidas automaticamente. As que ficarem vazias aparecem no rascunho como premissas a validar.",
+    },
     settings: {
       title: "Configurações",
       subtitle: "Configure idioma, modelos, integrações e preferências da aplicação",
