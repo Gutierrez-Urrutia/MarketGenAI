@@ -113,6 +113,10 @@ class PipelineConfig(BaseModel):
     sender_name: str = ""
     smtp_password_configured: bool = False
 
+    # Hunter.io API key (Agente 2). Same treatment as smtp_password: stored
+    # encrypted as hunter_api_key_encrypted, never returned by the API.
+    hunter_api_key_configured: bool = False
+
     auto_send_threshold: float = Field(0.80, ge=0.0, le=1.0)
     max_emails_per_day: int = Field(50, ge=1)
     scan_frequency_hours: int = Field(24, ge=1)
@@ -123,7 +127,8 @@ class PipelineConfig(BaseModel):
 
 
 class PipelineConfigUpdate(BaseModel):
-    """PUT /pipeline/config — partial update, smtp_password write-only."""
+    """PUT /pipeline/config — partial update, smtp_password and
+    hunter_api_key write-only."""
 
     keywords: Optional[List[str]] = None
     industries: Optional[List[str]] = None
@@ -135,6 +140,10 @@ class PipelineConfigUpdate(BaseModel):
     smtp_password: Optional[str] = None
     sender_email: Optional[str] = None
     sender_name: Optional[str] = None
+
+    # Not stripped here: routers/pipeline.py strips it, and tells a
+    # whitespace-only value ("unchanged") from "" ("clear").
+    hunter_api_key: Optional[str] = None
 
     auto_send_threshold: Optional[float] = Field(None, ge=0.0, le=1.0)
     max_emails_per_day: Optional[int] = Field(None, ge=1)

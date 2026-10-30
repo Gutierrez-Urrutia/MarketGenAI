@@ -111,6 +111,38 @@ ENRICHMENT_PROVIDER_TIMEOUT_SECONDS = 20
 # logged) so one misbehaving provider can't flood a lead with contacts.
 ENRICHMENT_MAX_CONTACTS_PER_PROVIDER = 50
 
+# ── Hunter.io provider (Agente 2 — contacts by company domain) ──────────────
+# Endpoints are fixed here, never taken from the user. The key travels only
+# in the X-API-KEY header, never in the URL (httpx logs URLs).
+HUNTER_DOMAIN_SEARCH_URL = "https://api.hunter.io/v2/domain-search"
+HUNTER_ACCOUNT_URL = "https://api.hunter.io/v2/account"
+# /account (free) is read once per provider instance, then the search runs:
+# both together stay under ENRICHMENT_PROVIDER_TIMEOUT_SECONDS.
+HUNTER_ACCOUNT_TIMEOUT_SECONDS = 5
+HUNTER_SEARCH_TIMEOUT_SECONDS = 12
+# A domain search costs 1 credit for 1 to 10 emails (none when it finds
+# nothing), so one page of 10 per lead.
+HUNTER_RESULTS_LIMIT = 10
+HUNTER_EMAIL_TYPE = "personal"
+# An empty seniority goes with operational staff (drivers, couriers): only
+# senior and executive people are asked for.
+HUNTER_SENIORITY = ("senior", "executive")
+# Sent comma-separated as `department`; an empty tuple sends no filter.
+HUNTER_DEPARTMENTS = ("executive", "management", "operations", "support", "procurement", "finance", "it")
+# A Hunter response is a handful of emails: far below MAX_SOURCE_RESPONSE_BYTES.
+HUNTER_MAX_RESPONSE_BYTES = 512 * 1024
+# Characters of Hunter's own error text (errors[].details) kept for the logs.
+HUNTER_ERROR_DETAIL_MAX_CHARS = 200
+# Source page URLs kept per contact (sources[].uri).
+HUNTER_MAX_SOURCE_URLS = 5
+# Searching by company name (no domain), Hunter picks the domain itself. Its
+# contacts are kept only when that domain matches the name at least this much
+# (company_domain_validation_service.domain_name_match). Measured: matching
+# pairs (hsbc.com / "HSBC Global Services", uniqlo.com / "Uniqlo", zigup.com /
+# "ZIGUP plc", britishairways.com / "British Airways") all score 1.0; unrelated
+# pairs score 0.0-0.286.
+HUNTER_COMPANY_MATCH_MIN = 0.7
+
 # ── Scraper adapter — responsible scraping ──────────────────────────────────
 # Identifies the bot to site operators (robots.txt, server logs) instead of
 # spoofing a browser user-agent. The scraper source's URL and selectors are

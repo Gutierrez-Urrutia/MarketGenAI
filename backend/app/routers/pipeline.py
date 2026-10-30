@@ -12,7 +12,8 @@ SettingsRepo. smtp_password is write-only: it is encrypted with
 app.services.encryption_service before being persisted as
 `smtp_password_encrypted`, and the API never returns it — only a
 `smtp_password_configured` boolean so the frontend can show "configured"
-without ever getting the secret back.
+without ever getting the secret back. hunter_api_key (Agente 2) gets the same
+treatment: `hunter_api_key_encrypted` / `hunter_api_key_configured`.
 """
 
 import asyncio
@@ -199,13 +200,17 @@ def _public_source(source: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _to_public(doc: Dict[str, Any], user_id: str) -> Dict[str, Any]:
-    """Strip secrets, add a userId, and never leak smtp_password_encrypted."""
+    """Strip secrets, add a userId, and never leak smtp_password_encrypted
+    nor hunter_api_key_encrypted."""
     base = _default_config()
     public = {**base, **doc}
     public["userId"] = user_id
     public["smtp_password_configured"] = bool(public.get("smtp_password_encrypted"))
     public.pop("smtp_password_encrypted", None)
     public.pop("smtp_password", None)
+    public["hunter_api_key_configured"] = bool(public.get("hunter_api_key_encrypted"))
+    public.pop("hunter_api_key_encrypted", None)
+    public.pop("hunter_api_key", None)
     public["sources"] = [_public_source(s) for s in public.get("sources") or []]
     return public
 
@@ -238,7 +243,7 @@ async def update_config(
     body: PipelineConfigUpdate,
     user: CurrentUser = Depends(get_current_user),
 ):
-    payload = body.model_dump(exclude_unset=True, exclude={"smtp_password"})
+    payload = body.model_dump(exclude_unset=True, exclude={"smtp_password", "hunter_api_key"})
 
     if body.smtp_password is not None:
         # smtp_password is never stripped (its own spaces can be meaningful),
@@ -256,6 +261,20 @@ async def update_config(
         elif body.smtp_password == "":
             # Explicit empty string clears a previously configured password.
             payload["smtp_password_encrypted"] = ""
+
+    if body.hunter_api_key is not None:
+        # Same rules as smtp_password, except that an API key is stripped:
+        # its surrounding spaces are never part of it.
+        if body.hunter_api_key.strip():
+            try:
+                payload["hunter_api_key_encrypted"] = encryption_service.encrypt(body.hunter_api_key.strip())
+            except encryption_service.EncryptionNotConfiguredError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail=str(exc),
+                ) from exc
+        elif body.hunter_api_key == "":
+            payload["hunter_api_key_encrypted"] = ""
 
     await _get_or_create_doc(user.sub)
     doc = await pipeline_configs_repo.upsert_for_user(user.sub, payload)

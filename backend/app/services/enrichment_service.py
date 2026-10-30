@@ -1,9 +1,9 @@
 """Contact enrichment for Agente 2 (Lead Researcher): pluggable providers.
 
-Skeleton only (Fase 3, T3): BaseProvider, RawContact and the service that
-runs every provider and merges their results. No real provider lives here
-yet — Apollo, Hunter, a company-site scraper, etc. depend on team decisions
-(plan-pipeline-3-agentes.md §4.3).
+BaseProvider, RawContact and the service that runs every provider and
+merges their results (Fase 3, T3). Providers live in their own modules
+(hunter_provider.py); others (a company-site reader...) depend on team
+decisions (plan-pipeline-3-agentes.md §4.3).
 
 EnrichmentService.find_contacts:
   - runs all providers concurrently, each capped at
@@ -22,7 +22,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Literal, Tuple
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 from pydantic import BaseModel
 
@@ -51,12 +51,15 @@ class BaseProvider(ABC):
     search() must be truly asynchronous: the per-provider timeout can only
     cut code that awaits. A provider that blocks the event loop (e.g. a
     synchronous `requests` call) cannot be interrupted and would stall
-    every other provider with it."""
+    every other provider with it.
+
+    `domain` is the company's registrable domain when the caller knows it
+    (None otherwise). A provider gets plain values only, never the lead."""
 
     name: str = ""
 
     @abstractmethod
-    async def search(self, company: str, job_context: str) -> List[RawContact]:
+    async def search(self, company: str, job_context: str, *, domain: Optional[str] = None) -> List[RawContact]:
         ...
 
 
@@ -111,9 +114,9 @@ class EnrichmentService:
         self.providers = list(providers)
         self.timeout_seconds = timeout_seconds
 
-    async def find_contacts(self, company: str, job_context: str) -> EnrichmentResult:
+    async def find_contacts(self, company: str, job_context: str, *, domain: Optional[str] = None) -> EnrichmentResult:
         outcomes = await asyncio.gather(
-            *(self._run_provider(provider, company, job_context) for provider in self.providers),
+            *(self._run_provider(provider, company, job_context, domain) for provider in self.providers),
             return_exceptions=True,
         )
         contacts: List[RawContact] = []
@@ -131,11 +134,13 @@ class EnrichmentService:
         return EnrichmentResult(contacts=deduplicate(contacts), errors=errors)
 
     async def _run_provider(
-        self, provider: BaseProvider, company: str, job_context: str,
+        self, provider: BaseProvider, company: str, job_context: str, domain: Optional[str],
     ) -> Tuple[List[RawContact], ProviderError | None]:
         name = _provider_name(provider)
         try:
-            result = await asyncio.wait_for(provider.search(company, job_context), timeout=self.timeout_seconds)
+            result = await asyncio.wait_for(
+                provider.search(company, job_context, domain=domain), timeout=self.timeout_seconds,
+            )
         except (asyncio.TimeoutError, TimeoutError):
             logger.warning("enrichment: provider %s timed out after %ss", name, self.timeout_seconds)
             return [], ProviderError(provider=name, reason="timeout", message=MESSAGE_TIMEOUT)

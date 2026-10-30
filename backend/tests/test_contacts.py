@@ -92,6 +92,56 @@ def test_contact_create_defaults():
     assert minimal.role.value == "unknown"
     assert minimal.confidence_score == 0.0
     assert minimal.verified is False
+    assert minimal.email_type is None
+    assert minimal.email_verification_status is None
+    assert minimal.email_verified_at is None
+    assert minimal.seniority is None
+    assert minimal.department is None
+    assert minimal.source_urls == []
+    assert minimal.source_last_seen_at is None
+
+
+# ── Provider-reported email fields (RF15) ─────────────────────────────────────
+def test_contact_create_provider_fields_round_trip():
+    contact = ContactCreate.model_validate(create_payload({
+        "email_type": "personal", "email_verification_status": " valid ",
+        "email_verified_at": "2026-02-20T00:00:00+00:00", "seniority": "executive", "department": " ",
+        "source_urls": ["https://example.com/team", "javascript:alert(1)", " https://example.org/x ", "http://[abc"],
+        "source_last_seen_at": "2026-03-02T00:00:00+00:00",
+    }))
+    assert contact.email_type == "personal"
+    assert contact.email_verification_status == "valid"
+    assert contact.email_verified_at == datetime(2026, 2, 20, tzinfo=timezone.utc)
+    assert contact.seniority == "executive"
+    assert contact.department is None
+    assert contact.source_urls == ["https://example.com/team", "https://example.org/x"]
+    assert contact.source_last_seen_at == datetime(2026, 3, 2, tzinfo=timezone.utc)
+
+
+def test_contact_create_rejects_unknown_email_type():
+    with pytest.raises(ValidationError):
+        ContactCreate.model_validate(create_payload({"email_type": "role"}))
+
+
+def test_contact_saved_before_rf15_reads_without_the_provider_fields():
+    contact = Contact.model_validate(fake_contact())
+    assert contact.email_type is None
+    assert contact.email_verified_at is None
+    assert contact.source_urls == []
+
+
+async def test_create_for_lead_saves_the_provider_fields(saved_docs):
+    contact = ContactCreate.model_validate(create_payload({
+        "email_type": "personal", "email_verification_status": "accept_all",
+        "email_verified_at": "2026-02-20T00:00:00+00:00", "source_urls": ["https://example.com/team"],
+    }))
+    doc = await contacts_repo.create_for_lead("lead-001", FAKE_USER_SUB, contact)
+    assert doc["email_type"] == "personal"
+    assert doc["email_verification_status"] == "accept_all"
+    assert doc["email_verified_at"] == "2026-02-20T00:00:00Z"
+    assert doc["source_urls"] == ["https://example.com/team"]
+    read_back = Contact.model_validate(doc)
+    assert read_back.email_verified_at == datetime(2026, 2, 20, tzinfo=timezone.utc)
 
 
 def test_contact_create_strips_text_fields():

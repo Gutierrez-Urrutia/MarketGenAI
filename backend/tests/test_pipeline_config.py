@@ -1045,3 +1045,103 @@ async def test_update_config_requires_auth():
         assert resp.status_code in (401, 403)
     finally:
         fastapi_app.dependency_overrides.update(original_overrides)
+
+
+# ── hunter_api_key (RF15): write-only, same treatment as smtp_password ───────
+HUNTER_KEY = "hunter-test-key-0000"
+
+
+async def _put_config(client, body: dict, stored: dict | None = None):
+    with (
+        patch(
+            "app.routers.pipeline.pipeline_configs_repo.get_by_user",
+            new_callable=AsyncMock, return_value=fake_config(),
+        ),
+        patch(
+            "app.routers.pipeline.pipeline_configs_repo.upsert_for_user",
+            new_callable=AsyncMock,
+        ) as mock_upsert,
+    ):
+        mock_upsert.return_value = fake_config(stored)
+        resp = await client.put(API, json=body)
+    return resp, mock_upsert.call_args.args[1]
+
+
+@pytest.mark.asyncio
+async def test_get_config_never_returns_the_hunter_key(client):
+    doc = fake_config({"hunter_api_key_encrypted": encryption_service.encrypt(HUNTER_KEY)})
+    with patch(
+        "app.routers.pipeline.pipeline_configs_repo.get_by_user",
+        new_callable=AsyncMock, return_value=doc,
+    ):
+        resp = await client.get(API)
+    body = resp.json()
+    assert body["hunter_api_key_configured"] is True
+    assert "hunter_api_key" not in body
+    assert "hunter_api_key_encrypted" not in body
+    assert HUNTER_KEY not in resp.text
+
+
+@pytest.mark.asyncio
+async def test_get_config_hunter_key_not_configured_by_default(client):
+    with patch(
+        "app.routers.pipeline.pipeline_configs_repo.get_by_user",
+        new_callable=AsyncMock, return_value=None,
+    ):
+        resp = await client.get(API)
+    assert resp.json()["hunter_api_key_configured"] is False
+
+
+@pytest.mark.asyncio
+async def test_update_config_encrypts_the_hunter_key_stripped(client):
+    resp, persisted = await _put_config(
+        client, {"hunter_api_key": f"  {HUNTER_KEY}  "},
+        {"hunter_api_key_encrypted": encryption_service.encrypt(HUNTER_KEY)},
+    )
+    assert resp.status_code == 200
+    assert HUNTER_KEY not in resp.text
+    assert resp.json()["hunter_api_key_configured"] is True
+    assert "hunter_api_key" not in persisted
+    assert HUNTER_KEY not in persisted["hunter_api_key_encrypted"]
+    assert encryption_service.decrypt(persisted["hunter_api_key_encrypted"]) == HUNTER_KEY
+
+
+@pytest.mark.asyncio
+async def test_update_config_whitespace_hunter_key_leaves_it_unchanged(client):
+    resp, persisted = await _put_config(client, {"hunter_api_key": "   "})
+    assert resp.status_code == 200
+    assert "hunter_api_key_encrypted" not in persisted
+    assert "hunter_api_key" not in persisted
+
+
+@pytest.mark.asyncio
+async def test_update_config_explicit_empty_hunter_key_clears_it(client):
+    resp, persisted = await _put_config(client, {"hunter_api_key": ""}, {"hunter_api_key_encrypted": ""})
+    assert resp.status_code == 200
+    assert persisted["hunter_api_key_encrypted"] == ""
+    assert resp.json()["hunter_api_key_configured"] is False
+
+
+@pytest.mark.asyncio
+async def test_update_config_without_hunter_key_does_not_touch_it(client):
+    _, persisted = await _put_config(client, {"sender_name": "NoonDalton Sales"})
+    assert "hunter_api_key_encrypted" not in persisted
+
+
+@pytest.mark.asyncio
+async def test_update_config_hunter_key_returns_503_when_encryption_key_missing(client, monkeypatch):
+    monkeypatch.setattr(
+        "app.services.encryption_service.settings.pipeline_encryption_key", ""
+    )
+    encryption_service._fernet.cache_clear()
+    try:
+        with patch(
+            "app.routers.pipeline.pipeline_configs_repo.get_by_user",
+            new_callable=AsyncMock, return_value=fake_config(),
+        ):
+            resp = await client.put(API, json={"hunter_api_key": HUNTER_KEY})
+    finally:
+        encryption_service._fernet.cache_clear()
+
+    assert resp.status_code == 503
+    assert HUNTER_KEY not in resp.text

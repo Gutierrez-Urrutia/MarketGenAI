@@ -7,7 +7,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Any, List
+from typing import Any, List, Optional
 
 import pytest
 
@@ -43,7 +43,7 @@ class StaticProvider(BaseProvider):
         self.delay = delay
         self.calls = []
 
-    async def search(self, company: str, job_context: str) -> List[RawContact]:
+    async def search(self, company: str, job_context: str, *, domain: Optional[str] = None) -> List[RawContact]:
         self.calls.append((company, job_context))
         if self.delay:
             await asyncio.sleep(self.delay)
@@ -55,14 +55,14 @@ class FailingProvider(BaseProvider):
         self.name = name
         self.exc = exc
 
-    async def search(self, company: str, job_context: str) -> List[RawContact]:
+    async def search(self, company: str, job_context: str, *, domain: Optional[str] = None) -> List[RawContact]:
         raise self.exc
 
 
 class HangingProvider(BaseProvider):
     name = "hanging"
 
-    async def search(self, company: str, job_context: str) -> List[RawContact]:
+    async def search(self, company: str, job_context: str, *, domain: Optional[str] = None) -> List[RawContact]:
         await asyncio.sleep(10)
         return []
 
@@ -106,6 +106,25 @@ async def test_providers_receive_company_and_job_context():
     provider = StaticProvider("one", [])
     await find(provider)
     assert provider.calls == [("Acme Corp", "Data Entry")]
+
+
+class DomainRecordingProvider(BaseProvider):
+    name = "domain-recording"
+
+    def __init__(self):
+        self.domains = []
+
+    async def search(self, company: str, job_context: str, *, domain: Optional[str] = None) -> List[RawContact]:
+        self.domains.append(domain)
+        return []
+
+
+async def test_providers_receive_the_domain_or_none():
+    with_domain, without = DomainRecordingProvider(), DomainRecordingProvider()
+    await EnrichmentService([with_domain]).find_contacts("Acme Corp", "Data Entry", domain="acme.example.com")
+    await EnrichmentService([without]).find_contacts("Acme Corp", "Data Entry")
+    assert with_domain.domains == ["acme.example.com"]
+    assert without.domains == [None]
 
 
 async def test_combines_contacts_from_every_provider():
@@ -161,7 +180,7 @@ async def test_a_sync_search_is_reported_as_an_error():
     class SyncSearch(BaseProvider):
         name = "sync"
 
-        def search(self, company, job_context):  # not async: a bug in the provider
+        def search(self, company, job_context, *, domain=None):  # not async: a bug in the provider
             return [contact()]
 
     result = await find(SyncSearch())
@@ -171,7 +190,7 @@ async def test_a_sync_search_is_reported_as_an_error():
 
 async def test_provider_without_name_is_reported_by_class_name():
     class Nameless(BaseProvider):
-        async def search(self, company, job_context):
+        async def search(self, company, job_context, *, domain=None):
             raise ValueError("x")
 
     result = await find(Nameless())

@@ -1,9 +1,10 @@
-"""Schemas for lead contacts (Agente 2 output). Router/service land in Fase 3."""
+"""Schemas for lead contacts (Agente 2 output). Router/service land in Fase 3;
+the provider-reported email fields (email_type, verification, sources) in RF15."""
 from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import Optional
+from typing import List, Literal, Optional
 from urllib.parse import urlparse
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
@@ -15,6 +16,24 @@ class ContactRole(str, Enum):
     DEPARTMENT_HEAD = "department_head"
     PROCUREMENT = "procurement"
     UNKNOWN = "unknown"
+
+
+EmailType = Literal["personal", "generic"]
+
+
+def http_url_or_none(value: Optional[str]) -> Optional[str]:
+    """`value` stripped when it is an http(s) URL, else None (also for a
+    malformed URL such as "http://[abc"). Never raises."""
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    try:
+        scheme = urlparse(value).scheme.lower()
+    except ValueError:
+        return None
+    if scheme in ("http", "https"):
+        return value
+    return None
 
 
 class ContactBase(BaseModel):
@@ -36,6 +55,17 @@ class ContactBase(BaseModel):
     role: ContactRole = ContactRole.UNKNOWN
     confidence_score: float = Field(0.0, ge=0.0, le=1.0)
     source: str
+    # What the provider reports about the address (RF15). email_verification_status
+    # is the provider's own check (Hunter: valid / accept_all / unknown), not
+    # ContactCreate.verified, which is this system's own verification.
+    email_type: Optional[EmailType] = None
+    email_verification_status: Optional[str] = None
+    email_verified_at: Optional[datetime] = None
+    seniority: Optional[str] = None
+    department: Optional[str] = None
+    # Public pages where the provider found the address (http/https only).
+    source_urls: List[str] = Field(default_factory=list)
+    source_last_seen_at: Optional[datetime] = None
 
     @field_validator("full_name", "company", "source")
     @classmethod
@@ -60,14 +90,20 @@ class ContactBase(BaseModel):
     @field_validator("linkedin_url")
     @classmethod
     def _only_http_linkedin_url(cls, value: Optional[str]) -> Optional[str]:
-        value = (value or "").strip()
-        try:
-            scheme = urlparse(value).scheme.lower()
-        except ValueError:  # malformed URL, e.g. "http://[abc": drop the URL, keep the contact
+        # A malformed URL, e.g. "http://[abc", drops the URL, not the contact.
+        return http_url_or_none(value)
+
+    @field_validator("email_verification_status", "seniority", "department")
+    @classmethod
+    def _blank_text_to_none(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
             return None
-        if scheme in ("http", "https"):
-            return value
-        return None
+        return value.strip() or None
+
+    @field_validator("source_urls")
+    @classmethod
+    def _only_http_source_urls(cls, value: List[str]) -> List[str]:
+        return [url for url in (http_url_or_none(item) for item in value) if url]
 
 
 class ContactCreate(ContactBase):
@@ -96,6 +132,14 @@ class Contact(BaseModel):
     confidence_score: float = Field(0.0, ge=0.0, le=1.0)
     source: str
     verified: bool = False
+    # None / empty on contacts saved before RF15.
+    email_type: Optional[EmailType] = None
+    email_verification_status: Optional[str] = None
+    email_verified_at: Optional[datetime] = None
+    seniority: Optional[str] = None
+    department: Optional[str] = None
+    source_urls: List[str] = Field(default_factory=list)
+    source_last_seen_at: Optional[datetime] = None
     # Firestore stores createdAt/updatedAt (FirestoreRepo.create). Accept both
     # spellings on input only: the JSON key stays created_at/updated_at.
     created_at: Optional[datetime] = Field(None, validation_alias=AliasChoices("created_at", "createdAt"))
