@@ -7,11 +7,21 @@ its contacts are dropped. Only personal addresses of senior/executive
 people in HUNTER_DEPARTMENTS are asked for, HUNTER_RESULTS_LIMIT at most:
 one credit per search that finds something, none when it finds nothing.
 
+search() returns a ProviderResult: the contacts plus the company data of
+the response (CompanyInfo). A domain Hunter flags as disposable or webmail
+is not a real company: its contacts are dropped.
+
 Credits: the free /account endpoint is read once per provider instance
-(one instance per run); the balance is then counted down locally after
-every search that found something, and a search is not made once it is
-below 1. If /account itself fails (other than an invalid key) the search
-goes ahead: Hunter refuses it anyway when there is nothing left.
+(one instance per run); the balance is then counted down locally — 1 per
+search that found something (HUNTER_SEARCH_CREDIT_COST), 0.5 per email
+verification (HUNTER_VERIFICATION_CREDIT_COST) — and a call is not made
+once the balance is below its cost. If /account itself fails (other than
+an invalid key) the call goes ahead: Hunter refuses it anyway when there
+is nothing left.
+
+verify_email() runs the Email Verifier on one address. It never raises:
+no credits, a 202 ("still verifying") or any error returns None and the
+contact keeps the status it had.
 
 The API key lives only in memory (decrypted by from_pipeline_config) and
 travels only in the X-API-KEY header — never in a URL, an exception, a
@@ -28,11 +38,13 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
+import unicodedata
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 import httpx
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from app.core import url_safety
 from app.core.pipeline_constants import (
@@ -42,21 +54,28 @@ from app.core.pipeline_constants import (
     HUNTER_DEPARTMENTS,
     HUNTER_DOMAIN_SEARCH_URL,
     HUNTER_EMAIL_TYPE,
+    HUNTER_EMAIL_VERIFIER_URL,
     HUNTER_ERROR_DETAIL_MAX_CHARS,
+    HUNTER_GENERIC_NAME_WORDS,
     HUNTER_MAX_RESPONSE_BYTES,
     HUNTER_MAX_SOURCE_URLS,
     HUNTER_RESULTS_LIMIT,
+    HUNTER_SEARCH_CREDIT_COST,
     HUNTER_SEARCH_TIMEOUT_SECONDS,
     HUNTER_SENIORITY,
+    HUNTER_VERIFICATION_CREDIT_COST,
+    HUNTER_VERIFIER_TIMEOUT_SECONDS,
 )
 from app.schemas.contact import ContactRole, http_url_or_none
 from app.services import company_domain_service, encryption_service
 from app.services.company_domain_validation_service import domain_name_match
-from app.services.enrichment_service import BaseProvider, RawContact
+from app.services.enrichment_service import BaseProvider, CompanyInfo, ProviderResult, RawContact
 
 logger = logging.getLogger(__name__)
 
 SOURCE_NAME = "hunter"
+VERIFICATION_SOURCE_DOMAIN_SEARCH = "hunter_domain_search"
+VERIFICATION_SOURCE_EMAIL_VERIFIER = "hunter_email_verifier"
 _EMAIL_TYPES = ("personal", "generic")
 
 
@@ -157,6 +176,50 @@ def remaining_credits(payload: Any) -> Optional[float]:
     return None
 
 
+def _flag(value: Any) -> Optional[bool]:
+    return value if isinstance(value, bool) else None
+
+
+def company_info(data: Dict[str, Any]) -> CompanyInfo:
+    """The company fields of a Domain Search `data`. headcount is not one
+    of them today; it is read only in case Hunter starts sending it."""
+    return CompanyInfo(
+        domain=_text(data.get("domain")) or None,
+        organization=_text(data.get("organization")) or None,
+        pattern=_text(data.get("pattern")) or None,
+        accept_all=_flag(data.get("accept_all")),
+        disposable=_flag(data.get("disposable")),
+        webmail=_flag(data.get("webmail")),
+        headcount=_text(data.get("headcount")) or None,
+    )
+
+
+def _distinctive_words(company_name: str) -> List[str]:
+    decomposed = unicodedata.normalize("NFKD", company_name)
+    folded = "".join(ch for ch in decomposed if not unicodedata.combining(ch)).lower().replace(".", "")
+    return [word for word in re.split(r"[^a-z0-9]+", folded) if word and word not in HUNTER_GENERIC_NAME_WORDS]
+
+
+def company_name_match(domain: Any, company_name: Any) -> float:
+    """How well `domain` matches `company_name`, ignoring generic words
+    (HUNTER_GENERIC_NAME_WORDS). Only two candidates are compared with the
+    domain: the distinctive words joined ("British Airways" →
+    "britishairways") and the first distinctive word ("british") — never
+    any other single word, so "HSBC Global Services" does not match
+    services.com nor "British Airways" airways.com. A name with no
+    distinctive word scores 0. Known limit: the first word alone still
+    matches (british.com ~ "British Airways"). Never raises."""
+    try:
+        if not isinstance(company_name, str):
+            return 0.0
+        words = _distinctive_words(company_name)
+        if not words:
+            return 0.0
+        return max(domain_name_match(domain, "".join(words)), domain_name_match(domain, words[0]))
+    except Exception:
+        return 0.0
+
+
 def to_raw_contact(item: Any, company: str) -> Optional[RawContact]:
     """One entry of data.emails[] as a RawContact; None when it has no name
     or does not validate. role stays unknown (role mapping is a later phase)."""
@@ -173,6 +236,8 @@ def to_raw_contact(item: Any, company: str) -> Optional[RawContact]:
     ][:HUNTER_MAX_SOURCE_URLS]
     last_seen = [d for d in (_date(s.get("last_seen_on")) for s in sources if isinstance(s, dict)) if d]
     email_type = _text(item.get("type"))
+    verification_status = _text(verification.get("status")) or None
+    confidence = _confidence(item.get("confidence"))
 
     try:
         return RawContact(
@@ -182,11 +247,15 @@ def to_raw_contact(item: Any, company: str) -> Optional[RawContact]:
             email=_text(item.get("value")) or None,
             linkedin_url=item.get("linkedin") if isinstance(item.get("linkedin"), str) else None,
             role=ContactRole.UNKNOWN,
-            confidence_score=_confidence(item.get("confidence")),
+            # contact_ranking_service turns confidence_score into the adjusted
+            # confidence; provider_confidence_score keeps Hunter's own.
+            confidence_score=confidence,
+            provider_confidence_score=confidence,
             source=SOURCE_NAME,
             email_type=email_type if email_type in _EMAIL_TYPES else None,
-            email_verification_status=_text(verification.get("status")) or None,
+            email_verification_status=verification_status,
             email_verified_at=_date(verification.get("date")),
+            email_verification_source=VERIFICATION_SOURCE_DOMAIN_SEARCH if verification_status else None,
             seniority=_text(item.get("seniority")) or None,
             department=_text(item.get("department")) or None,
             source_urls=source_urls,
@@ -194,6 +263,16 @@ def to_raw_contact(item: Any, company: str) -> Optional[RawContact]:
         )
     except ValidationError:
         return None
+
+
+class EmailVerification(BaseModel):
+    """An Email Verifier answer: Hunter's data.status as sent (valid,
+    invalid, accept_all, webmail, disposable, unknown — data.result is
+    obsolete and ignored) and its date, today (UTC) when it has none."""
+
+    status: str
+    verified_at: datetime
+    source: str = VERIFICATION_SOURCE_EMAIL_VERIFIER
 
 
 # ── Provider ──────────────────────────────────────────────────────────────────
@@ -210,15 +289,15 @@ class HunterProvider(BaseProvider):
     def __repr__(self) -> str:
         return "HunterProvider()"
 
-    async def search(self, company: str, job_context: str, *, domain: Optional[str] = None) -> List[RawContact]:
+    async def search(self, company: str, job_context: str, *, domain: Optional[str] = None) -> ProviderResult:
         if not self._api_key:
             raise HunterNotConfiguredError()
         company_name = _text(company)
         searched_domain = company_domain_service.normalize_domain(domain) if domain else None
         if not searched_domain and not company_name:
-            return []
+            return ProviderResult()
 
-        await self._ensure_credits()
+        await self._ensure_credits(HUNTER_SEARCH_CREDIT_COST)
 
         params: Dict[str, Any] = {
             "type": HUNTER_EMAIL_TYPE,
@@ -239,26 +318,65 @@ class HunterProvider(BaseProvider):
             logger.warning("hunter: domain-search response without data.emails")
             raise HunterResponseError()
         emails = data["emails"]
-        if emails and self._credits is not None:
-            self._credits -= 1  # a search that finds something costs one credit
+        if emails:
+            self._spend(HUNTER_SEARCH_CREDIT_COST)  # a search that finds something costs one credit
+        company = company_info(data)
+
+        if company.disposable or company.webmail:
+            logger.info("hunter: domain is disposable or webmail, not a company; %d email(s) dropped", len(emails))
+            return ProviderResult(company=company)
 
         if not searched_domain:
             resolved = company_domain_service.normalize_domain(data.get("domain"))
-            if domain_name_match(resolved, company_name) < HUNTER_COMPANY_MATCH_MIN:
+            if company_name_match(resolved, company_name) < HUNTER_COMPANY_MATCH_MIN:
                 logger.info(
                     "hunter: company search resolved to a domain that does not match the name; %d email(s) dropped",
                     len(emails),
                 )
-                return []
+                return ProviderResult(company=company)
 
         organization = _text(data.get("organization")) or company_name or searched_domain or ""
         contacts = [c for c in (to_raw_contact(item, organization) for item in emails) if c is not None]
         dropped = len(emails) - len(contacts)
         if dropped:
             logger.warning("hunter: %d email(s) without a name or invalid; dropped", dropped)
-        return contacts
+        return ProviderResult(contacts=contacts, company=company)
 
-    async def _ensure_credits(self) -> None:
+    async def verify_email(self, email: str) -> Optional[EmailVerification]:
+        """Email Verifier for one address (0.5 credit). None — never an
+        exception — when there is no key or credit, Hunter is still
+        verifying (HTTP 202), or anything fails."""
+        address = _text(email)
+        if not self._api_key or not address:
+            return None
+        try:
+            await self._ensure_credits(HUNTER_VERIFICATION_CREDIT_COST)
+            status_code, payload = await self._get_json(
+                "email-verifier", HUNTER_EMAIL_VERIFIER_URL, {"email": address}, HUNTER_VERIFIER_TIMEOUT_SECONDS,
+                with_status=True,
+            )
+        except HunterError as exc:
+            logger.warning("hunter: email verification skipped (%s)", type(exc).__name__)
+            return None
+        # Counted on a 202 too, to stay on the safe side of the balance.
+        self._spend(HUNTER_VERIFICATION_CREDIT_COST)
+        if status_code == 202:
+            logger.info("hunter: email verification still in progress (HTTP 202); status kept")
+            return None
+        data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+        status = _text(data.get("status"))
+        if not status:
+            logger.warning("hunter: email-verifier response without data.status")
+            return None
+        verification = data.get("verification") if isinstance(data.get("verification"), dict) else {}
+        verified_at = _date(verification.get("date")) or datetime.now(timezone.utc)
+        return EmailVerification(status=status, verified_at=verified_at)
+
+    def _spend(self, cost: float) -> None:
+        if self._credits is not None:
+            self._credits -= cost
+
+    async def _ensure_credits(self, cost: float) -> None:
         async with self._credits_lock:
             if self._auth_failed:
                 raise HunterAuthError()
@@ -272,13 +390,15 @@ class HunterProvider(BaseProvider):
                     raise
                 except HunterError as exc:
                     logger.warning("hunter: could not read account credits (%s); searching anyway", type(exc).__name__)
-        if self._credits is not None and self._credits < 1:
+        if self._credits is not None and self._credits < cost:
             raise HunterNoCreditsError()
 
-    async def _get_json(self, endpoint: str, url: str, params: Optional[Dict[str, Any]], timeout: float) -> Dict[str, Any]:
-        """GET a fixed Hunter URL; the parsed JSON object, or a HunterError.
-        `from None`: an httpx error's context holds the request, whose
-        headers carry the key."""
+    async def _get_json(
+        self, endpoint: str, url: str, params: Optional[Dict[str, Any]], timeout: float, *, with_status: bool = False,
+    ) -> Any:
+        """GET a fixed Hunter URL; the parsed JSON object (preceded by the
+        status code when `with_status`), or a HunterError. `from None`: an
+        httpx error's context holds the request, whose headers carry the key."""
         headers = {"X-API-KEY": self._api_key, "Accept": "application/json"}
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:
@@ -301,6 +421,8 @@ class HunterProvider(BaseProvider):
             if status_code == 429:
                 raise HunterRateLimitError()
             raise HunterHTTPError()
+        if with_status and status_code == 202:
+            return status_code, {}  # still in progress: its body, if any, has no result
         if len(body) >= HUNTER_MAX_RESPONSE_BYTES:
             logger.warning("hunter: %s response cut at %d bytes", endpoint, HUNTER_MAX_RESPONSE_BYTES)
             raise HunterResponseError()
@@ -312,7 +434,7 @@ class HunterProvider(BaseProvider):
         if not isinstance(payload, dict):
             logger.warning("hunter: %s response is not a JSON object", endpoint)
             raise HunterResponseError()
-        return payload
+        return (status_code, payload) if with_status else payload
 
 
 def from_pipeline_config(config: Dict[str, Any]) -> Optional[HunterProvider]:

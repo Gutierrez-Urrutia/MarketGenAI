@@ -19,6 +19,7 @@ from app.core.pipeline_constants import (
     HUNTER_COMPANY_MATCH_MIN,
     HUNTER_DEPARTMENTS,
     HUNTER_DOMAIN_SEARCH_URL,
+    HUNTER_EMAIL_VERIFIER_URL,
     HUNTER_MAX_RESPONSE_BYTES,
     HUNTER_MAX_SOURCE_URLS,
     HUNTER_RESULTS_LIMIT,
@@ -76,10 +77,10 @@ def email(**overrides) -> dict:
     return base
 
 
-def search_body(emails: list, *, domain="example.com", organization="Example Holdings") -> bytes:
+def search_body(emails: list, *, domain="example.com", organization="Example Holdings", **company) -> bytes:
     return json.dumps({
         "data": {"domain": domain, "organization": organization, "pattern": "{first}.{last}",
-                 "accept_all": False, "emails": emails},
+                 "accept_all": False, "disposable": False, "webmail": False, **company, "emails": emails},
         "meta": {"results": len(emails), "limit": HUNTER_RESULTS_LIMIT, "offset": 0},
     }).encode()
 
@@ -87,6 +88,14 @@ def search_body(emails: list, *, domain="example.com", organization="Example Hol
 def account_body(remaining=48.0, *, bucket="credits") -> bytes:
     counts = {"used": 2.0, "available": 50.0, "remaining": remaining}
     return json.dumps({"data": {"requests": {bucket: counts}}}).encode()
+
+
+def verifier_body(status, date="2026-04-01", **extra) -> bytes:
+    """Shape of GET /email-verifier (data.result is obsolete and ignored)."""
+    return json.dumps({"data": {
+        "status": status, "result": "deliverable", "score": 90, "email": "ana.ruiz@example.com",
+        "verification": {"date": date, "status": status}, **extra,
+    }}).encode()
 
 
 def error_body(details: str, code: int) -> bytes:
@@ -97,8 +106,12 @@ class FakeHunter:
     """Answers /account and /domain-search with (status, body) or an
     exception raised on connect; a list answers successive calls in order."""
 
-    def __init__(self, search=None, account=(200, account_body())):
-        self.answers = {HUNTER_ACCOUNT_URL: account, HUNTER_DOMAIN_SEARCH_URL: search or (200, search_body([email()]))}
+    def __init__(self, search=None, account=(200, account_body()), verifier=None):
+        self.answers = {
+            HUNTER_ACCOUNT_URL: account,
+            HUNTER_DOMAIN_SEARCH_URL: search or (200, search_body([email()])),
+            HUNTER_EMAIL_VERIFIER_URL: verifier or (200, verifier_body("valid")),
+        }
         self.calls = []
 
     def calls_to(self, url):
@@ -126,9 +139,15 @@ class FakeHunter:
         return False
 
 
-async def search(fake: FakeHunter, provider: HunterProvider | None = None, company="Example Holdings", domain="example.com"):
+async def search_result(fake: FakeHunter, provider: HunterProvider | None = None, company="Example Holdings",
+                        domain="example.com"):
     with fake:
         return await (provider or HunterProvider(API_KEY)).search(company, "Data Entry", domain=domain)
+
+
+async def search(fake: FakeHunter, provider: HunterProvider | None = None, company="Example Holdings", domain="example.com"):
+    """The contacts of a search (search() returns a ProviderResult)."""
+    return (await search_result(fake, provider, company=company, domain=domain)).contacts
 
 
 # ── Constants and the company-name threshold ──────────────────────────────────
@@ -497,3 +516,186 @@ def test_from_pipeline_config_without_encryption_key_is_none(monkeypatch):
         assert from_pipeline_config({"hunter_api_key_encrypted": "token"}) is None
     finally:
         encryption_service._fernet.cache_clear()
+
+
+# ── RF15 fase 3: company data, provider confidence, verification source ──────
+async def test_search_returns_the_company_data():
+    result = await search_result(FakeHunter(search=(200, search_body([email()], accept_all=True))))
+    assert result.company.model_dump() == {
+        "domain": "example.com", "organization": "Example Holdings", "pattern": "{first}.{last}",
+        "accept_all": True, "disposable": False, "webmail": False, "headcount": None,
+    }
+
+
+async def test_company_data_tolerates_missing_or_odd_fields():
+    body = json.dumps({"data": {"emails": [], "accept_all": "yes", "pattern": None}}).encode()
+    result = await search_result(FakeHunter(search=(200, body)))
+    assert result.contacts == []
+    assert result.company.accept_all is None
+    assert result.company.pattern is None and result.company.domain is None
+
+
+@pytest.mark.parametrize("flag", ["disposable", "webmail"])
+async def test_disposable_or_webmail_domain_drops_its_contacts(flag):
+    result = await search_result(FakeHunter(search=(200, search_body([email()], **{flag: True}))))
+    assert result.contacts == []
+    assert getattr(result.company, flag) is True
+
+
+async def test_contacts_carry_provider_confidence_and_verification_source():
+    [c] = await search(FakeHunter())
+    assert c.provider_confidence_score == 0.94
+    assert c.confidence_score == 0.94  # adjusted later by contact_ranking_service
+    assert c.email_verification_source == "hunter_domain_search"
+
+
+async def test_no_verification_status_means_no_verification_source():
+    [c] = await search(FakeHunter(search=(200, search_body([email(verification=None)]))))
+    assert c.email_verification_status is None
+    assert c.email_verification_source is None
+
+
+async def test_enrichment_service_reports_hunter_company_by_provider_name():
+    with FakeHunter():
+        result = await EnrichmentService([HunterProvider(API_KEY)]).find_contacts("Example", "x", domain="example.com")
+    assert len(result.contacts) == 1
+    assert result.companies["hunter"].organization == "Example Holdings"
+
+
+# ── company_name_match: generic words never match ─────────────────────────────
+@pytest.mark.parametrize("domain, name", [
+    ("hsbc.com", "HSBC Global Services"),
+    ("uniqlo.com", "Uniqlo"),
+    ("zigup.com", "ZIGUP plc"),
+    ("britishairways.com", "British Airways"),
+    ("example.com", "Example Holdings Ltd"),
+    ("example.com", "Grupo Example Servicios S.A."),
+])
+def test_company_name_match_keeps_real_matches_at_1(domain, name):
+    assert hunter_provider.company_name_match(domain, name) == 1.0
+
+
+@pytest.mark.parametrize("domain, name", [
+    ("services.com", "HSBC Global Services"),
+    ("global.com", "HSBC Global Services"),
+    ("holdings.com", "Example Holdings"),
+    ("airways.com", "British Airways"),
+    ("group.com", "Acme Group"),
+    ("solutions.com", "Brisa Solutions Ltd"),
+    ("servicios.com", "Grupo Example Servicios"),
+])
+def test_company_name_match_generic_or_secondary_words_fail(domain, name):
+    assert domain_name_match(domain, name) == 1.0  # the plain function accepts them
+    assert hunter_provider.company_name_match(domain, name) < HUNTER_COMPANY_MATCH_MIN
+
+
+def test_company_name_match_known_limit_first_word_alone():
+    # Accepted risk (RF15): the first distinctive word alone still matches.
+    assert hunter_provider.company_name_match("british.com", "British Airways") == 1.0
+
+
+@pytest.mark.parametrize("name", ["Global Services Ltd", "The Group", "Servicios y Soluciones", "", "   ", None, 42])
+def test_company_name_match_without_a_distinctive_word_is_0(name):
+    assert hunter_provider.company_name_match("example.com", name) == 0.0
+
+
+async def test_company_search_resolving_to_a_generic_word_domain_is_dropped():
+    fake = FakeHunter(search=(200, search_body([email()], domain="services.com")))
+    assert await search(fake, company="Example Global Services", domain=None) == []
+
+
+# ── verify_email ──────────────────────────────────────────────────────────────
+async def verify(fake: FakeHunter, provider: HunterProvider | None = None, address="ana.ruiz@example.com"):
+    with fake:
+        return await (provider or HunterProvider(API_KEY)).verify_email(address)
+
+
+async def test_verify_email_sends_the_fixed_url_address_and_key_header():
+    fake = FakeHunter()
+    result = await verify(fake)
+    [call] = fake.calls_to(HUNTER_EMAIL_VERIFIER_URL)
+    assert call["params"] == {"email": "ana.ruiz@example.com"}
+    assert call["headers"]["X-API-KEY"] == API_KEY
+    assert API_KEY not in call["url"]
+    assert result.status == "valid"
+    assert result.verified_at == datetime(2026, 4, 1, tzinfo=timezone.utc)
+    assert result.source == "hunter_email_verifier"
+
+
+@pytest.mark.parametrize("status", ["valid", "invalid", "accept_all", "webmail", "disposable", "unknown"])
+async def test_verify_email_returns_hunter_status_as_sent(status):
+    result = await verify(FakeHunter(verifier=(200, verifier_body(status))))
+    assert result.status == status
+
+
+async def test_verify_email_ignores_the_obsolete_result_field():
+    body = verifier_body("invalid", result="deliverable")
+    assert (await verify(FakeHunter(verifier=(200, body)))).status == "invalid"
+
+
+async def test_verify_email_without_a_date_uses_today_utc():
+    before = datetime.now(timezone.utc)
+    result = await verify(FakeHunter(verifier=(200, verifier_body("disposable", date=None))))
+    assert result.status == "disposable"
+    assert before <= result.verified_at <= datetime.now(timezone.utc)
+
+
+async def test_verify_email_202_keeps_the_status_and_counts_the_credit():
+    provider = HunterProvider(API_KEY)
+    fake = FakeHunter(account=(200, account_body(1.0)), verifier=[(202, b""), (202, b"")])
+    assert await verify(fake, provider) is None
+    assert await verify(fake, provider) is None  # 0.5 left: still allowed
+    assert await verify(fake, provider) is None  # 0.0 left: not even requested
+    assert len(fake.calls_to(HUNTER_EMAIL_VERIFIER_URL)) == 2
+
+
+@pytest.mark.parametrize("remaining", [0.0, 0.4])
+async def test_verify_email_without_credits_makes_no_request(remaining):
+    fake = FakeHunter(account=(200, account_body(remaining)))
+    assert await verify(fake) is None
+    assert fake.calls_to(HUNTER_EMAIL_VERIFIER_URL) == []
+
+
+async def test_search_and_verification_share_the_balance():
+    provider = HunterProvider(API_KEY)
+    fake = FakeHunter(account=(200, account_body(1.5)))
+    assert len(await search(fake, provider)) == 1  # 1.5 - 1 = 0.5
+    assert (await verify(fake, provider)).status == "valid"  # 0.5 - 0.5 = 0
+    assert await verify(fake, provider) is None
+    assert len(fake.calls_to(HUNTER_ACCOUNT_URL)) == 1
+    assert len(fake.calls_to(HUNTER_EMAIL_VERIFIER_URL)) == 1
+
+
+@pytest.mark.parametrize("answer", [
+    (401, error_body("Invalid API key", 401)),
+    (429, error_body("Too many requests", 429)),
+    (500, b"oops"),
+    httpx.ReadTimeout("slow"),
+    httpx.ConnectError("refused"),
+    (200, b"not json"),
+    (200, json.dumps({"data": {"score": 50}}).encode()),
+    (200, json.dumps({"data": "x"}).encode()),
+])
+async def test_verify_email_failures_return_none_without_raising(answer):
+    assert await verify(FakeHunter(verifier=answer)) is None
+
+
+@pytest.mark.parametrize("address", ["", "   ", None])
+async def test_verify_email_without_an_address_makes_no_request(address):
+    fake = FakeHunter()
+    assert await verify(fake, address=address) is None
+    assert fake.calls == []
+
+
+async def test_verify_email_without_a_key_makes_no_request():
+    fake = FakeHunter()
+    assert await verify(fake, HunterProvider("")) is None
+    assert fake.calls == []
+
+
+async def test_verify_email_never_leaks_the_key_or_the_address(caplog):
+    with caplog.at_level(logging.DEBUG):
+        result = await verify(FakeHunter(verifier=(401, error_body(f"Bad key {API_KEY}", 401))))
+    assert result is None
+    assert API_KEY not in caplog.text
+    assert "ana.ruiz@example.com" not in caplog.text

@@ -296,3 +296,43 @@ async def test_list_by_lead_passes_limit():
     with patch.object(ContactsRepo, "list", new_callable=AsyncMock, return_value=[]) as mock_list:
         await contacts_repo.list_by_lead("lead-001", FAKE_USER_SUB, limit=5)
     assert mock_list.await_args.kwargs["limit"] == 5
+
+
+# ── Role executive, provider confidence and verification source (RF15) ───────
+def test_contact_accepts_the_executive_role():
+    contact = ContactCreate.model_validate(create_payload({"role": "executive"}))
+    assert contact.role.value == "executive"
+    assert Contact.model_validate(fake_contact({"role": "executive"})).role.value == "executive"
+
+
+def test_contact_saved_before_rf15_reads_without_provider_confidence_nor_verification_source():
+    contact = Contact.model_validate(fake_contact())
+    assert contact.provider_confidence_score is None
+    assert contact.email_verification_source is None
+
+
+def test_contact_create_provider_confidence_and_verification_source():
+    contact = ContactCreate.model_validate(create_payload({
+        "provider_confidence_score": 0.94, "email_verification_source": " hunter_email_verifier ",
+    }))
+    assert contact.provider_confidence_score == 0.94
+    assert contact.email_verification_source == "hunter_email_verifier"
+    assert ContactCreate.model_validate(create_payload({"email_verification_source": "  "})).email_verification_source is None
+
+
+@pytest.mark.parametrize("score", [-0.1, 1.1])
+def test_contact_create_rejects_out_of_range_provider_confidence(score):
+    with pytest.raises(ValidationError):
+        ContactCreate.model_validate(create_payload({"provider_confidence_score": score}))
+
+
+async def test_create_for_lead_saves_role_executive_and_the_new_fields(saved_docs):
+    contact = ContactCreate.model_validate(create_payload({
+        "role": "executive", "confidence_score": 0.7, "provider_confidence_score": 0.94,
+        "email_verification_source": "hunter_domain_search",
+    }))
+    doc = await contacts_repo.create_for_lead("lead-001", FAKE_USER_SUB, contact)
+    assert doc["role"] == "executive"
+    assert doc["confidence_score"] == 0.7
+    assert doc["provider_confidence_score"] == 0.94
+    assert doc["email_verification_source"] == "hunter_domain_search"

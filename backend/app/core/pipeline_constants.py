@@ -142,6 +142,143 @@ HUNTER_MAX_SOURCE_URLS = 5
 # "ZIGUP plc", britishairways.com / "British Airways") all score 1.0; unrelated
 # pairs score 0.0-0.286.
 HUNTER_COMPANY_MATCH_MIN = 0.7
+# Words that say nothing about which company it is. They are dropped from a
+# company name before it is matched against the domain Hunter picked, so
+# "HSBC Global Services" never matches services.com or global.com. A name
+# made only of these words matches nothing. Accent-free and lowercase.
+HUNTER_GENERIC_NAME_WORDS = frozenset({
+    "services", "service", "global", "group", "holdings", "holding", "limited", "ltd", "plc",
+    "inc", "incorporated", "company", "co", "corp", "corporation", "llc", "llp", "gmbh", "ag", "sa",
+    "solutions", "international", "intl", "worldwide", "enterprises", "partners", "systems",
+    "technologies", "technology", "consulting", "the", "and", "of",
+    # Spanish
+    "grupo", "servicios", "soluciones", "sociedad", "spa", "ltda", "compania", "de", "del", "la", "y",
+})
+
+# Email Verifier: 0.5 credit per address (a domain search costs 1).
+HUNTER_EMAIL_VERIFIER_URL = "https://api.hunter.io/v2/email-verifier"
+HUNTER_VERIFIER_TIMEOUT_SECONDS = 15
+HUNTER_SEARCH_CREDIT_COST = 1.0
+HUNTER_VERIFICATION_CREDIT_COST = 0.5
+# Addresses verified per lead (only top contacts not already "valid").
+HUNTER_MAX_VERIFICATIONS_PER_LEAD = 1
+
+# ── Agente 2 — contact role, ranking and confidence ─────────────────────────
+# app/services/contact_ranking_service.py. Titles and vacancy titles are
+# matched as whole words/phrases after folding accents and case. All values
+# below are initial values, to be tuned with real leads.
+
+# Contacts delivered per lead.
+RANK_TOP_N = 3
+
+# Area of the vacancy (Lead.job_title / job_context): first area with a match.
+VACANCY_AREA_KEYWORDS = {
+    "customer_service": ("customer support", "customer service", "customer care", "customer experience",
+                         "call center", "call centre", "contact center", "contact centre", "cx", "client services"),
+    "sales_support": ("sales", "lead generation", "sdr", "business development", "crm"),
+    "hr_recruitment": ("recruiter", "recruitment", "recruiting", "talent", "hr", "human resources"),
+    "software_it": ("developer", "engineer", "software", "devops", "it support", "helpdesk", "help desk",
+                    "infrastructure", "programmer"),
+    "back_office": ("data entry", "back office", "admin", "administrative", "bookkeeping", "bookkeeper",
+                    "accounts payable", "accounts receivable", "data processing"),
+    "underwriting": ("underwriter", "underwriting", "loan", "mortgage"),
+    "ecommerce": ("e commerce", "ecommerce", "order", "orders", "inventory", "fulfillment", "fulfilment", "shipping"),
+    "insurance": ("claims", "insurance", "renewals", "policy"),
+}
+
+# Areas a contact's title can name (a title can name several).
+CONTACT_TITLE_AREAS = {
+    "customer": ("customer", "customers", "cx", "client", "clients", "contact center", "contact centre",
+                 "call center", "call centre"),
+    "operations": ("operations", "operational", "operating"),
+    "technology": ("technology", "technical", "it", "engineering", "software", "digital", "information"),
+    "finance": ("finance", "financial", "controller", "comptroller", "cfo", "accounting", "treasury"),
+    "hr": ("hr", "human resources", "people", "talent", "chro"),
+    "sales": ("sales", "revenue", "commercial", "business development"),
+    "ecommerce": ("ecommerce", "e commerce", "fulfillment", "fulfilment", "supply chain", "logistics"),
+    "risk": ("credit", "risk", "underwriting", "lending"),
+    "claims": ("claims", "insurance"),
+}
+
+# Contact areas that make a department head (or manager) "the area's own"
+# for each vacancy area. Finance is NOT here for back office: finance heads
+# get their own tier (RANK_TIER_FINANCE) for FINANCE_VACANCY_AREAS.
+VACANCY_AREA_CONTACT_AREAS = {
+    "customer_service": ("customer", "operations"),
+    "sales_support": ("sales",),
+    "hr_recruitment": ("hr",),
+    "software_it": ("technology",),
+    "back_office": ("operations",),
+    "underwriting": ("risk", "operations"),
+    "ecommerce": ("ecommerce", "operations"),
+    "insurance": ("claims", "operations"),
+}
+FINANCE_VACANCY_AREAS = ("back_office", "underwriting", "insurance")
+
+# Title words of operational staff: such a contact is never delivered,
+# unless the title also has a TITLE_LEADERSHIP_WORDS word ("Driver Manager").
+# "officer" counts as operational unless it is a "chief ... officer".
+OPERATIONAL_TITLE_WORDS = frozenset({
+    "driver", "drivers", "courier", "messenger", "rider", "coordinator", "assistant", "associate",
+    "agent", "representative", "clerk", "operator", "technician", "cashier", "officer",
+})
+TITLE_LEADERSHIP_WORDS = frozenset({
+    "head", "director", "vp", "svp", "evp", "chief", "manager", "president", "owner", "founder",
+    "cofounder", "supervisor", "controller", "comptroller",
+})
+
+EXECUTIVE_TITLE_PHRASES = ("ceo", "chief executive officer", "founder", "co founder", "cofounder", "owner",
+                           "managing director", "president")
+# Phrases that contain an executive word but are not executives.
+EXECUTIVE_EXCLUDED_PHRASES = ("vice president", "product owner", "process owner")
+# "chief <word> officer" with one of these words heads a function
+# (department_head); any other chief officer is an executive.
+CHIEF_FUNCTION_WORDS = frozenset({
+    "operating", "operations", "financial", "finance", "technology", "technical", "information",
+    "customer", "people", "human", "procurement", "commercial", "revenue", "experience",
+})
+FUNCTION_CHIEF_ACRONYMS = frozenset({"coo", "cfo", "cto", "cio", "cco", "chro"})
+PROCUREMENT_TITLE_PHRASES = ("procurement", "purchasing", "sourcing", "supplier", "suppliers", "vendor",
+                             "vendors", "category manager")
+# A "Buyer" without a PROCUREMENT_TITLE_PHRASES phrase buys merchandise for a
+# product company: procurement, but last-resort priority.
+BUYER_TITLE_WORDS = ("buyer", "buyers")
+DEPARTMENT_HEAD_TITLE_PHRASES = ("vp", "vice president", "svp", "evp", "head", "director", "controller", "comptroller")
+HR_TITLE_PHRASES = ("recruiter", "recruiting", "recruitment", "talent acquisition", "human resources", "hr",
+                    "people partner")
+HIRING_MANAGER_TITLE_PHRASES = ("manager", "supervisor", "team lead", "team leader")
+
+# Company size from a headcount range ("51-200", "10001+"): its upper bound.
+# Hunter's Domain Search does not return a headcount, so in practice every
+# company is COMPANY_SIZE_DEFAULT until another source provides one.
+COMPANY_SIZE_SMALL_MAX = 50
+COMPANY_SIZE_MEDIUM_MAX = 500
+COMPANY_SIZE_DEFAULT = "medium"
+
+# Priority tiers: lower is better.
+RANK_TIER_EXECUTIVE_SMALL = 0     # executive / owner of a small company
+RANK_TIER_AREA_HEAD = 1           # department head of the vacancy's area
+RANK_TIER_PROCUREMENT = 2         # procurement / supplier management (not a merchandise buyer)
+RANK_TIER_FINANCE = 2             # finance head, for FINANCE_VACANCY_AREAS
+RANK_TIER_AREA_MANAGER = 2        # hiring manager of the vacancy's area (area bonus)
+RANK_TIER_EXECUTIVE_MEDIUM = 3
+RANK_TIER_OTHER_HEAD = 4          # department head of another area
+RANK_TIER_EXECUTIVE_LARGE = 5
+RANK_TIER_LAST_RESORT = 6         # other hiring managers, HR, merchandise buyers
+RANK_TIER_UNKNOWN_SENIOR = 7      # unknown title, senior/executive seniority
+# Within a tier: seniority first (lower is better; anything else counts as null).
+SENIORITY_RANK = {"executive": 0, "senior": 1, "junior": 2}
+SENIORITY_RANK_DEFAULT = 3
+SENIOR_SENIORITIES = ("senior", "executive")
+
+# Confidence = provider confidence x factor of the email's verification
+# status. invalid / disposable addresses are dropped; webmail and any status
+# not listed count as "unknown"; no status at all is None.
+CONFIDENCE_FACTOR_BY_VERIFICATION = {"valid": 1.0, "accept_all": 0.85, "unknown": 0.75, None: 0.6}
+DROPPED_VERIFICATION_STATUSES = ("invalid", "disposable")
+GENERIC_EMAIL_CONFIDENCE_CAP = 0.3
+# Within a tier, after seniority and confidence (lower is better).
+VERIFICATION_RANK = {"valid": 0, "accept_all": 1, "unknown": 2, None: 3}
 
 # ── Scraper adapter — responsible scraping ──────────────────────────────────
 # Identifies the bot to site operators (robots.txt, server logs) instead of

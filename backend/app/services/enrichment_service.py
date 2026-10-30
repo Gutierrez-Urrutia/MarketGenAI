@@ -22,9 +22,9 @@ from __future__ import annotations
 import asyncio
 import logging
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Literal, Optional, Tuple
+from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.core.pipeline_constants import (
     ENRICHMENT_MAX_CONTACTS_PER_PROVIDER,
@@ -45,6 +45,30 @@ class RawContact(ContactBase):
     RawContact maps onto a ContactCreate field for field."""
 
 
+class CompanyInfo(BaseModel):
+    """What a provider knows about the company itself (Hunter: the `data`
+    of a Domain Search). headcount is a range such as "51-200"; Hunter's
+    Domain Search does not return one, so it is None unless another source
+    sets it."""
+
+    domain: Optional[str] = None
+    organization: Optional[str] = None
+    pattern: Optional[str] = None
+    accept_all: Optional[bool] = None
+    disposable: Optional[bool] = None
+    webmail: Optional[bool] = None
+    headcount: Optional[str] = None
+
+
+class ProviderResult(BaseModel):
+    """What search() may return instead of a plain list, to also report the
+    company. `contacts` is checked like a plain list (non-RawContact items
+    are dropped), hence the loose type."""
+
+    contacts: List[Any] = Field(default_factory=list)
+    company: Optional[CompanyInfo] = None
+
+
 class BaseProvider(ABC):
     """A source of contacts.
 
@@ -54,12 +78,16 @@ class BaseProvider(ABC):
     every other provider with it.
 
     `domain` is the company's registrable domain when the caller knows it
-    (None otherwise). A provider gets plain values only, never the lead."""
+    (None otherwise). A provider gets plain values only, never the lead.
+    It returns its contacts as a list, or as a ProviderResult to also
+    report what it knows about the company."""
 
     name: str = ""
 
     @abstractmethod
-    async def search(self, company: str, job_context: str, *, domain: Optional[str] = None) -> List[RawContact]:
+    async def search(
+        self, company: str, job_context: str, *, domain: Optional[str] = None,
+    ) -> Union[List[RawContact], ProviderResult]:
         ...
 
 
@@ -72,6 +100,8 @@ class ProviderError(BaseModel):
 class EnrichmentResult(BaseModel):
     contacts: List[RawContact]
     errors: List[ProviderError]
+    # Per provider name, for the providers that reported one.
+    companies: Dict[str, CompanyInfo] = Field(default_factory=dict)
 
 
 # ── Deduplication ─────────────────────────────────────────────────────────────
@@ -121,21 +151,24 @@ class EnrichmentService:
         )
         contacts: List[RawContact] = []
         errors: List[ProviderError] = []
+        companies: Dict[str, CompanyInfo] = {}
         # gather keeps the order of its arguments: provider-list order, not arrival order.
-        for outcome in outcomes:
+        for provider, outcome in zip(self.providers, outcomes):
             if isinstance(outcome, BaseException):
                 # _run_provider already turns every Exception into a ProviderError;
                 # what is left (CancelledError, KeyboardInterrupt...) is not ours to swallow.
                 raise outcome
-            found, error = outcome
+            found, error, company_info = outcome
             contacts.extend(found)
             if error is not None:
                 errors.append(error)
-        return EnrichmentResult(contacts=deduplicate(contacts), errors=errors)
+            if company_info is not None:
+                companies[_provider_name(provider)] = company_info
+        return EnrichmentResult(contacts=deduplicate(contacts), errors=errors, companies=companies)
 
     async def _run_provider(
         self, provider: BaseProvider, company: str, job_context: str, domain: Optional[str],
-    ) -> Tuple[List[RawContact], ProviderError | None]:
+    ) -> Tuple[List[RawContact], ProviderError | None, CompanyInfo | None]:
         name = _provider_name(provider)
         try:
             result = await asyncio.wait_for(
@@ -143,12 +176,15 @@ class EnrichmentService:
             )
         except (asyncio.TimeoutError, TimeoutError):
             logger.warning("enrichment: provider %s timed out after %ss", name, self.timeout_seconds)
-            return [], ProviderError(provider=name, reason="timeout", message=MESSAGE_TIMEOUT)
+            return [], ProviderError(provider=name, reason="timeout", message=MESSAGE_TIMEOUT), None
         except Exception as exc:
             exc_class = type(exc).__name__
             logger.warning("enrichment: provider %s failed with %s", name, exc_class)
-            return [], ProviderError(provider=name, reason="error", message=MESSAGE_ERROR.format(exc_class=exc_class))
-        return self._valid_contacts(name, result)
+            return [], ProviderError(provider=name, reason="error", message=MESSAGE_ERROR.format(exc_class=exc_class)), None
+        company_info = None
+        if isinstance(result, ProviderResult):
+            company_info, result = result.company, result.contacts
+        return (*self._valid_contacts(name, result), company_info)
 
     @staticmethod
     def _valid_contacts(name: str, result: Any) -> Tuple[List[RawContact], ProviderError | None]:

@@ -15,6 +15,7 @@ class ContactRole(str, Enum):
     HR_RECRUITER = "hr_recruiter"
     DEPARTMENT_HEAD = "department_head"
     PROCUREMENT = "procurement"
+    EXECUTIVE = "executive"  # CEO / founder / owner (RF15)
     UNKNOWN = "unknown"
 
 
@@ -66,6 +67,12 @@ class ContactBase(BaseModel):
     # Public pages where the provider found the address (http/https only).
     source_urls: List[str] = Field(default_factory=list)
     source_last_seen_at: Optional[datetime] = None
+    # confidence_score is the ranked (adjusted) confidence; this is the
+    # provider's own, before any adjustment. None on contacts saved before RF15.
+    provider_confidence_score: Optional[float] = Field(None, ge=0.0, le=1.0)
+    # Where email_verification_status came from ("hunter_domain_search",
+    # "hunter_email_verifier"); None when there is no status.
+    email_verification_source: Optional[str] = None
 
     @field_validator("full_name", "company", "source")
     @classmethod
@@ -93,7 +100,7 @@ class ContactBase(BaseModel):
         # A malformed URL, e.g. "http://[abc", drops the URL, not the contact.
         return http_url_or_none(value)
 
-    @field_validator("email_verification_status", "seniority", "department")
+    @field_validator("email_verification_status", "seniority", "department", "email_verification_source")
     @classmethod
     def _blank_text_to_none(cls, value: Optional[str]) -> Optional[str]:
         if value is None:
@@ -140,6 +147,8 @@ class Contact(BaseModel):
     department: Optional[str] = None
     source_urls: List[str] = Field(default_factory=list)
     source_last_seen_at: Optional[datetime] = None
+    provider_confidence_score: Optional[float] = Field(None, ge=0.0, le=1.0)
+    email_verification_source: Optional[str] = None
     # Firestore stores createdAt/updatedAt (FirestoreRepo.create). Accept both
     # spellings on input only: the JSON key stays created_at/updated_at.
     created_at: Optional[datetime] = Field(None, validation_alias=AliasChoices("created_at", "createdAt"))

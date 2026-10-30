@@ -18,8 +18,10 @@ from app.core.pipeline_constants import (
 from app.schemas.contact import ContactCreate
 from app.services.enrichment_service import (
     BaseProvider,
+    CompanyInfo,
     EnrichmentService,
     ProviderError,
+    ProviderResult,
     RawContact,
     dedupe_key,
     deduplicate,
@@ -340,3 +342,38 @@ async def test_logs_never_contain_contact_data(caplog):
     assert caplog.records, "expected warnings for the misbehaving providers"
     assert "Zoila" not in caplog.text
     assert "zoila.secreta" not in caplog.text
+
+
+# ── ProviderResult: contacts plus company data (RF15) ─────────────────────────
+async def test_a_provider_result_is_accepted_and_its_company_reported_by_provider_name():
+    company = CompanyInfo(domain="example.com", organization="Example Holdings", accept_all=True)
+    with_company = StaticProvider("with-company", ProviderResult(contacts=[contact(email="ana@example.com")], company=company))
+    plain = StaticProvider("plain", [contact(full_name="Tomás Vidal", email="tomas@example.com")])
+    result = await find(with_company, plain)
+
+    assert [c.email for c in result.contacts] == ["ana@example.com", "tomas@example.com"]
+    assert result.companies == {"with-company": company}
+    assert result.errors == []
+
+
+async def test_a_plain_list_reports_no_company():
+    result = await find(StaticProvider("plain", [contact()]))
+    assert result.companies == {}
+
+
+async def test_a_provider_result_without_company_reports_none():
+    result = await find(StaticProvider("no-company", ProviderResult(contacts=[contact()])))
+    assert len(result.contacts) == 1
+    assert result.companies == {}
+
+
+async def test_provider_result_items_that_are_not_raw_contacts_are_dropped():
+    result = await find(StaticProvider("mixed", ProviderResult(contacts=[contact(), {"full_name": "x"}, None])))
+    assert len(result.contacts) == 1
+    assert result.errors == []
+
+
+async def test_a_failing_provider_reports_no_company():
+    result = await find(FailingProvider("boom", RuntimeError("x")))
+    assert result.companies == {}
+    assert result.errors[0].reason == "error"
