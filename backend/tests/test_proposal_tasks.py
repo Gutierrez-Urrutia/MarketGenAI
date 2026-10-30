@@ -30,6 +30,7 @@ async def test_generate_proposal_now_success():
         "content": "<h2>Executive Summary</h2><p>Solución de IA</p>",
         "downloadUrl": "generated_files/proposal-test.md",
         "filePath": "generated_files/proposal-test.md",
+        "sources": [{"docId": "d1", "title": "Propuesta Cobranza"}],
     }
 
     with (
@@ -55,6 +56,7 @@ async def test_generate_proposal_now_success():
         "content": generated_content["content"],
         "downloadUrl": generated_content["downloadUrl"],
         "filePath": generated_content["filePath"],
+        "sources": [{"docId": "d1", "title": "Propuesta Cobranza"}],
         "status": "generated",
         "language": "es",
         "customPrompt": "Enfoque en ROI rápido",

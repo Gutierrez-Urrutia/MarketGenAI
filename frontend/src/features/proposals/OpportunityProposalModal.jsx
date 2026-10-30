@@ -1,6 +1,7 @@
 import { ProposalDocumentPreview } from "@/features/proposals/ProposalDocumentPreview";
 import { calculateProposalTotal, formatUsd, normalizeLineItem, normalizeProposalDocument } from "@/features/proposals/proposalDocument";
 import { createProposal, generateProposalById, updateProposal } from "@/api/proposalsApi";
+import { announceProposalGeneration } from "@/features/proposals/generationNotifier";
 import { exportProposalDocument } from "@/features/proposals/proposalExport";
 import { proposalDocumentToHtml } from "@/features/proposals/proposalHtml";
 import { useEffect, useRef, useState } from "react";
@@ -25,6 +26,13 @@ export function OpportunityProposalModal({ opportunity, onClose }) {
   const [draftContent, setDraftContent] = useState("");
   const [editingPreview, setEditingPreview] = useState(false);
   const [customerEmail, setCustomerEmail] = useState("");
+  const [teamSizing, setTeamSizing] = useState("");
+  const mountedRef = useRef(true);
+  const backgroundRef = useRef(false);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
   const { toasts, setToast, removeToast, pauseToast, resumeToast } = useToastQueue();
   const proposalPreviewRef = useRef(null);
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -219,7 +227,11 @@ export function OpportunityProposalModal({ opportunity, onClose }) {
     },
   });
 
+  // Tras «Continuar en segundo plano» el modal puede estar cerrado: el resultado se avisa por toast global.
+  const inBackground = () => backgroundRef.current || !mountedRef.current;
+
   const generateProposal = async () => {
+    backgroundRef.current = false;
     setGenerationModal({ title: proposalForm.name, activeStep: 0, completedSteps: [], progress: 5 });
     try {
       const savingDraftStep = Math.max(0, progressSteps.length - 2);
@@ -258,7 +270,7 @@ export function OpportunityProposalModal({ opportunity, onClose }) {
                   `Keywords: ${opportunityTags.join(", ") || "N/A"}`,
           `Content used: ${contentUsed}`,
         ].join("\n"),
-        teamSizing: "",
+        teamSizing: teamSizing.trim(),
         length: proposalLength,
         clientName: proposalForm.customer,
         customer: proposalForm.customer,
@@ -313,6 +325,10 @@ export function OpportunityProposalModal({ opportunity, onClose }) {
         },
         updated: "Today",
       };
+      if (inBackground()) {
+        announceProposalGeneration({ ok: true, message: `${t("opportunitiesPage.proposalModal.readyToast")}: ${proposalForm.name}` });
+        return;
+      }
       setDraftContent(content);
       setProposal(generatedProposal);
       setStep(3);
@@ -327,8 +343,18 @@ export function OpportunityProposalModal({ opportunity, onClose }) {
       setGenerationModal(null);
     } catch (error) {
       console.error(error);
+      if (inBackground()) {
+        announceProposalGeneration({ ok: false, message: `${t("opportunitiesPage.proposalModal.failedToast")}: ${proposalForm.name}` });
+        return;
+      }
       setGenerationModal((current) => ({ ...current, error: t("opportunitiesPage.proposalModal.errorGenerating") }));
     }
+  };
+
+  const continueInBackground = () => {
+    backgroundRef.current = true;
+    setGenerationModal(null);
+    onClose();
   };
 
   const saveDraft = async () => {
@@ -421,6 +447,11 @@ export function OpportunityProposalModal({ opportunity, onClose }) {
                 </Select>
               </Field>
               <div className="col-span-2">
+                <Field label={t("opportunitiesPage.proposalModal.teamSizing")} hint={t("opportunitiesPage.proposalModal.teamSizingHint")}>
+                  <Input aria-label={t("opportunitiesPage.proposalModal.teamSizing")} value={teamSizing} onChange={(event) => setTeamSizing(event.target.value)} maxLength={300} />
+                </Field>
+              </div>
+              <div className="col-span-2">
                 <Field label={t("opportunitiesPage.proposalModal.opportunityContext")}>
                   <div className="rounded-xl border border-gray-200 bg-gray-50 p-4 text-xs text-gray-700">
                     <div className="grid grid-cols-4 gap-3">
@@ -476,6 +507,10 @@ export function OpportunityProposalModal({ opportunity, onClose }) {
 
           {step === 3 && proposal && (
             <div className="space-y-4">
+              <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:bg-amber-500/10 dark:text-amber-200">{t("opportunitiesPage.proposalModal.reviewNotice")}</p>
+              {Array.isArray(proposal.sources) && proposal.sources.length > 0 && (
+                <p className="text-xs text-gray-500">{t("opportunitiesPage.proposalModal.sourcesUsed")}: {proposal.sources.map((source) => source.title).join(", ")}</p>
+              )}
               <div className={`rounded-2xl border overflow-hidden ${isDark ? "border-white/10" : "border-gray-100"}`}>
                 {editingPreview ? (
                   <div
@@ -520,7 +555,11 @@ export function OpportunityProposalModal({ opportunity, onClose }) {
         title={`${t("opportunitiesPage.proposalModal.generating")}: ${generationModal?.title || proposalForm.name}`}
         steps={progressSteps}
         state={generationModal}
-        onCancel={() => setGenerationModal(null)}
+        subtitle={t("opportunitiesPage.proposalModal.backgroundNote")}
+        cancelLabel={t("opportunitiesPage.proposalModal.background")}
+        completeLabel={t("opportunitiesPage.proposalModal.completeLabel")}
+        retryLabel={t("opportunitiesPage.proposalModal.retryLabel")}
+        onCancel={continueInBackground}
         onRetry={generateProposal}
       />
     </div>

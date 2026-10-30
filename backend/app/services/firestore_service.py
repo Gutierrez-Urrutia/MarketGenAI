@@ -603,6 +603,10 @@ class KnowledgeChunksRepo(FirestoreRepo):
     collection = "knowledge_chunks"
 
 
+class EnablementDraftsRepo(FirestoreRepo):
+    collection = "enablement_drafts"
+
+
 class PipelineRunLocksRepo(FirestoreRepo):
     """One lock document per PipelineConfig (doc id == config id) so two runs
     can never be active on the same config at once. Acquired inside a Firestore
@@ -703,3 +707,4 @@ pipeline_runs_repo    = PipelineRunsRepo()
 pipeline_run_locks_repo = PipelineRunLocksRepo()
 knowledge_documents_repo = KnowledgeDocumentsRepo()
 knowledge_chunks_repo    = KnowledgeChunksRepo()
+enablement_drafts_repo   = EnablementDraftsRepo()

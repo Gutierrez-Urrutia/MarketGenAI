@@ -167,6 +167,49 @@ def rank_chunks(
     return [c for _, c in scored[:top_k]]
 
 
+async def retrieve_sources(
+    user_id: str | None,
+    client_name: str = "",
+    service_type: str = "",
+    extra_query: str = "",
+) -> list[dict[str, str]]:
+    """Fragmentos más relevantes del usuario como [{docId, title, text}], dentro del presupuesto
+    de caracteres. Lista vacía si no hay documentos relevantes."""
+    if not user_id:
+        return []
+    docs = await knowledge_documents_repo.list(
+        filters=[("userId", "==", user_id)], limit=MAX_DOCS_PER_USER
+    )
+    if not docs:
+        return []
+    chunks = await knowledge_chunks_repo.list(
+        filters=[("userId", "==", user_id)], limit=_MAX_CHUNKS_SCANNED
+    )
+    docs_by_id = {d["id"]: d for d in docs}
+    query = " ".join(filter(None, [service_type, extra_query, client_name]))
+    top = rank_chunks(query, chunks, docs_by_id, client_name=client_name)
+
+    sources, used = [], 0
+    for c in top:
+        title = docs_by_id.get(c["docId"], {}).get("title", "documento")
+        if used + len(title) + len(c["text"]) > MAX_CONTEXT_CHARS:
+            break
+        sources.append({"docId": c["docId"], "title": title, "text": c["text"]})
+        used += len(title) + len(c["text"])
+    return sources
+
+
+def unique_source_refs(sources: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Documentos distintos usados como fuente, como [{docId, title}] (sin el texto)."""
+    seen: set[str] = set()
+    refs = []
+    for s in sources:
+        if s["docId"] not in seen:
+            seen.add(s["docId"])
+            refs.append({"docId": s["docId"], "title": s["title"]})
+    return refs
+
+
 async def get_rag_context(
     user_id: str | None,
     client_name: str = "",
@@ -175,31 +218,21 @@ async def get_rag_context(
 ) -> str:
     """Contexto para el prompt de generación; cadena vacía si el usuario no cargó documentos
     relevantes (no se inventa un contexto de relleno)."""
-    if not user_id:
-        return ""
-    docs = await knowledge_documents_repo.list(
-        filters=[("userId", "==", user_id)], limit=MAX_DOCS_PER_USER
-    )
-    if not docs:
-        return ""
-    chunks = await knowledge_chunks_repo.list(
-        filters=[("userId", "==", user_id)], limit=_MAX_CHUNKS_SCANNED
-    )
-    docs_by_id = {d["id"]: d for d in docs}
-    query = " ".join(filter(None, [service_type, extra_query, client_name]))
-    top = rank_chunks(query, chunks, docs_by_id, client_name=client_name)
-    if not top:
-        return ""
+    context, _ = await get_rag_context_and_sources(user_id, client_name, service_type, extra_query)
+    return context
 
-    blocks, used = [], 0
-    for c in top:
-        title = docs_by_id.get(c["docId"], {}).get("title", "documento")
-        block = f"[Fuente: {title}]\n{c['text']}"
-        if used + len(block) > MAX_CONTEXT_CHARS:
-            break
-        blocks.append(block)
-        used += len(block)
 
+async def get_rag_context_and_sources(
+    user_id: str | None,
+    client_name: str = "",
+    service_type: str = "",
+    extra_query: str = "",
+) -> tuple[str, list[dict[str, str]]]:
+    """Como get_rag_context, pero devuelve además los documentos usados (para mostrarlos al usuario)."""
+    sources = await retrieve_sources(user_id, client_name, service_type, extra_query)
+    if not sources:
+        return "", []
+    blocks = [f"[Fuente: {s['title']}]\n{s['text']}" for s in sources]
     return (
         "CONTEXTO DE PROPUESTAS HISTÓRICAS DE LA EMPRESA:\n"
         "Los siguientes extractos provienen de propuestas reales cargadas por la empresa. "
@@ -207,4 +240,4 @@ async def get_rag_context(
         "otros clientes (nombres, precios, cifras) a esta propuesta.\n\n"
         + "\n\n---\n\n".join(blocks)
         + "\n"
-    )
+    ), unique_source_refs(sources)

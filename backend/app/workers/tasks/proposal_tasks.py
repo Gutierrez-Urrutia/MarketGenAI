@@ -20,7 +20,7 @@ from celery import Task
 from app.workers.celery_app import celery_app
 from app.services import deepseek_service
 from app.services.firestore_service import jobs_repo, proposals_repo
-from app.services.rag_proposal_service import get_rag_context
+from app.services.rag_proposal_service import get_rag_context_and_sources
 
 logger = logging.getLogger(__name__)
 
@@ -250,7 +250,7 @@ async def _generate_proposal_content(
     headings = SECTION_HEADINGS[lang]
     length_instructions = _length_instructions(headings)
     pricing_context = _format_proposal_line_items(line_items, total_amount)
-    rag_context = await get_rag_context(
+    rag_context, sources = await get_rag_context_and_sources(
         user_id,
         client_name=client_name,
         service_type=f"{title} {description}",
@@ -271,7 +271,9 @@ async def _generate_proposal_content(
             f"<h2>{headings[7]}</h2>\n<p>{PRICING_MARKER}</p>\n"
             "<ul><li>Commercial term (billing, payment, validity, adjustments, currency, taxes)</li></ul>",
             f"<h2>{headings[8]}</h2>\n"
-            "<ul><li>General term (confidentiality, assumptions, exclusions, termination)</li></ul>",
+            "<ul><li>General term (confidentiality, assumptions)</li>"
+            "<li>Exclusions: what the service does not include</li>"
+            "<li>Termination: proposed notice period, subject to agreement</li></ul>",
         ]
     )
     prompt = f"""
@@ -294,11 +296,12 @@ LENGTH REQUIREMENT:
 CONTENT QUALITY INSTRUCTIONS:
 - The service is business process outsourcing (BPO): describe people, process, service levels and governance, not generic "AI solutions".
 - Use the historical company context above, when present, for service descriptions, structure, tone and typical service levels. Never copy client names, prices or figures from it.
-- Use ONLY facts about this client that appear in the data above. When something is unknown, state it as an assumption to validate (for example "Assumption: monthly volume to be confirmed") instead of inventing it.
+- Use ONLY facts about this client that appear in the data above. When something is unknown, state it as an assumption to validate (for example "Assumption: monthly volume to be confirmed", with the word "Assumption" translated into the output language) instead of inventing it.
 - Service levels must be measurable (indicator, target, measurement method). Label every target as a proposed target to be validated against the client's baseline during the diagnostic phase; never present it as a guarantee.
 - This is a client-facing document: NEVER mention internal CRM or sales-pipeline data such as the opportunity stage, "fit score", qualification score or lead status.
 - "About" section: include only company facts present in the historical company context (years, locations, capabilities). If there are none, write one short neutral paragraph about the service capability without figures, names or certifications.
-- Commercial terms: state the currency (USD), the billing period, and that prices exclude applicable taxes unless the data says otherwise (mark it as an assumption). Contract duration, notice periods and payment terms taken from the historical context must be labeled as standard terms subject to agreement.
+- Commercial terms: state the currency (USD), the billing period, and that prices exclude applicable taxes unless the data says otherwise (mark it as an assumption, writing the label in the output language). Contract duration, notice periods and payment terms taken from the historical context must be labeled as standard terms subject to agreement.
+- General conditions must always include explicit exclusions (what is NOT included) and a termination clause with a proposed notice period. Label the notice period and any legal term as "subject to agreement and legal review"; never present them as fixed or final.
 - Team: use the provided sizing and roles when given; otherwise propose a reasonable structure and label it as a proposal.
 - Team and pricing must be consistent: every role beyond the provided sizing must be explicitly described as included in the unit price, or as optional and priced separately. Never list a role as part of the service without saying how it is covered commercially.
 - Do not attribute statements to the client ("the client states/requires...") unless they appear in the data above. Market observations must be phrased as general context, and definitions that the data does not give (for example delinquency buckets) must be labeled as assumptions to validate.
@@ -343,6 +346,7 @@ REQUIRED STRUCTURE:
         "content": content,
         "downloadUrl": str(file_path),
         "filePath": str(file_path),
+        "sources": sources,
     }
 
 
@@ -404,6 +408,7 @@ async def generate_proposal_now(
         "content": generated["content"],
         "downloadUrl": generated["downloadUrl"],
         "filePath": generated["filePath"],
+        "sources": generated.get("sources", []),
         "status": "generated",
         "language": language,
         "customPrompt": custom_prompt,

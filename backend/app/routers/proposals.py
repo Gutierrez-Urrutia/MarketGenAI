@@ -1,11 +1,13 @@
 import logging
 import os
+import re
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Optional, Union
 from xml.sax.saxutils import escape
 
+import httpx
 from bs4 import BeautifulSoup
 from docx import Document
 from docx.enum.table import WD_TABLE_ALIGNMENT
@@ -52,6 +54,7 @@ from app.services import crm_service, deepseek_service
 from app.workers.tasks.proposal_tasks import _lang_code, format_usd
 from app.services.crm_service import (
     CrmAuthError,
+    CrmError,
     CrmProviderError,
     CrmTimeoutError,
 )
@@ -107,21 +110,21 @@ async def _get_proposal_for_user(proposal_id: str, user_id: str) -> dict:
 
 _EXPORT_LABELS = {
     "es": {
-        "proposal": "PROPUESTA COMERCIAL", "total": "TOTAL", "issued": "FECHA DE EMISIÓN", "valid": "VÁLIDA HASTA", "prepared": "PREPARADO POR",
+        "proposal": "PROPUESTA COMERCIAL", "total": "TOTAL", "issued": "FECHA DE EMISIÓN", "valid": "VÁLIDA HASTA", "prepared": "PREPARADO POR", "reference": "REFERENCIA",
         "total_cost": "Total de la propuesta", "page": "Página", "not_calculated": "No calculado",
         "accept": "Aceptación", "confidential": "Documento confidencial",
         "accept_intro": "Para aceptar esta propuesta, firme y devuelva este documento, o confirme su aceptación por correo electrónico.",
         "sig": ["Nombre", "Cargo", "Fecha", "Firma"], "default_title": "Propuesta Comercial",
     },
     "en": {
-        "proposal": "COMMERCIAL PROPOSAL", "total": "TOTAL", "issued": "ISSUED ON", "valid": "VALID UNTIL", "prepared": "PREPARED BY",
+        "proposal": "COMMERCIAL PROPOSAL", "total": "TOTAL", "issued": "ISSUED ON", "valid": "VALID UNTIL", "prepared": "PREPARED BY", "reference": "REFERENCE",
         "total_cost": "Proposal total", "page": "Page", "not_calculated": "Not calculated",
         "accept": "Acceptance", "confidential": "Confidential document",
         "accept_intro": "To accept this proposal, sign and return this document, or confirm your acceptance by email.",
         "sig": ["Name", "Title", "Date", "Signature"], "default_title": "Commercial Proposal",
     },
     "pt": {
-        "proposal": "PROPOSTA COMERCIAL", "total": "TOTAL", "issued": "DATA DE EMISSÃO", "valid": "VÁLIDA ATÉ", "prepared": "PREPARADO POR",
+        "proposal": "PROPOSTA COMERCIAL", "total": "TOTAL", "issued": "DATA DE EMISSÃO", "valid": "VÁLIDA ATÉ", "prepared": "PREPARADO POR", "reference": "REFERÊNCIA",
         "total_cost": "Total da proposta", "page": "Página", "not_calculated": "Não calculado",
         "accept": "Aceitação", "confidential": "Documento confidencial",
         "accept_intro": "Para aceitar esta proposta, assine e devolva este documento, ou confirme a aceitação por e-mail.",
@@ -163,6 +166,12 @@ def _resolve_total_amount(proposal: dict):
     return total_amount
 
 
+def _proposal_reference(proposal_id: str | None, issued_on: datetime) -> str:
+    """Número de referencia de la portada: NDP-AAAAMMDD-XXXX (fecha de emisión y 4 caracteres del id)."""
+    suffix = "".join(ch for ch in str(proposal_id or "") if ch.isalnum())[:4].upper() or "0000"
+    return f"NDP-{issued_on:%Y%m%d}-{suffix}"
+
+
 def _proposal_cover_fields(proposal: dict) -> dict:
     """Pulls the cover-page metadata (client, total, dates...) used by both
     the PDF and DOCX exports, mirroring normalizeProposalDocument() on the frontend."""
@@ -200,6 +209,7 @@ def _proposal_cover_fields(proposal: dict) -> dict:
         "issued_on": _localized_date(issued_on, lang),
         "valid_until": _localized_date(valid_until, lang),
         "prepared_by": proposal.get("issuedBy") or "—",
+        "reference": _proposal_reference(proposal.get("id"), issued_on),
         "language": lang,
         "labels": labels,
     }
@@ -531,8 +541,8 @@ def _build_proposal_pdf(file_path: Path, record_title: str, html_content: str, c
     if subtitle:
         story.append(Paragraph(escape(subtitle), styles["subtitle"]))
     meta_bits = [bit for bit in [cover["industry"], cover["contact"], cover["service_line"]] if bit]
-    if meta_bits:
-        story.append(Paragraph(escape("   •   ".join(meta_bits)), styles["meta"]))
+    meta_bits.append(f"{cover['labels']['reference']}: {cover['reference']}")
+    story.append(Paragraph(escape("   •   ".join(meta_bits)), styles["meta"]))
     story.append(Spacer(1, 12))
 
     labels = cover["labels"]
@@ -819,6 +829,9 @@ def _build_proposal_docx(file_path: Path, record_title: str, html_content: str, 
             _set_run_color(run, BRAND_PRIMARY)
 
     doc.add_paragraph()
+
+    reference_paragraph = doc.add_paragraph(f"{labels['reference']}: {cover['reference']}")
+    reference_paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
 
     info_table = doc.add_table(rows=2, cols=4)
     info_table.alignment = WD_TABLE_ALIGNMENT.CENTER
@@ -1218,6 +1231,22 @@ async def create_proposal_version(
     return version
 
 
+_CRM_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+async def _record_crm_failure(proposal_id: str, existing_sync: dict, provider: str, error: str, partial: dict) -> None:
+    """Registra el fallo en crmSync conservando los IDs del CRM ya vinculados (y los creados
+    a medias en este intento), para que un reenvío actualice en vez de duplicar."""
+    await proposals_repo.update(proposal_id, {"crmSync": {
+        **existing_sync,
+        **partial,
+        "provider": provider,
+        "status": "failed",
+        "error": error,
+        "syncedAt": datetime.now(timezone.utc).isoformat(),
+    }})
+
+
 @router.post("/{proposal_id}/send-to-crm")
 async def send_proposal_to_crm(
     proposal_id: str,
@@ -1226,11 +1255,16 @@ async def send_proposal_to_crm(
 ):
     proposal = await _get_proposal_for_user(proposal_id, user.sub)
 
-    client_email = proposal.get("clientEmail")
+    client_email = (proposal.get("clientEmail") or "").strip()
     if not client_email:
         raise HTTPException(
             status_code=400,
             detail="La propuesta no tiene un email de cliente. Edítala para agregarlo antes de enviarla al CRM.",
+        )
+    if not _CRM_EMAIL_RE.match(client_email):
+        raise HTTPException(
+            status_code=400,
+            detail="El email del cliente no tiene un formato válido. Corrígelo antes de enviarla al CRM.",
         )
 
     requested_provider = (body.provider or "").strip().lower() or None
@@ -1257,6 +1291,7 @@ async def send_proposal_to_crm(
     if client is None:
         raise HTTPException(status_code=400, detail="No hay una integración de CRM configurada en Ajustes.")
 
+    partial: dict = {}
     try:
         if provider == "hubspot":
             hubspot = client
@@ -1265,6 +1300,7 @@ async def send_proposal_to_crm(
                 name=proposal.get("clientName"),
                 company=proposal.get("clientCompany"),
             )
+            partial["hubspotContactId"] = contact_id
             deal_id = await hubspot.upsert_deal(
                 deal_id=existing_sync.get("hubspotDealId"),
                 dealname=proposal.get("title"),
@@ -1282,11 +1318,13 @@ async def send_proposal_to_crm(
             salesforce = client
             account_name = proposal.get("clientCompany") or proposal.get("clientName") or "Untitled Account"
             account_id = await salesforce.upsert_account(account_name)
+            partial["salesforceAccountId"] = account_id
             contact_id = await salesforce.upsert_contact(
                 email=client_email,
                 name=proposal.get("clientName"),
                 account_id=account_id,
             )
+            partial["salesforceContactId"] = contact_id
             opportunity_id = await salesforce.upsert_opportunity(
                 opportunity_id=existing_sync.get("salesforceOpportunityId"),
                 name=proposal.get("title"),
@@ -1302,18 +1340,23 @@ async def send_proposal_to_crm(
                 "salesforceContactId": contact_id,
                 "salesforceOpportunityId": opportunity_id,
             }
-    except CrmAuthError as exc:
-        raise HTTPException(status_code=401, detail=str(exc)) from exc
-    except CrmTimeoutError as exc:
-        raise HTTPException(status_code=504, detail=str(exc)) from exc
-    except CrmProviderError as exc:
-        await proposals_repo.update(proposal_id, {"crmSync": {
-            "provider": provider,
-            "status": "failed",
-            "error": str(exc),
-            "syncedAt": datetime.now(timezone.utc).isoformat(),
-        }})
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except CrmError as exc:
+        partial.update(getattr(exc, "partial_ids", None) or {})
+        if isinstance(exc, CrmAuthError):
+            code = 401
+        elif isinstance(exc, CrmTimeoutError):
+            code = 504
+        else:
+            code = 502
+        await _record_crm_failure(proposal_id, existing_sync, provider, str(exc), partial)
+        raise HTTPException(status_code=code, detail=str(exc)) from exc
+    except httpx.HTTPError as exc:
+        # CRM caído / sin red / DNS: antes escapaba como 500 sin mensaje.
+        label = "HubSpot" if provider == "hubspot" else "Salesforce"
+        detail = f"No se pudo conectar con {label}. Revisa que el servicio esté disponible e inténtalo de nuevo."
+        logger.warning("send-to-crm: fallo de conexión con %s: %r", label, exc)
+        await _record_crm_failure(proposal_id, existing_sync, provider, detail, partial)
+        raise HTTPException(status_code=502, detail=detail) from exc
 
     return await proposals_repo.update(proposal_id, {"crmSync": crm_sync})
 
@@ -1328,7 +1371,8 @@ async def export_proposal(
     (no se guarda: solo se usa para este archivo)."""
     proposal = await _get_proposal_for_user(proposal_id, user.sub)
     html_content = body.content if body.content else proposal.get("content", "")
-    return _render_proposal_file(proposal, proposal_id, body.format, html_content, body.issuedBy)
+    executive = body.issuedBy or user.name or user.preferred_username or user.email
+    return _render_proposal_file(proposal, proposal_id, body.format, html_content, executive)
 
 
 @router.get("/{proposal_id}/download")
@@ -1338,12 +1382,13 @@ async def download_proposal(
     user: CurrentUser = Depends(get_current_user),
 ):
     proposal = await _get_proposal_for_user(proposal_id, user.sub)
-    return _render_proposal_file(proposal, proposal_id, format, proposal.get("content", ""))
+    executive = user.name or user.preferred_username or user.email
+    return _render_proposal_file(proposal, proposal_id, format, proposal.get("content", ""), executive)
 
 
 def _render_proposal_file(proposal: dict, proposal_id: str, format: str, html_content: str, issued_by: str | None = None):
     title = proposal.get("title") or "proposal"
-    cover = _proposal_cover_fields({**proposal, "issuedBy": issued_by or proposal.get("issuedBy")})
+    cover = _proposal_cover_fields({**proposal, "id": proposal.get("id") or proposal_id, "issuedBy": issued_by or proposal.get("issuedBy")})
 
     output_dir = _output_dir()
     safe_title = title.replace(" ", "_").replace("/", "_").lower()

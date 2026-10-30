@@ -137,11 +137,17 @@ class HubSpotClient:
                     self._raise_for_status(create_resp)
                     deal_id = create_resp.json()["id"]
 
-                assoc_resp = await client.put(
-                    f"{self._base_url}/crm/v4/objects/deals/{deal_id}/associations/default/contacts/{contact_id}",
-                    headers=self._headers,
-                )
-                self._raise_for_status(assoc_resp)
+                try:
+                    assoc_resp = await client.put(
+                        f"{self._base_url}/crm/v4/objects/deals/{deal_id}/associations/default/contacts/{contact_id}",
+                        headers=self._headers,
+                    )
+                    self._raise_for_status(assoc_resp)
+                except (CrmError, httpx.TimeoutException) as exc:
+                    # El negocio ya existe: se informa su ID para que el reenvío lo actualice y no cree otro.
+                    err = exc if isinstance(exc, CrmError) else CrmTimeoutError("Timeout al conectar con HubSpot")
+                    err.partial_ids = {"hubspotDealId": deal_id}
+                    raise err from exc
                 return deal_id
             except httpx.TimeoutException as exc:
                 raise CrmTimeoutError("Timeout al conectar con HubSpot") from exc

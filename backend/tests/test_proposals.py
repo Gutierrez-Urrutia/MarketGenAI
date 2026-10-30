@@ -436,3 +436,21 @@ def test_inject_pricing_table_fallback_when_marker_missing():
     out = inject_pricing_table("<h2>A</h2><p>x</p><h2>B</h2><p>y</p>", table)
     assert out.index("pricing-table") < out.index("<h2>B</h2>")
     assert "To be defined" in table
+
+
+@pytest.mark.asyncio
+async def test_generation_returns_sources_and_prompt_requires_exclusions_and_termination(tmp_path):
+    sources = [{"docId": "d1", "title": "Propuesta Cobranza", "text": "Cobranza con discador predictivo."}]
+    with (
+        patch("app.routers.proposals._output_dir", return_value=tmp_path),
+        patch("app.services.rag_proposal_service.retrieve_sources", new_callable=AsyncMock, return_value=sources),
+        patch("app.routers.proposals.deepseek_service.generate_text", new_callable=AsyncMock, return_value="<p>x</p>") as generate_text,
+    ):
+        result = await _generate_proposal_content(
+            "Cobranza", "Acme", "Cobranza telefónica", language="es", user_id="u1",
+        )
+
+    assert result["sources"] == [{"docId": "d1", "title": "Propuesta Cobranza"}]
+    prompt = generate_text.await_args.args[0]
+    assert "Exclusions: what the service does not include" in prompt
+    assert "subject to agreement and legal review" in prompt

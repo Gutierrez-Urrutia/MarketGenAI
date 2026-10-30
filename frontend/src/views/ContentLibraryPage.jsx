@@ -345,6 +345,16 @@ export function ContentLibraryPage({ navigationState = {}, onNavigate = () => {}
       downloadPdf: "Download PDF",
       uploadCrm: "Upload to CRM",
       crmQueued: "CRM upload queued",
+      crmSent: "Proposal sent to {provider}.",
+      crmSending: "Sending...",
+      crmSendFailed: "Could not send the proposal to the CRM.",
+      crmEmailTitle: "Client email required",
+      crmEmailBody: "The CRM needs an email to create or update this client's contact.",
+      crmEmailLabel: "Client email",
+      crmEmailPlaceholder: "client@company.com",
+      crmSaveAndSend: "Save & send",
+      crmEmailInvalid: "Enter a valid email address (for example client@company.com).",
+      crmEmailSaveFailed: "Could not save the client email.",
       comingSoon: "Coming Soon",
       titleRequired: "Proposal title is required before continuing",
       customerRequired: "Customer is required before continuing",
@@ -448,6 +458,16 @@ export function ContentLibraryPage({ navigationState = {}, onNavigate = () => {}
       downloadPdf: "Descargar PDF",
       uploadCrm: "Subir al CRM",
       crmQueued: "Subida al CRM en cola",
+      crmSent: "Propuesta enviada a {provider}.",
+      crmSending: "Enviando...",
+      crmSendFailed: "No se pudo enviar la propuesta al CRM.",
+      crmEmailTitle: "Se requiere el correo del cliente",
+      crmEmailBody: "El CRM necesita un correo para crear o actualizar el contacto de este cliente.",
+      crmEmailLabel: "Correo del cliente",
+      crmEmailPlaceholder: "cliente@empresa.com",
+      crmSaveAndSend: "Guardar y enviar",
+      crmEmailInvalid: "Ingresa un correo válido (por ejemplo cliente@empresa.com).",
+      crmEmailSaveFailed: "No se pudo guardar el correo del cliente.",
       comingSoon: "Próximamente",
       titleRequired: "El título de la propuesta es obligatorio antes de continuar",
       customerRequired: "El cliente es obligatorio antes de continuar",
@@ -551,6 +571,16 @@ export function ContentLibraryPage({ navigationState = {}, onNavigate = () => {}
       downloadPdf: "Baixar PDF",
       uploadCrm: "Enviar ao CRM",
       crmQueued: "Envio ao CRM na fila",
+      crmSent: "Proposta enviada para {provider}.",
+      crmSending: "Enviando...",
+      crmSendFailed: "Nao foi possivel enviar a proposta ao CRM.",
+      crmEmailTitle: "E-mail do cliente obrigatorio",
+      crmEmailBody: "O CRM precisa de um e-mail para criar ou atualizar o contato deste cliente.",
+      crmEmailLabel: "E-mail do cliente",
+      crmEmailPlaceholder: "cliente@empresa.com",
+      crmSaveAndSend: "Salvar e enviar",
+      crmEmailInvalid: "Informe um e-mail valido (por exemplo cliente@empresa.com).",
+      crmEmailSaveFailed: "Nao foi possivel salvar o e-mail do cliente.",
       comingSoon: "Em breve",
       titleRequired: "O titulo da proposta e obrigatorio antes de continuar",
       customerRequired: "O cliente e obrigatorio antes de continuar",
@@ -1776,6 +1806,7 @@ const filtered = allItems.filter((item) => {
   };
   const getCrmErrorMessage = (error, fallback) => {
     const detail = error?.response?.data?.detail;
+    if (Array.isArray(detail) && typeof detail[0]?.msg === "string") return detail[0].msg;
     return (typeof detail === "string" && detail.trim()) ? detail : (error?.message || fallback);
   };
   const applyCrmSyncResult = (proposalId, crmSync) => {
@@ -1788,10 +1819,10 @@ const filtered = allItems.filter((item) => {
       const { data } = await sendProposalToCrm(proposal.id);
       applyCrmSyncResult(proposal.id, data.crmSync);
       const providerLabel = data?.crmSync?.provider === "salesforce" ? "Salesforce" : "HubSpot";
-      setToast({ type: "success", message: `Proposal sent to ${providerLabel}.` });
+      setToast({ type: "success", message: createT.crmSent.replace("{provider}", providerLabel) });
     } catch (error) {
       console.error(error);
-      setToast({ type: "error", message: getCrmErrorMessage(error, "Could not send the proposal to the CRM.") });
+      setToast({ type: "error", message: getCrmErrorMessage(error, createT.crmSendFailed) });
     } finally {
       setCrmSending(false);
     }
@@ -1806,6 +1837,10 @@ const filtered = allItems.filter((item) => {
   const confirmCrmEmailPrompt = async () => {
     const email = crmEmailPrompt?.email.trim();
     if (!email) return;
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+      setToast({ type: "error", message: createT.crmEmailInvalid });
+      return;
+    }
     setCrmEmailPromptSaving(true);
     try {
       const { data } = await updateProposal(crmEmailPrompt.proposal.id, { clientEmail: email });
@@ -1816,7 +1851,7 @@ const filtered = allItems.filter((item) => {
       await sendProposalToCrmNow(updatedProposal);
     } catch (error) {
       console.error(error);
-      setToast({ type: "error", message: getCrmErrorMessage(error, "Could not save the client email.") });
+      setToast({ type: "error", message: getCrmErrorMessage(error, createT.crmEmailSaveFailed) });
     } finally {
       setCrmEmailPromptSaving(false);
     }
@@ -2975,7 +3010,7 @@ const filtered = allItems.filter((item) => {
             <Btn variant="secondary" icon={<PenIcon size={12} />} onClick={() => openStructuredProposalEditor(viewingProposal)}>{createT.editStructure}</Btn>
             <Btn variant="secondary" onClick={() => downloadItem(viewingProposal, "docx")}>{createT.downloadDocx}</Btn>
             <Btn onClick={() => downloadItem(viewingProposal, "pdf")}>{createT.downloadPdf}</Btn>
-            <Btn variant="teal" icon={<PlugIcon size={12} />} onClick={() => handleUploadToCrm(viewingProposal)} disabled={crmSending}>{crmSending ? "Sending..." : createT.uploadCrm}</Btn>
+            <Btn variant="teal" icon={<PlugIcon size={12} />} onClick={() => handleUploadToCrm(viewingProposal)} disabled={crmSending}>{crmSending ? createT.crmSending : createT.uploadCrm}</Btn>
           </>
         )}
       </div>
@@ -2987,24 +3022,24 @@ const filtered = allItems.filter((item) => {
   <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-900/40 p-4">
     <div className="w-full max-w-sm rounded-2xl bg-white shadow-xl">
       <div className="border-b border-gray-100 p-5">
-        <p className="text-sm font-semibold text-gray-900">Client email required</p>
-        <p className="text-xs text-gray-500">HubSpot needs an email to create or update this client's contact.</p>
+        <p className="text-sm font-semibold text-gray-900">{createT.crmEmailTitle}</p>
+        <p className="text-xs text-gray-500">{createT.crmEmailBody}</p>
       </div>
       <div className="p-5">
-        <Field label="Client email">
+        <Field label={createT.crmEmailLabel}>
           <Input
             type="email"
             autoFocus
             value={crmEmailPrompt.email}
             onChange={(event) => setCrmEmailPrompt((current) => ({ ...current, email: event.target.value }))}
-            placeholder="client@company.com"
+            placeholder={createT.crmEmailPlaceholder}
           />
         </Field>
       </div>
       <div className="flex justify-end gap-2 border-t border-gray-100 bg-gray-50 p-4">
         <Btn variant="ghost" onClick={() => setCrmEmailPrompt(null)}>{t("common.cancel")}</Btn>
         <Btn icon={<PlugIcon size={12} />} onClick={confirmCrmEmailPrompt} disabled={!crmEmailPrompt.email.trim() || crmEmailPromptSaving}>
-          {crmEmailPromptSaving ? "Sending..." : "Save & send"}
+          {crmEmailPromptSaving ? createT.crmSending : createT.crmSaveAndSend}
         </Btn>
       </div>
     </div>
