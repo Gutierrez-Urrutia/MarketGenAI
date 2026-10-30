@@ -732,6 +732,9 @@ async def _scan_jsearch(source: Dict[str, Any], keywords: List[str]) -> List[Raw
                         continue
                     seen_fingerprints.add(fingerprint)
                     kept_per_query[query] = kept_per_query.get(query, 0) + 1
+                    # A missing, empty, invalid or platform employer_website
+                    # (normalize_domain never raises) just leaves no domain.
+                    company_domain = company_domain_service.normalize_domain(item.get("employer_website"))
                     postings.append(RawJobPosting(
                         job_title=title,
                         company_name=company,
@@ -739,6 +742,9 @@ async def _scan_jsearch(source: Dict[str, Any], keywords: List[str]) -> List[Raw
                         job_url=_sanitize_job_url(_jsearch_apply_link(item)),
                         location=_jsearch_location(item),
                         source_id=source["id"],
+                        company_domain=company_domain,
+                        company_domain_source="jsearch_employer_website" if company_domain else None,
+                        source_job_id=str(item.get("job_id") or "").strip() or None,
                     ))
             else:
                 continue
@@ -1045,6 +1051,7 @@ async def scan_all_sources(pipeline_config: Dict[str, Any], run_id: str) -> Dict
                     "raw_title": posting.raw_title,
                     "company_domain": posting.company_domain,
                     "company_domain_source": posting.company_domain_source,
+                    "source_job_id": posting.source_job_id,
                 })
                 leads_new += 1
 

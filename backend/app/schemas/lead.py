@@ -42,6 +42,7 @@ class RawJobPosting(BaseModel):
     raw_title: Optional[str] = None
     company_domain: Optional[str] = None
     company_domain_source: Optional[str] = None
+    source_job_id: Optional[str] = None
 
     @field_validator("job_title")
     @classmethod
@@ -70,10 +71,14 @@ class Lead(BaseModel):
     pipeline_run_id: str
     fingerprint: str
     raw_title: Optional[str] = None
-    # Company's registrable domain and where it came from ("rss_url_line");
-    # None on leads saved before T9a and on postings without one.
+    # Company's registrable domain and where it came from ("rss_url_line",
+    # "jsearch_employer_website"); None on leads saved before T9a and on
+    # postings without one.
     company_domain: Optional[str] = None
     company_domain_source: Optional[str] = None
+    # The posting's id at its provider (JSearch `job_id`); None on other
+    # sources and on leads saved before RF15. Not part of the fingerprint.
+    source_job_id: Optional[str] = None
     # Firestore stores createdAt/updatedAt (FirestoreRepo.create). Accept both
     # spellings on input only: the JSON key stays created_at/updated_at.
     created_at: Optional[datetime] = Field(None, validation_alias=AliasChoices("created_at", "createdAt"))
