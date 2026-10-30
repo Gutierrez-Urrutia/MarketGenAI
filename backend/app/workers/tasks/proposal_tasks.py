@@ -76,6 +76,8 @@ def _format_proposal_line_items(line_items: list[dict] | None, total_amount: flo
 
 # ── Estructura de propuesta BPO (RF-VTA-01) ───────────────────────────────────
 PRICING_MARKER = "[[PRICING_TABLE]]"
+# Condiciones comerciales de la plantilla (RF-VTA-07): se insertan tal cual, el LLM no las redacta.
+COMMERCIAL_TERMS_MARKER = "[[COMMERCIAL_TERMS]]"
 
 # Encabezados por idioma, en el orden de la propuesta. El renderizador del frontend y los
 # exportadores del backend leen los <h2> tal cual, así que no dependen de nombres fijos.
@@ -184,18 +186,36 @@ def _strip_code_fences(content: str) -> str:
     return re.sub(r"\s*```$", "", content).strip()
 
 
-def inject_pricing_table(content: str, table_html: str) -> str:
-    """Sustituye el marcador por la tabla real; si el LLM lo omitió, la inserta antes de la última sección."""
+def _inject_at_marker(content: str, marker_text: str, html: str) -> str:
+    """Sustituye el marcador por `html`; si el LLM lo omitió, lo inserta antes de la última sección."""
     marker = re.compile(
-        r"<p>\s*" + re.escape(PRICING_MARKER) + r"\s*</p>|" + re.escape(PRICING_MARKER), re.IGNORECASE
+        r"<p>\s*" + re.escape(marker_text) + r"\s*</p>|" + re.escape(marker_text), re.IGNORECASE
     )
     if marker.search(content):
-        return marker.sub(lambda _m: table_html, content, count=1)
+        return marker.sub(lambda _m: html, content, count=1)
     h2s = list(re.finditer(r"<h2[ >]", content, flags=re.IGNORECASE))
     if len(h2s) >= 2:
         pos = h2s[-1].start()
-        return content[:pos] + table_html + "\n" + content[pos:]
-    return content + "\n" + table_html
+        return content[:pos] + html + "\n" + content[pos:]
+    return content + "\n" + html
+
+
+def commercial_terms_html(terms: str) -> str:
+    """Texto plano de la plantilla → lista HTML, una condición por línea no vacía."""
+    lines = [line.strip().lstrip("-•*").strip() for line in (terms or "").splitlines()]
+    items = "".join(f"<li>{escape(line)}</li>" for line in lines if line)
+    return f"<ul>{items}</ul>" if items else ""
+
+
+def inject_commercial_terms(content: str, terms: str) -> str:
+    """Pone las condiciones comerciales de la plantilla en la sección de precios."""
+    html = commercial_terms_html(terms)
+    return _inject_at_marker(content, COMMERCIAL_TERMS_MARKER, html) if html else content
+
+
+def inject_pricing_table(content: str, table_html: str) -> str:
+    """Sustituye el marcador por la tabla real; si el LLM lo omitió, la inserta antes de la última sección."""
+    return _inject_at_marker(content, PRICING_MARKER, table_html)
 
 
 def _length_instructions(headings: list[str]) -> dict[str, str]:
@@ -244,10 +264,16 @@ async def _generate_proposal_content(
     language: str = "es",
     custom_prompt: str | None = None,
     user_id: str | None = None,
+    template_content: str | None = None,
+    commercial_terms: str | None = None,
 ) -> dict:
-    """Call the LLM with the real proposal context and persist its response."""
+    """Call the LLM with the real proposal context and persist its response.
+
+    `template_content` / `commercial_terms` vienen de una plantilla ya aplicada (RF-VTA-07):
+    el contenido orienta al LLM y las condiciones se insertan literales en la sección de precios."""
     lang = _lang_code(language)
     headings = SECTION_HEADINGS[lang]
+    has_terms = bool(commercial_terms_html(commercial_terms or ""))
     length_instructions = _length_instructions(headings)
     pricing_context = _format_proposal_line_items(line_items, total_amount)
     rag_context, sources = await get_rag_context_and_sources(
@@ -269,12 +295,34 @@ async def _generate_proposal_content(
             f"<h2>{headings[5]}</h2>\n<ul><li>Role: headcount and responsibility</li></ul>",
             f"<h2>{headings[6]}</h2>\n<ol><li>Phase: activities and estimated weeks</li></ol>",
             f"<h2>{headings[7]}</h2>\n<p>{PRICING_MARKER}</p>\n"
-            "<ul><li>Commercial term (billing, payment, validity, adjustments, currency, taxes)</li></ul>",
+            + (
+                f"<p>{COMMERCIAL_TERMS_MARKER}</p>"
+                if has_terms
+                else "<ul><li>Commercial term (billing, payment, validity, adjustments, currency, taxes)</li></ul>"
+            ),
             f"<h2>{headings[8]}</h2>\n"
             "<ul><li>General term (confidentiality, assumptions)</li>"
             "<li>Exclusions: what the service does not include</li>"
             "<li>Termination: proposed notice period, subject to agreement</li></ul>",
         ]
+    )
+    template_block = (
+        "PROPOSAL TEMPLATE CHOSEN BY THE USER (already filled with this client's data):\n"
+        f"{template_content.strip()}\n"
+        "Use it as the base for content, points to cover, wording and tone. Keep the REQUIRED STRUCTURE below: "
+        "map the template's content into those sections instead of adding new ones. Any text still written "
+        "as {name} is a value nobody provided: treat it as an assumption to validate, never invent it.\n"
+        if template_content and template_content.strip()
+        else ""
+    )
+    commercial_terms_rule = (
+        f"- Commercial terms: the system inserts the company's approved commercial terms. Place the exact text "
+        f"{COMMERCIAL_TERMS_MARKER} alone in its own paragraph right after {PRICING_MARKER} and do not write "
+        "commercial terms yourself anywhere in the proposal."
+        if has_terms
+        else (
+            "- Commercial terms: state the currency (USD), the billing period, and that prices exclude applicable taxes unless the data says otherwise (mark it as an assumption, writing the label in the output language). Contract duration, notice periods and payment terms taken from the historical context must be labeled as standard terms subject to agreement."
+        )
     )
     prompt = f"""
 {rag_context}
@@ -290,6 +338,7 @@ Team sizing and roles: {team_sizing or "Not provided"}
 PRIORITY STYLE AND FOCUS INSTRUCTION:
 {custom_prompt or "No additional instruction provided."}
 
+{template_block}
 LENGTH REQUIREMENT:
 {length_instructions.get(length, length_instructions["standard"])}
 
@@ -300,7 +349,7 @@ CONTENT QUALITY INSTRUCTIONS:
 - Service levels must be measurable (indicator, target, measurement method). Label every target as a proposed target to be validated against the client's baseline during the diagnostic phase; never present it as a guarantee.
 - This is a client-facing document: NEVER mention internal CRM or sales-pipeline data such as the opportunity stage, "fit score", qualification score or lead status.
 - "About" section: include only company facts present in the historical company context (years, locations, capabilities). If there are none, write one short neutral paragraph about the service capability without figures, names or certifications.
-- Commercial terms: state the currency (USD), the billing period, and that prices exclude applicable taxes unless the data says otherwise (mark it as an assumption, writing the label in the output language). Contract duration, notice periods and payment terms taken from the historical context must be labeled as standard terms subject to agreement.
+{commercial_terms_rule}
 - General conditions must always include explicit exclusions (what is NOT included) and a termination clause with a proposed notice period. Label the notice period and any legal term as "subject to agreement and legal review"; never present them as fixed or final.
 - Team: use the provided sizing and roles when given; otherwise propose a reasonable structure and label it as a proposal.
 - Team and pricing must be consistent: every role beyond the provided sizing must be explicitly described as included in the unit price, or as optional and priced separately. Never list a role as part of the service without saying how it is covered commercially.
@@ -336,6 +385,8 @@ REQUIRED STRUCTURE:
         _strip_code_fences(content),
         build_pricing_table_html(line_items, total_amount, lang),
     )
+    # Después de la tabla: si el LLM omitió el marcador, las condiciones quedan tras ella.
+    content = inject_commercial_terms(content, commercial_terms or "")
 
     output_dir = _output_dir()
     filename = f"proposal-{uuid.uuid4()}.md"
@@ -400,6 +451,8 @@ async def generate_proposal_now(
         language=language,
         custom_prompt=custom_prompt,
         user_id=options.get("userId"),
+        template_content=options.get("templateContent"),
+        commercial_terms=options.get("commercialTerms"),
     )
 
     await jobs_repo.update_progress(job_id, 80, "processing")

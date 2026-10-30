@@ -1,12 +1,13 @@
 import { Badge, Btn, Card, Field, Input, Select, TagInput } from "@/components/dashboard/ui";
-import { BotIcon, CheckIcon, DownloadIcon, FileIcon, GearIcon, KeyIcon, LayersIcon, PenIcon, PlayIcon, PlugIcon, SaveIcon, Share2Icon, ShieldIcon, SlidersIcon, TagIcon, TrashIcon, XIcon, ZapIcon } from "@/components/dashboard/icons";
+import { BotIcon, CheckIcon, FileIcon, GearIcon, KeyIcon, LayersIcon, PlayIcon, PlugIcon, SaveIcon, Share2Icon, ShieldIcon, SlidersIcon, TagIcon, TrashIcon, XIcon, ZapIcon } from "@/components/dashboard/icons";
 import { DATE_FORMAT_OPTIONS, PREF_KEYS, TIMEZONE_OPTIONS, getBrowserTimezone, getStoredPreference } from "@/utils/localStore";
 import { Footer } from "docx";
 import KnowledgeBaseTab from "@/pages/settings/KnowledgeBaseTab";
 import Modal from "@/components/ui/Modal";
 import PipelineSettingsTab from "@/pages/settings/PipelineSettingsTab";
+import ProposalTemplatesTab from "@/pages/settings/ProposalTemplatesTab";
 import { ToastStack, useToastQueue } from "@/components/dashboard/toasts";
-import api, { crmApi, settingsApi, socialApi } from "@/api/axios";
+import { crmApi, settingsApi, socialApi } from "@/api/axios";
 import { useEffect, useState } from "react";
 import { useI18n } from "@/hooks/useI18n";
 import { useLanguage } from "@/context/LanguageContext";
@@ -51,25 +52,7 @@ export function SettingsPage({ navigationState = {} }) {
   const [crmTestMessage, setCrmTestMessage] = useState("");
   const [crmSaving, setCrmSaving] = useState(false);
   const [crmActiveSaving, setCrmActiveSaving] = useState(false);
-  const [settingsTemplates, setSettingsTemplates] = useState([]);
-  const [editingTemplateId, setEditingTemplateId] = useState(null);
-  const [templateNameDraft, setTemplateNameDraft] = useState("");
-  const [templateEditorContent, setTemplateEditorContent] = useState(
-    "# Proposal for {{customer_name}}\n\n## Executive Summary\n\n## Pricing\n{{line_item_table}}\n\nTotal: {{total_amount}}\n\nDate: {{date}}"
-  );
-  const [templateSaving, setTemplateSaving] = useState(false);
-  const [templateUploading, setTemplateUploading] = useState(false);
   const { toasts, setToast, removeToast, pauseToast, resumeToast } = useToastQueue();
-
-  const loadSettingsTemplates = () => {
-    api.get("/templates", { suppressPermissionToast: true })
-      .then(({ data }) => setSettingsTemplates(data?.items || []))
-      .catch((error) => console.error(error));
-  };
-
-  useEffect(() => {
-    loadSettingsTemplates();
-  }, []);
 
   const getApiErrorMessage = (error, fallback) => {
     const detail = error?.response?.data?.detail;
@@ -81,69 +64,6 @@ export function SettingsPage({ navigationState = {} }) {
       if (firstMessage) return firstMessage;
     }
     return error?.message || fallback;
-  };
-
-  const resetTemplateEditor = () => {
-    setEditingTemplateId(null);
-    setTemplateNameDraft("");
-    setTemplateEditorContent(
-      "# Proposal for {{customer_name}}\n\n## Executive Summary\n\n## Pricing\n{{line_item_table}}\n\nTotal: {{total_amount}}\n\nDate: {{date}}"
-    );
-  };
-
-  const saveSettingsTemplate = async () => {
-    if (!templateNameDraft.trim()) {
-      setToast({ type: "error", message: t("settings.templateNameRequired") });
-      return;
-    }
-    setTemplateSaving(true);
-    try {
-      const payload = {
-        name: templateNameDraft.trim(),
-        type: "proposal",
-        content: templateEditorContent,
-      };
-      const { data } = editingTemplateId
-        ? await api.put(`/templates/${editingTemplateId}`, payload, { suppressPermissionToast: true })
-        : await api.post("/templates", payload, { suppressPermissionToast: true });
-      setSettingsTemplates((current) => {
-        if (editingTemplateId) {
-          return current.map((template) => template.id === editingTemplateId ? data : template);
-        }
-        return [data, ...current.filter((template) => template.id !== data.id)];
-      });
-      resetTemplateEditor();
-      setToast({ type: "success", message: t("settings.templateSaved") });
-    } catch (error) {
-      console.error(error);
-      setToast({ type: "error", message: getApiErrorMessage(error, t("settings.templateSaveFailed")) });
-    } finally {
-      setTemplateSaving(false);
-    }
-  };
-
-  const uploadTemplateFile = async (event) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-    setTemplateUploading(true);
-    try {
-      const formData = new FormData();
-      formData.append("file", file);
-      const { data } = await api.post("/templates/extract", formData, {
-        headers: { "Content-Type": "multipart/form-data" },
-        suppressPermissionToast: true,
-      });
-      setEditingTemplateId(null);
-      setTemplateNameDraft(data?.name || file.name.replace(/\.[^.]+$/, ""));
-      setTemplateEditorContent(data?.content || "");
-      setToast({ type: "success", message: "Template content loaded. Review it before saving." });
-    } catch (error) {
-      console.error(error);
-      setToast({ type: "error", message: getApiErrorMessage(error, "Could not read the uploaded template.") });
-    } finally {
-      setTemplateUploading(false);
-      event.target.value = "";
-    }
   };
 
   const refreshSocialStatus = async () => {
@@ -677,66 +597,7 @@ export function SettingsPage({ navigationState = {} }) {
         )}
       </>)}
 
-      {tab === "templates" && (<>
-        <SettingsSection isDark={isDark} title="Proposal Templates" IconComp={FileIcon} desc="Reusable commercial document structures with placeholders">
-          <div className="grid grid-cols-3 gap-1.5 mb-4">
-            {settingsTemplates.length === 0 && (
-              <p className="col-span-3 text-xs text-gray-400">{t("settings.noTemplatesYet")}</p>
-            )}
-            {settingsTemplates.map((template, index) => (
-              <div key={template.id} className={settingsPanelClass}>
-                <div className="flex items-center justify-between">
-                  <p className={`text-xs font-semibold ${isDark ? "text-slate-200" : "text-gray-800"}`}>{template.name}</p>
-                  <Badge label={index === 0 ? "Default" : "Draft"} color={settingsStatusBadgeColor(index === 0 ? "Default" : "Draft")} />
-                </div>
-                <p className="mt-2 text-xs text-gray-400">{template.description || "Uses customer, pricing table, ROI, timeline, and next steps sections."}</p>
-                <div className="flex gap-1 mt-3">
-                  <Btn small variant="secondary" icon={<PenIcon size={11} />} onClick={() => {
-                    setTemplateNameDraft(template.name || template.title || "");
-                    setTemplateEditorContent(template.content || "");
-                    setEditingTemplateId(template.id);
-                  }}>Edit</Btn>
-                  <Btn small variant="secondary" icon={<DownloadIcon size={11} />} onClick={() => {
-                    const blob = new Blob([template.content || ""], { type: "text/plain" });
-                    const url = URL.createObjectURL(blob);
-                    const a = document.createElement("a");
-                    a.href = url;
-                    a.download = `${template.name || template.title || "template"}.txt`;
-                    a.click();
-                    URL.revokeObjectURL(url);
-                  }}>Export</Btn>
-                </div>
-              </div>
-            ))}
-          </div>
-          <div className="grid grid-cols-2 gap-1.5">
-            <Field label="Upload template">
-              <Input
-                className={settingsControlClass}
-                type="file"
-                accept=".txt,.md,.html,.htm,.docx,.pdf"
-                onChange={uploadTemplateFile}
-                disabled={templateUploading}
-              />
-            </Field>
-            <Field label="Create proposal template"><Input className={settingsControlClass} placeholder="Template name" value={templateNameDraft} onChange={(event) => setTemplateNameDraft(event.target.value)} /></Field>
-          </div>
-          <Field label="Template editor placeholders">
-            <div className="flex flex-wrap gap-1 mb-1">
-              {["{{customer_name}}", "{{total_amount}}", "{{line_item_table}}", "{{date}}"].map((token) => <span key={token} className={`rounded border px-2 py-1 text-xs font-medium ${isDark ? "bg-slate-900 text-slate-200 border-white/10" : "bg-indigo-50 text-indigo-700 border-transparent"}`}>{token}</span>)}
-            </div>
-            <textarea className={`${settingsControlClass} min-h-36`} value={templateEditorContent} onChange={(event) => setTemplateEditorContent(event.target.value)} />
-          </Field>
-          <div className="flex items-center justify-between gap-2">
-            {editingTemplateId ? (
-              <Btn variant="secondary" icon={<XIcon size={13} />} onClick={resetTemplateEditor} disabled={templateSaving}>New Template</Btn>
-            ) : <span />}
-            <Btn icon={<SaveIcon size={13} />} onClick={saveSettingsTemplate} disabled={templateSaving}>
-              {editingTemplateId ? "Update Template" : "Save Template"}
-            </Btn>
-          </div>
-        </SettingsSection>
-      </>)}
+      {tab === "templates" && <ProposalTemplatesTab isDark={isDark} />}
 
       {tab === "integrations" && (<>
         <SettingsSection isDark={isDark} title="CRM Integration" IconComp={PlugIcon} desc="Connect proposal upload and opportunity sync">
