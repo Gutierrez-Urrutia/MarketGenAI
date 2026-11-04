@@ -2,13 +2,18 @@
  * LeadList — Agente 1 output (Fase 2). Lists leads found by the last
  * scan(s) and lets the user trigger a new scan manually. Mounted by
  * Dashboard.jsx as the "leads" top-level page.
+ *
+ * RF15: each row can expand into LeadContactsPanel (contact search of that
+ * lead). Only one contact search runs at a time on the whole screen — each
+ * one may spend Hunter credits — so the lock lives here.
  */
-import { useEffect, useRef, useState } from "react";
+import { Fragment, forwardRef, useEffect, useLayoutEffect, useRef, useState } from "react";
 import toast from "react-hot-toast";
-import { Radar, Loader2, RefreshCw, ArrowUp, ArrowDown } from "lucide-react";
+import { Radar, Loader2, RefreshCw, ArrowUp, ArrowDown, ChevronDown, ChevronRight } from "lucide-react";
 
 import { leadsApi, pipelineApi } from "@/api/axios";
 import { useI18n } from "@/hooks/useI18n";
+import LeadContactsPanel from "./LeadContactsPanel";
 
 const STATUS_OPTIONS = [
   "new", "researching", "contacts_found", "composing", "ready_for_review",
@@ -131,9 +136,10 @@ function getApiErrorMessage(error, fallback) {
   return error?.message || fallback;
 }
 
-const Card = ({ children, className = "" }) => (
-  <div className={`bg-white rounded-2xl border border-gray-100 shadow-sm ${className}`}>{children}</div>
-);
+const Card = forwardRef(({ children, className = "" }, ref) => (
+  <div ref={ref} className={`bg-white rounded-2xl border border-gray-100 shadow-sm ${className}`}>{children}</div>
+));
+Card.displayName = "Card";
 
 const ScoreBadge = ({ score }) => {
   const pct = Math.round((score ?? 0) * 100);
@@ -143,8 +149,68 @@ const ScoreBadge = ({ score }) => {
   return <span className={`px-2 py-0.5 rounded-full text-xs font-semibold ${color}`}>{pct}%</span>;
 };
 
-export default function LeadList() {
+// Width of the table's scroll container, so the expanded panel (a sticky,
+// full-row cell) is never wider than what is visible: on a phone the table
+// may scroll sideways, the panel does not. null until measured (jsdom).
+function useVisibleWidth(ref) {
+  const [width, setWidth] = useState(null);
+  useLayoutEffect(() => {
+    const element = ref.current;
+    if (!element) return undefined;
+    const measure = () => setWidth(element.clientWidth || null);
+    measure();
+    if (typeof ResizeObserver === "function") {
+      const observer = new ResizeObserver(measure);
+      observer.observe(element);
+      return () => observer.disconnect();
+    }
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, [ref]);
+  return width;
+}
+
+const COLUMN_COUNT = SORT_COLUMNS.length + 2; // "#" + sortable columns + contacts
+
+export default function LeadList({ onNavigate } = {}) {
   const { t } = useI18n();
+  const [expandedLeadId, setExpandedLeadId] = useState(null);
+  const [searchingLeadId, setSearchingLeadId] = useState(null);
+  const searchingLeadRef = useRef(null);
+  const tableBoxRef = useRef(null);
+  const visibleWidth = useVisibleWidth(tableBoxRef);
+
+  // The ref is checked and set before any await, so two clicks in the same
+  // tick (or on two rows) can never both start a search.
+  const searchLock = {
+    activeLeadId: searchingLeadId,
+    tryAcquire: (leadId) => {
+      if (searchingLeadRef.current !== null) return false;
+      searchingLeadRef.current = leadId;
+      setSearchingLeadId(leadId);
+      return true;
+    },
+    release: (leadId) => {
+      if (searchingLeadRef.current !== leadId) return;
+      searchingLeadRef.current = null;
+      setSearchingLeadId(null);
+    },
+  };
+
+  // After a search or a refresh: patch the row at once, then replace it with
+  // the lead as the server has it. The rest of the table and its page stay.
+  const handleLeadChanged = async (leadId, patch) => {
+    if (patch) {
+      setLeads((current) => current.map((lead) => (lead.id === leadId ? { ...lead, ...patch } : lead)));
+    }
+    try {
+      const { data } = await leadsApi.get(leadId);
+      if (data?.id === leadId) setLeads((current) => current.map((lead) => (lead.id === leadId ? data : lead)));
+    } catch {
+      // Best effort: the patch above already shows the result.
+    }
+  };
+
   const [leads, setLeads] = useState([]);
   const [loading, setLoading] = useState(true);
   const [scanning, setScanning] = useState(false);
@@ -352,7 +418,7 @@ export default function LeadList() {
         </div>
       </Card>
 
-      <Card className="overflow-x-auto">
+      <Card className="overflow-x-auto" ref={tableBoxRef}>
         {loading ? (
           <div className="p-8 text-center text-gray-400 text-sm">{t("common.loading")}</div>
         ) : loadError ? (
@@ -399,11 +465,16 @@ export default function LeadList() {
                     </th>
                   );
                 })}
+                <th className="px-4 py-3">{t("leads.contacts.column")}</th>
               </tr>
             </thead>
             <tbody>
-              {pageLeads.map((lead, i) => (
-                <tr key={lead.id} className="border-b border-gray-50 hover:bg-gray-50">
+              {pageLeads.map((lead, i) => {
+                const expanded = expandedLeadId === lead.id;
+                const panelId = `lead-contacts-${lead.id}`;
+                return (
+                <Fragment key={lead.id}>
+                <tr className="border-b border-gray-50 hover:bg-gray-50">
                   <td className="px-4 py-3 text-right text-xs text-gray-400 tabular-nums">{firstIndex + i + 1}</td>
                   <td className="px-4 py-3 font-medium text-gray-900">
                     {isSafeHttpUrl(lead.job_url) ? (
@@ -420,8 +491,36 @@ export default function LeadList() {
                   <td className="px-4 py-3"><ScoreBadge score={lead.relevance_score} /></td>
                   <td className="px-4 py-3 text-gray-600">{t(`leads.status.${lead.status}`)}</td>
                   <FoundAtCell value={lead.created_at} />
+                  <td className="px-4 py-3">
+                    <button
+                      type="button"
+                      aria-expanded={expanded}
+                      aria-controls={panelId}
+                      onClick={() => setExpandedLeadId(expanded ? null : lead.id)}
+                      className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 whitespace-nowrap focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
+                    >
+                      {expanded ? <ChevronDown size={12} aria-hidden="true" /> : <ChevronRight size={12} aria-hidden="true" />}
+                      {t(expanded ? "leads.contacts.hide" : "leads.contacts.show")}
+                    </button>
+                  </td>
                 </tr>
-              ))}
+                {expanded && (
+                  <tr id={panelId}>
+                    <td colSpan={COLUMN_COUNT} className="p-0">
+                      <div className="sticky left-0" style={visibleWidth ? { width: visibleWidth } : undefined}>
+                        <LeadContactsPanel
+                          lead={lead}
+                          searchLock={searchLock}
+                          onLeadChanged={handleLeadChanged}
+                          onNavigate={onNavigate}
+                        />
+                      </div>
+                    </td>
+                  </tr>
+                )}
+                </Fragment>
+                );
+              })}
             </tbody>
           </table>
         )}

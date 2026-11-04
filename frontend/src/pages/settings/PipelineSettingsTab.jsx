@@ -8,7 +8,7 @@ import { useEffect, useState } from "react";
 import toast from "react-hot-toast";
 import {
   Radar, Search, Globe, Mail, Code, Rss, Plug, Briefcase,
-  Pencil, Trash2, Plus, Save, Zap, Loader2,
+  Pencil, Trash2, Plus, Save, Zap, Loader2, KeyRound, Undo2,
 } from "lucide-react";
 
 import { pipelineApi } from "@/api/axios";
@@ -175,6 +175,12 @@ export default function PipelineSettingsTab({ isDark = false }) {
   const [smtp, setSmtp] = useState(DEFAULT_SMTP);
   const [smtpPasswordConfigured, setSmtpPasswordConfigured] = useState(false);
   const [smtpPasswordInput, setSmtpPasswordInput] = useState("");
+  // Hunter API key (RF15): write-only like smtp_password. The field always
+  // starts empty — the API never returns the key, only whether one is set.
+  // "Borrar clave" only marks it; "" is sent when the user presses Save.
+  const [hunterKeyConfigured, setHunterKeyConfigured] = useState(false);
+  const [hunterKeyInput, setHunterKeyInput] = useState("");
+  const [hunterKeyClearPending, setHunterKeyClearPending] = useState(false);
   const [thresholds, setThresholds] = useState(DEFAULT_THRESHOLDS);
   const [sourceFormOpen, setSourceFormOpen] = useState(false);
   const [sourceForm, setSourceForm] = useState({ id: null, name: "", source_type: "rss", config: {} });
@@ -197,6 +203,9 @@ export default function PipelineSettingsTab({ isDark = false }) {
       });
       setSmtpPasswordConfigured(Boolean(data?.smtp_password_configured));
       setSmtpPasswordInput("");
+      setHunterKeyConfigured(Boolean(data?.hunter_api_key_configured));
+      setHunterKeyInput("");
+      setHunterKeyClearPending(false);
       setThresholds({
         auto_send_threshold: data?.auto_send_threshold ?? 0.8,
         max_emails_per_day: data?.max_emails_per_day ?? 50,
@@ -247,6 +256,13 @@ export default function PipelineSettingsTab({ isDark = false }) {
       if (smtpPasswordInput.trim()) {
         payload.smtp_password = smtpPasswordInput;
       }
+      // The Hunter key is sent only when the user typed one (trimmed) or asked
+      // to clear it (""); otherwise it is left out and the stored one stays.
+      if (hunterKeyInput.trim()) {
+        payload.hunter_api_key = hunterKeyInput.trim();
+      } else if (hunterKeyClearPending) {
+        payload.hunter_api_key = "";
+      }
       const { data } = await pipelineApi.updateConfig(payload);
       setSmtp({
         smtp_host: data?.smtp_host || "",
@@ -257,10 +273,15 @@ export default function PipelineSettingsTab({ isDark = false }) {
       });
       setSmtpPasswordConfigured(Boolean(data?.smtp_password_configured));
       setSmtpPasswordInput("");
+      setHunterKeyConfigured(Boolean(data?.hunter_api_key_configured));
+      setHunterKeyInput("");
+      setHunterKeyClearPending(false);
       toast.success(t("settings.pipelineTab.toastSaved"));
     } catch (error) {
-      console.error(error);
-      toast.error(getApiErrorMessage(error, t("settings.pipelineTab.toastSaveError")));
+      // Not logged: the request carried smtp_password / hunter_api_key.
+      toast.error(error?.response?.status === 503
+        ? t("settings.pipelineTab.toastEncryptionUnavailable")
+        : getApiErrorMessage(error, t("settings.pipelineTab.toastSaveError")));
     } finally {
       setSaving(false);
     }
@@ -482,6 +503,49 @@ export default function PipelineSettingsTab({ isDark = false }) {
               <Field label={t("settings.pipelineTab.senderEmailLabel")}><Input value={smtp.sender_email} onChange={(event) => setSmtp((s) => ({ ...s, sender_email: event.target.value }))} placeholder="sales@noondalton.com" /></Field>
               <Field label={t("settings.pipelineTab.senderNameLabel")}><Input value={smtp.sender_name} onChange={(event) => setSmtp((s) => ({ ...s, sender_name: event.target.value }))} placeholder="NoonDalton Sales" /></Field>
             </div>
+          </SettingsSection>
+
+          <SettingsSection
+            isDark={isDark}
+            title={t("settings.pipelineTab.hunterTitle")}
+            IconComp={KeyRound}
+            desc={t("settings.pipelineTab.hunterDesc")}
+            badge={(
+              <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${hunterKeyConfigured ? "bg-emerald-100 text-emerald-800" : "bg-gray-100 text-gray-600"}`}>
+                {t(hunterKeyConfigured ? "settings.pipelineTab.hunterStatusConfigured" : "settings.pipelineTab.hunterStatusNotConfigured")}
+              </span>
+            )}
+          >
+            <Field
+              label={t("settings.pipelineTab.hunterKeyLabel")}
+              hint={t(hunterKeyConfigured ? "settings.pipelineTab.hunterConfiguredHint" : "settings.pipelineTab.hunterNotConfiguredHint")}
+            >
+              <Input
+                type="password"
+                aria-label={t("settings.pipelineTab.hunterKeyLabel")}
+                value={hunterKeyInput}
+                onChange={(event) => {
+                  setHunterKeyInput(event.target.value);
+                  if (event.target.value.trim()) setHunterKeyClearPending(false); // a new key replaces "clear"
+                }}
+                placeholder={hunterKeyConfigured ? "••••••••" : t("settings.pipelineTab.hunterKeyPlaceholder")}
+                autoComplete="new-password"
+                spellCheck={false}
+              />
+            </Field>
+            {hunterKeyConfigured && !hunterKeyClearPending && !hunterKeyInput.trim() && (
+              <Btn variant="secondary" small icon={<Trash2 size={12} />} onClick={() => setHunterKeyClearPending(true)}>
+                {t("settings.pipelineTab.hunterClear")}
+              </Btn>
+            )}
+            {hunterKeyClearPending && (
+              <div role="status" className="flex flex-wrap items-center gap-1.5 text-xs text-amber-800">
+                <span>{t("settings.pipelineTab.hunterClearPending")}</span>
+                <Btn variant="secondary" small icon={<Undo2 size={12} />} onClick={() => setHunterKeyClearPending(false)}>
+                  {t("settings.pipelineTab.hunterUndoClear")}
+                </Btn>
+              </div>
+            )}
           </SettingsSection>
 
           <SettingsSection isDark={isDark} title={t("settings.pipelineTab.thresholdsTitle")} IconComp={Zap} desc={t("settings.pipelineTab.thresholdsDesc")}>

@@ -21,6 +21,17 @@ export const AUTH_REFRESH_TIMEOUT_MS = 30_000
 // backend RUN_CONSIDERED_DEAD_AFTER_SECONDS: the client never gives up on a
 // scan the server still considers alive.
 export const SCAN_REQUEST_TIMEOUT_MS = 360_000
+// POST /leads/{id}/contacts/search waits for Hunter inside the request (backend
+// CONTACT_SEARCH_TIME_BUDGET_SECONDS = 45 s). 90 s leaves margin for the network
+// and the backend's own close-out; only that call uses it.
+export const CONTACT_SEARCH_TIMEOUT_MS = 90_000
+
+// Requests marked `logBody: false` are logged without their request or
+// response body (method, URL, status and duration only): contacts carry names
+// and email addresses, and the pipeline config carries secrets (smtp_password,
+// hunter_api_key). Every other request is logged as before.
+const NO_BODY_LOG = { logBody: false }
+const logsBody = (config) => config?.logBody !== false
 
 const emitMarketgenEvent = (name) => {
   if (typeof window !== 'undefined') {
@@ -194,7 +205,7 @@ api.interceptors.request.use(async (config) => {
   if (token) {
     config.headers.Authorization = `Bearer ${token}`
   }
-  console.log(`📡 [API ->] ${config.method?.toUpperCase()} ${config.url}`, config.data || '')
+  console.log(`📡 [API ->] ${config.method?.toUpperCase()} ${config.url}`, logsBody(config) ? (config.data || '') : '')
   config._startTime = Date.now()
   return config
 })
@@ -202,12 +213,12 @@ api.interceptors.request.use(async (config) => {
 api.interceptors.response.use(
   (response) => {
     const duration = response.config._startTime ? `${Date.now() - response.config._startTime}ms` : ''
-    console.log(`✅ [API <-] ${response.status} ${response.config.method?.toUpperCase()} ${response.config.url} (${duration})`, response.data)
+    console.log(`✅ [API <-] ${response.status} ${response.config.method?.toUpperCase()} ${response.config.url} (${duration})`, logsBody(response.config) ? response.data : '')
     return response
   },
   async (error) => {
     const duration = error.config?._startTime ? `${Date.now() - error.config._startTime}ms` : ''
-    console.error(`❌ [API Error] ${error.config?.method?.toUpperCase()} ${error.config?.url} (${duration}) - Status: ${error.response?.status || 'TIMEOUT/NETWORK_ERR'}:`, error.response?.data || error.message)
+    console.error(`❌ [API Error] ${error.config?.method?.toUpperCase()} ${error.config?.url} (${duration}) - Status: ${error.response?.status || 'TIMEOUT/NETWORK_ERR'}:`, logsBody(error.config) ? (error.response?.data || error.message) : (error.code || ''))
     const status = error.response?.status
     const originalRequest = error.config
 
@@ -499,7 +510,8 @@ export const analysisApi = {
 
 export const pipelineApi = {
   getConfig: () => api.get('/pipeline/config'),
-  updateConfig: (data) => api.put('/pipeline/config', data),
+  // smtp_password / hunter_api_key travel in this body: never logged.
+  updateConfig: (data) => api.put('/pipeline/config', data, NO_BODY_LOG),
   updateKeywords: (data) => api.put('/pipeline/config/keywords', data),
   createSource: (data) => api.post('/pipeline/config/sources', data),
   updateSource: (id, data) => api.put(`/pipeline/config/sources/${id}`, data),
@@ -515,6 +527,25 @@ export const pipelineApi = {
 export const leadsApi = {
   list: (params) => api.get('/leads', { params, timeout: READ_TIMEOUT_MS }),
   get: (id) => api.get(`/leads/${id}`, { timeout: READ_TIMEOUT_MS }),
+  // RF15 — contacts of one lead (names and addresses: bodies never logged).
+  // `force` is sent only when the user explicitly asks for a new Hunter search.
+  searchContacts: (id, { force = false } = {}) => api.post(
+    `/leads/${id}/contacts/search`,
+    force ? { force: true } : undefined,
+    { ...NO_BODY_LOG, timeout: CONTACT_SEARCH_TIMEOUT_MS, suppressPermissionToast: true, suppressServerErrorToast: true },
+  ),
+  listContacts: (id, { includeRejected = false } = {}) => api.get(`/leads/${id}/contacts`, {
+    ...NO_BODY_LOG,
+    params: includeRejected ? { include_rejected: true } : undefined,
+    timeout: READ_TIMEOUT_MS,
+    suppressPermissionToast: true,
+    suppressServerErrorToast: true,
+  }),
+  reviewContact: (id, contactId, decision) => api.patch(
+    `/leads/${id}/contacts/${contactId}/review`,
+    { decision },
+    { ...NO_BODY_LOG, timeout: READ_TIMEOUT_MS, suppressPermissionToast: true, suppressServerErrorToast: true },
+  ),
 }
 
 export const publishingApi = {
