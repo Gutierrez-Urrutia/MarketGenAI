@@ -642,3 +642,31 @@ class TestPropuestaAntiguaSinMoneda:
         assert resp.status_code == 201
         assert gen.await_args.kwargs["currency"] == "USD"
         assert upd.await_args_list[-1].args[1]["currency"] == "USD"
+
+
+class TestPA17:
+    async def test_RF02_PA_17_generar_no_lee_el_catalogo_y_usa_la_copia_enviada(self, client):
+        """La propuesta guarda una copia: aunque el catálogo cambie o falle, el precio emitido es el enviado."""
+        from tests.conftest import fake_job
+        saved = {"id": "p1", "userId": "test-user-sub-123", "title": "T", "status": "generated"}
+        boom = AsyncMock(side_effect=AssertionError("generar no debe leer el catálogo"))
+        with (
+            patch("app.workers.tasks.proposal_tasks._generate_proposal_content", new_callable=AsyncMock,
+                  return_value={"content": "<p>x</p>", "downloadUrl": "x", "filePath": "x"}) as gen,
+            patch(f"{SVC}.get", boom), patch(f"{SVC}.list", boom),
+            patch("app.routers.proposals.proposals_repo.create", new_callable=AsyncMock, return_value=saved),
+            patch("app.routers.proposals.jobs_repo.create_job", new_callable=AsyncMock, return_value=fake_job()),
+            patch("app.workers.tasks.proposal_tasks.jobs_repo.update_progress", new_callable=AsyncMock),
+            patch("app.workers.tasks.proposal_tasks.jobs_repo.complete_job", new_callable=AsyncMock),
+            patch("app.workers.tasks.proposal_tasks.proposals_repo.update", new_callable=AsyncMock, return_value=saved),
+        ):
+            resp = await client.post(f"{PROPOSALS}/generate-draft", json={
+                "title": "T", "sync": True, "currency": "CLP",
+                "lineItems": [{"service": "Soporte", "quantity": 2, "unitPrice": 18000, "currency": "CLP",
+                               "serviceId": "s2", "unit": "hora", "conditions": "Mínimo 40 horas"}],
+            })
+        assert resp.status_code == 201
+        line = gen.await_args.kwargs["line_items"][0]
+        assert line["unitPrice"] == 18000 and line["serviceId"] == "s2" and line["conditions"] == "Mínimo 40 horas"
+        assert gen.await_args.kwargs["currency"] == "CLP"
+        boom.assert_not_called()
