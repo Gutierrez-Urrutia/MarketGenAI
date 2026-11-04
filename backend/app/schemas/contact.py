@@ -9,6 +9,8 @@ from urllib.parse import urlparse
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
+from app.schemas.lead import ContactsSearchState, LeadStatus
+
 
 class ContactRole(str, Enum):
     HIRING_MANAGER = "hiring_manager"
@@ -20,6 +22,20 @@ class ContactRole(str, Enum):
 
 
 EmailType = Literal["personal", "generic"]
+
+
+class ReviewStatus(str, Enum):
+    """Whether the user must look at a contact before it is used (RF15).
+    pending: adjusted confidence below CONTACT_REVIEW_CONFIDENCE_THRESHOLD.
+    A rejection is per lead and reversible (rejected → approved); while
+    rejected, a contact is not offered again for that lead nor copied to
+    another lead. A global "do not contact" list is a future improvement
+    (Agente 3 / RF-VTA-16, at send time), not part of this phase."""
+
+    NOT_REQUIRED = "not_required"
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
 
 
 def http_url_or_none(value: Optional[str]) -> Optional[str]:
@@ -149,7 +165,54 @@ class Contact(BaseModel):
     source_last_seen_at: Optional[datetime] = None
     provider_confidence_score: Optional[float] = Field(None, ge=0.0, le=1.0)
     email_verification_source: Optional[str] = None
+    # Review and origin (RF15, Fase 5). Contacts saved before it have none:
+    # they read as not_required, unranked, not copied.
+    review_status: ReviewStatus = ReviewStatus.NOT_REQUIRED
+    reviewed_at: Optional[datetime] = None
+    rank: Optional[int] = None  # 1..RANK_TOP_N in the last search; None once out of the top
+    search_id: Optional[str] = None
+    reused_from_lead_id: Optional[str] = None
+    reused_from_contact_id: Optional[str] = None
     # Firestore stores createdAt/updatedAt (FirestoreRepo.create). Accept both
     # spellings on input only: the JSON key stays created_at/updated_at.
     created_at: Optional[datetime] = Field(None, validation_alias=AliasChoices("created_at", "createdAt"))
     updated_at: Optional[datetime] = Field(None, validation_alias=AliasChoices("updated_at", "updatedAt"))
+
+    @field_validator("review_status", mode="before")
+    @classmethod
+    def _missing_review_status(cls, value):
+        return ReviewStatus.NOT_REQUIRED if value is None else value
+
+
+class ContactListResponse(BaseModel):
+    items: List[Contact]
+    total: int
+
+
+class ContactSearchRequest(BaseModel):
+    # True repeats the search even within the cooldown, and searches Hunter
+    # instead of reusing another lead's contacts.
+    force: bool = False
+
+
+class ContactReviewRequest(BaseModel):
+    decision: Literal["approved", "rejected"]
+
+
+class ContactSearchResponse(BaseModel):
+    """Result of POST /leads/{id}/contacts/search. `reason` is a code, never
+    free text. credits_remaining is Hunter's balance after the search when it
+    is known (None otherwise)."""
+
+    lead_id: str
+    search_id: str
+    state: ContactsSearchState
+    reason: Optional[str] = None
+    lead_status: LeadStatus
+    contacts: List[Contact]
+    credits_used: float = 0.0
+    credits_remaining: Optional[float] = None
+    reused: bool = False
+    reused_from_lead_id: Optional[str] = None
+    searched_at: datetime
+    next_search_allowed_at: Optional[datetime] = None

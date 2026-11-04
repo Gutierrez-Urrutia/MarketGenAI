@@ -37,6 +37,12 @@ from google.cloud.firestore_v1.async_client import AsyncClient
 from google.cloud.firestore_v1 import AsyncDocumentReference
 
 from app.config import settings
+from app.core.pipeline_constants import (
+    CONTACT_REUSE_MAX_CANDIDATES,
+    CONTACT_SEARCH_CONSIDERED_DEAD_AFTER_SECONDS,
+    CONTACT_SEARCH_COOLDOWN_SECONDS,
+    CONTACT_SEARCH_SEARCHABLE_STATUSES,
+)
 from app.schemas.contact import ContactCreate
 from app.schemas.proposal import (
     PROPOSAL_STATUS_VALUES,
@@ -559,8 +565,121 @@ class PipelineConfigsRepo(FirestoreRepo):
         return await self.create({**data, "userId": user_id}, doc_id=user_id)
 
 
+def _as_utc(value: Any) -> Optional[datetime]:
+    """A stored timestamp as an aware UTC datetime (naive → UTC); None otherwise."""
+    if not isinstance(value, datetime):
+        return None
+    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+
 class LeadsRepo(FirestoreRepo):
+    """Leads. The contact search of a lead (RF15, Fase 5) is guarded by the
+    lead document itself: the search starts inside a Firestore transaction
+    that reads and writes `contacts_search`, so two simultaneous clicks are
+    serialized and exactly one starts. A search only closes itself if its
+    `search_id` is still the lead's (a dead search taken over must not
+    overwrite the newer one when it finishes late)."""
+
     collection = "leads"
+
+    # States after which a new search waits for the cooldown (they may have
+    # spent a credit). Errors and "no domain" are not cooled down.
+    COOLDOWN_STATES = ("contacts_found", "no_contacts")
+
+    @staticmethod
+    def plan_contacts_search_start(
+        lead: Optional[Dict[str, Any]], user_id: str, now: datetime, force: bool,
+    ) -> Dict[str, Any]:
+        """Whether a contact search may start on `lead` now. Pure. Returns
+        {"started": bool, "code": None | "lead_not_found" | "forbidden" |
+        "search_in_progress" | "lead_not_searchable" | "cooldown",
+        "next_search_allowed_at": datetime|None, "stale_search_id": str|None}."""
+        def refuse(code: str, **extra: Any) -> Dict[str, Any]:
+            return {"started": False, "code": code, "next_search_allowed_at": None, "stale_search_id": None, **extra}
+
+        if lead is None:
+            return refuse("lead_not_found")
+        if lead.get("user_id") != user_id:
+            return refuse("forbidden")
+        search = lead.get("contacts_search") or {}
+        running = search.get("state") == "running"
+        started_at = _as_utc(search.get("started_at"))
+        dead_after = timedelta(seconds=CONTACT_SEARCH_CONSIDERED_DEAD_AFTER_SECONDS)
+        if running and started_at is not None and now - started_at < dead_after:
+            return refuse("search_in_progress")
+        if (lead.get("status") or "new") not in CONTACT_SEARCH_SEARCHABLE_STATUSES:
+            return refuse("lead_not_searchable")
+        searched_at = _as_utc(search.get("searched_at"))
+        if not force and search.get("state") in LeadsRepo.COOLDOWN_STATES and searched_at is not None:
+            next_allowed = searched_at + timedelta(seconds=CONTACT_SEARCH_COOLDOWN_SECONDS)
+            if now < next_allowed:
+                return refuse("cooldown", next_search_allowed_at=next_allowed)
+        return {
+            "started": True,
+            "code": None,
+            "next_search_allowed_at": None,
+            "stale_search_id": search.get("search_id") if running else None,
+        }
+
+    @staticmethod
+    def contacts_search_start_fields(search_id: str, now: datetime, force: bool) -> Dict[str, Any]:
+        return {
+            "status": "researching",
+            "contacts_search": {"state": "running", "search_id": search_id, "started_at": now, "forced": force},
+            "updatedAt": now,
+        }
+
+    @staticmethod
+    def can_finish_contacts_search(lead: Optional[Dict[str, Any]], search_id: str) -> bool:
+        """True while `search_id` is still the lead's running search."""
+        search = (lead or {}).get("contacts_search") or {}
+        return search.get("state") == "running" and search.get("search_id") == search_id
+
+    async def try_start_contacts_search(
+        self, lead_id: str, user_id: str, search_id: str, force: bool, now: datetime,
+    ) -> Dict[str, Any]:
+        """Atomically mark the lead `researching` with a running search, or
+        refuse (see plan_contacts_search_start)."""
+        ref = self._doc(lead_id)
+        transaction = self.db.transaction()
+
+        @firestore.async_transactional
+        async def _txn(txn):
+            snap = await ref.get(transaction=txn)
+            lead = snap.to_dict() if snap.exists else None
+            plan = self.plan_contacts_search_start(lead, user_id, now, force)
+            if plan["started"]:
+                txn.update(ref, self.contacts_search_start_fields(search_id, now, force))
+            return plan
+
+        return await _txn(transaction)
+
+    async def finish_contacts_search(
+        self, lead_id: str, search_id: str, status: str, contacts_search: Dict[str, Any], now: datetime,
+    ) -> bool:
+        """Write the search result and the lead status, only if `search_id`
+        is still the lead's running search. Returns whether it wrote."""
+        ref = self._doc(lead_id)
+        transaction = self.db.transaction()
+
+        @firestore.async_transactional
+        async def _txn(txn):
+            snap = await ref.get(transaction=txn)
+            lead = snap.to_dict() if snap.exists else None
+            if not self.can_finish_contacts_search(lead, search_id):
+                return False
+            txn.update(ref, {"status": status, "contacts_search": contacts_search, "updatedAt": now})
+            return True
+
+        return await _txn(transaction)
+
+    async def list_by_contacts_domain(self, user_id: str, domain: str) -> List[Dict[str, Any]]:
+        """The user's leads whose last contact search used `domain`
+        (equality on user_id and the nested contacts_search.domain)."""
+        return await self.list(
+            filters=[("user_id", "==", user_id), ("contacts_search.domain", "==", domain)],
+            limit=CONTACT_REUSE_MAX_CANDIDATES,
+        )
 
 
 class ContactsRepo(FirestoreRepo):
@@ -576,15 +695,18 @@ class ContactsRepo(FirestoreRepo):
             limit=limit,
         )
 
-    async def create_for_lead(self, lead_id: str, user_id: str, contact: ContactCreate) -> Dict[str, Any]:
+    async def create_for_lead(
+        self, lead_id: str, user_id: str, contact: ContactCreate, extra: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         """Persist a contact under `lead_id` for `user_id`. Both ids come from
         the caller (session / researched lead) and are written last, so nothing
         in the contact payload can override them.
 
         The caller must verify beforehand that `lead_id` belongs to `user_id`;
-        this method does not check it."""
+        this method does not check it. `extra` (review status, rank, origin)
+        is written over the contact fields but under the two ids."""
         data = contact.model_dump(mode="json")
-        return await self.create({**data, "lead_id": lead_id, "user_id": user_id})
+        return await self.create({**data, **(extra or {}), "lead_id": lead_id, "user_id": user_id})
 
 
 class OutreachEmailsRepo(FirestoreRepo):

@@ -282,12 +282,25 @@ class HunterProvider(BaseProvider):
     def __init__(self, api_key: str):
         self._api_key = (api_key or "").strip()
         self._credits: Optional[float] = None
+        self._spent = 0.0
         self._credits_checked = False
         self._auth_failed = False
         self._credits_lock = asyncio.Lock()
 
     def __repr__(self) -> str:
         return "HunterProvider()"
+
+    @property
+    def credits_spent(self) -> float:
+        """Credits this instance has counted as spent (1 per search that
+        found something, 0.5 per verification attempted)."""
+        return self._spent
+
+    @property
+    def credits_remaining(self) -> Optional[float]:
+        """The balance counted down from /account; None when it was never
+        read or could not be read."""
+        return self._credits
 
     async def search(self, company: str, job_context: str, *, domain: Optional[str] = None) -> ProviderResult:
         if not self._api_key:
@@ -373,6 +386,7 @@ class HunterProvider(BaseProvider):
         return EmailVerification(status=status, verified_at=verified_at)
 
     def _spend(self, cost: float) -> None:
+        self._spent += cost
         if self._credits is not None:
             self._credits -= cost
 

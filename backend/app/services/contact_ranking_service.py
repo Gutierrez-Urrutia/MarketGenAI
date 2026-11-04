@@ -34,6 +34,7 @@ from __future__ import annotations
 import logging
 import re
 import unicodedata
+from datetime import datetime, timezone
 from typing import Any, FrozenSet, Iterable, List, Optional, Sequence, Tuple
 
 from pydantic import BaseModel
@@ -331,11 +332,24 @@ def rank_contacts(
     return [contact for _, contact in keyed]
 
 
+def _verified_before(verified_at: Optional[datetime], cutoff: Optional[datetime]) -> bool:
+    """True when both are set and the address was verified before `cutoff`
+    (a naive datetime is read as UTC)."""
+    if verified_at is None or cutoff is None:
+        return False
+    if verified_at.tzinfo is None:
+        verified_at = verified_at.replace(tzinfo=timezone.utc)
+    if cutoff.tzinfo is None:
+        cutoff = cutoff.replace(tzinfo=timezone.utc)
+    return verified_at < cutoff
+
+
 async def select_contacts(
     contacts: Sequence[RawContact],
     lead: LeadContext,
     company: Optional[CompanyInfo] = None,
     verifier: Any = None,
+    reverify_verified_before: Optional[datetime] = None,
 ) -> List[RawContact]:
     """The RANK_TOP_N contacts to deliver. With a verifier (an object with
     `async verify_email(email)` returning a result with status /
@@ -344,7 +358,11 @@ async def select_contacts(
     list is ranked again (an address found invalid gives its place to the
     next one). Nothing is verified when the domain, or the address, is
     accept_all: the verifier would only answer accept_all. A verification
-    that returns None or fails leaves the contact as it was."""
+    that returns None or fails leaves the contact as it was.
+
+    With `reverify_verified_before`, a top contact whose address was
+    verified before that moment is verified again even if it is "valid"
+    (reused contacts, CONTACT_REVERIFY_AFTER_DAYS), within the same cap."""
     ranked = rank_contacts(contacts, lead, company)
     top = ranked[:RANK_TOP_N]
     if verifier is None or (company is not None and company.accept_all):
@@ -352,7 +370,13 @@ async def select_contacts(
 
     to_verify = [
         contact for contact in top
-        if contact.email and verification_key(contact.email_verification_status) not in ("valid", "accept_all")
+        if contact.email and (
+            verification_key(contact.email_verification_status) not in ("valid", "accept_all")
+            or (
+                verification_key(contact.email_verification_status) == "valid"
+                and _verified_before(contact.email_verified_at, reverify_verified_before)
+            )
+        )
     ][:HUNTER_MAX_VERIFICATIONS_PER_LEAD]
 
     updated = {}

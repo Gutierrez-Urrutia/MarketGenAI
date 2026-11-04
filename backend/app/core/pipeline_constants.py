@@ -163,6 +163,34 @@ HUNTER_VERIFICATION_CREDIT_COST = 0.5
 # Addresses verified per lead (only top contacts not already "valid").
 HUNTER_MAX_VERIFICATIONS_PER_LEAD = 1
 
+# ── Agente 2 — manual contact search of one lead (RF15, Fase 5) ─────────────
+# app/services/contact_research_service.py and POST /leads/{id}/contacts/search.
+# A finished search (contacts found or none) is not repeated on the same lead
+# within this period unless the user forces it. Errors and "no domain" are
+# not cooled down: they cost no credit.
+CONTACT_SEARCH_COOLDOWN_SECONDS = 24 * 3600
+# Another lead of the same user and domain searched less than this ago lends
+# its contacts instead of a new Hunter search.
+CONTACT_REUSE_MAX_AGE_DAYS = 30
+# A reused address verified longer ago than this is verified again (within
+# HUNTER_MAX_VERIFICATIONS_PER_LEAD) before it is delivered.
+CONTACT_REVERIFY_AFTER_DAYS = 90
+# Contacts whose adjusted confidence is below this need the user's review.
+CONTACT_REVIEW_CONFIDENCE_THRESHOLD = 0.5
+# Wall-clock budget of the whole search request (account + search +
+# verification + Firestore). Worst case today is ~32 s of provider time.
+CONTACT_SEARCH_TIME_BUDGET_SECONDS = 45
+# A search still `running` this long after it started is presumed dead (the
+# process died) and no longer blocks a new search of that lead.
+CONTACT_SEARCH_CONSIDERED_DEAD_AFTER_SECONDS = 120
+# slowapi limit of POST /leads/{id}/contacts/search, per client address.
+CONTACT_SEARCH_RATE_LIMIT = "10/minute"
+# Lead statuses a search may start from ("researching" only once the running
+# search is presumed dead). Later stages (composing, sent...) are refused.
+CONTACT_SEARCH_SEARCHABLE_STATUSES = ("new", "researching", "contacts_found", "error")
+# Leads of one user and domain read when looking for a search to reuse.
+CONTACT_REUSE_MAX_CANDIDATES = 50
+
 # ── Agente 2 — contact role, ranking and confidence ─────────────────────────
 # app/services/contact_ranking_service.py. Titles and vacancy titles are
 # matched as whole words/phrases after folding accents and case. All values
