@@ -290,6 +290,7 @@ async def test_generate_draft_passes_frontend_payload_to_generator(client):
         "language": "en",
         "custom_prompt": "Emphasize outcomes over problems.",
         "user_id": FAKE_USER_SUB,
+        "currency": "USD",
     }
 
 

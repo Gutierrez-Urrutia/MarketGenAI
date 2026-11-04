@@ -518,3 +518,127 @@ class TestPA18:
                 patch(f"{TYP}.list", new_callable=AsyncMock, return_value=[]),
             ):
                 assert (await client.get(SERVICES)).status_code == 200
+
+
+# ── Propuestas: líneas con copia del servicio y moneda única (Fase 2) ─────────
+PROPOSALS = "/api/v1/proposals"
+
+
+def _line(currency=None, **extra):
+    line = {"service": "Mesa de ayuda", "quantity": 1, "unitPrice": 1500, **extra}
+    if currency:
+        line["currency"] = currency
+    return line
+
+
+class TestPA15:
+    async def test_RF02_PA_15_monedas_mezcladas_en_generate_dan_422(self, client):
+        resp = await client.post(f"{PROPOSALS}/generate-draft", json={
+            "title": "T", "lineItems": [_line("USD"), _line("CLP")], "sync": True,
+        })
+        assert resp.status_code == 422
+        assert "one currency" in str(resp.json()["detail"])
+
+    async def test_RF02_PA_15_generate_por_id_tambien_valida(self, client):
+        with patch("app.routers.proposals.proposals_repo.get", new_callable=AsyncMock,
+                   return_value={"id": "p1", "userId": "test-user-sub-123", "title": "T"}):
+            resp = await client.post(f"{PROPOSALS}/p1/generate", json={
+                "lineItems": [_line("USD"), _line("CLP")],
+            })
+        assert resp.status_code == 422
+
+    async def test_RF02_PA_15_moneda_de_la_propuesta_distinta_de_la_de_las_lineas(self, client):
+        resp = await client.post(f"{PROPOSALS}/generate-draft", json={
+            "title": "T", "currency": "USD", "lineItems": [_line("CLP")], "sync": True,
+        })
+        assert resp.status_code == 422
+
+    async def test_RF02_PA_15_crear_y_actualizar_con_lineas_mezcladas_dan_422(self, client):
+        mixed = [_line("USD"), _line("CLP")]
+        assert (await client.post(PROPOSALS, json={"title": "T", "lineItems": mixed})).status_code == 422
+        assert (await client.put(f"{PROPOSALS}/p1", json={"lineItems": mixed})).status_code == 422
+
+    async def test_RF02_PA_15_moneda_no_admitida_da_422(self, client):
+        resp = await client.post(f"{PROPOSALS}/generate-draft", json={"title": "T", "lineItems": [_line("EUR")]})
+        assert resp.status_code == 422
+
+    def test_RF02_PA_15_la_moneda_se_infiere_de_las_lineas_si_no_viene(self):
+        from app.schemas.proposal import GenerateProposalRequest
+        assert GenerateProposalRequest(lineItems=[_line("CLP")]).currency == "CLP"
+        assert GenerateProposalRequest(lineItems=[_line()]).currency == "USD"
+        assert GenerateProposalRequest().currency == "USD"
+
+
+class TestPA16:
+    def test_RF02_PA_16_total_de_dos_lineas_con_cantidades_3_y_1(self):
+        from app.workers.tasks.proposal_tasks import build_pricing_table_html, format_money
+        lines = [
+            {"name": "Soporte técnico nivel 1", "qty": 3, "unitPrice": 18000, "currency": "CLP"},
+            {"name": "Cobranza preventiva", "qty": 1, "unitPrice": 1500, "currency": "CLP"},
+        ]
+        html = build_pricing_table_html(lines, 55500, "es", "CLP")
+        assert "$54.000 CLP" in html and "$1.500 CLP" in html  # subtotales 3 x 18.000 y 1 x 1.500
+        assert format_money(3 * 18000 + 1 * 1500, "n/d", "es", "CLP") == "$55.500 CLP"
+
+    def test_RF02_PA_16_total_en_usd_con_decimales_de_precio(self):
+        from app.workers.tasks.proposal_tasks import build_pricing_table_html
+        lines = [{"name": "A", "qty": 3, "unitPrice": 1000}, {"name": "B", "qty": 1, "unitPrice": 500}]
+        html = build_pricing_table_html(lines, 3500, "en")
+        assert "$3,000 USD" in html and "$500 USD" in html
+
+
+class TestFormatoDeMoneda:
+    def test_usd_se_mantiene_como_antes(self):
+        from app.workers.tasks.proposal_tasks import format_money, format_usd
+        assert format_usd(21950, "x", "en") == "$21,950 USD"
+        assert format_usd(21950, "x", "es") == "$21.950 USD"
+        assert format_money(21950, "x", "pt", "USD") == "$21.950 USD"
+        assert format_money(None, "n/d", "es", "CLP") == "n/d"
+
+    def test_clp_sin_decimales(self):
+        from app.workers.tasks.proposal_tasks import format_money
+        assert format_money(1500, "x", "es", "CLP") == "$1.500 CLP"
+        assert format_money(1500.4, "x", "es", "CLP") == "$1.500 CLP"
+
+    def test_envoltorio_del_router_para_exportacion(self):
+        from app.routers.proposals import _format_money, _format_usd
+        assert _format_usd(21950, "n/d", "es") == "$21.950 USD"
+        assert _format_money(1500, "n/d", "es", "CLP") == "$1.500 CLP"
+        assert _format_money("abc", "n/d", "es", "CLP") == "n/d"
+
+
+class TestPropuestaAntiguaSinMoneda:
+    def test_se_exporta_como_usd(self):
+        from app.routers.proposals import _proposal_cover_fields
+        legacy = {"id": "p1", "totalAmount": 21950, "language": "es"}
+        assert _proposal_cover_fields(legacy)["total_amount_display"] == "$21.950 USD"
+
+    def test_propuesta_en_clp_se_exporta_en_clp(self):
+        from app.routers.proposals import _proposal_cover_fields
+        cover = _proposal_cover_fields({"id": "p1", "totalAmount": 55500, "currency": "CLP", "language": "es"})
+        assert cover["total_amount_display"] == "$55.500 CLP"
+
+    def test_la_tabla_de_una_linea_antigua_sale_en_usd(self):
+        from app.workers.tasks.proposal_tasks import build_pricing_table_html
+        html = build_pricing_table_html([{"service": "X", "quantity": 1, "unitPrice": 1750}], 1750, "es")
+        assert "$1.750 USD" in html
+
+    async def test_generar_sin_moneda_guarda_usd(self, client):
+        from tests.conftest import fake_job
+        saved = {"id": "p1", "userId": "test-user-sub-123", "title": "T", "status": "generated"}
+        with (
+            patch("app.workers.tasks.proposal_tasks._generate_proposal_content", new_callable=AsyncMock,
+                  return_value={"content": "<p>x</p>", "downloadUrl": "x", "filePath": "x"}) as gen,
+            patch("app.routers.proposals.proposals_repo.create", new_callable=AsyncMock, return_value=saved),
+            patch("app.routers.proposals.jobs_repo.create_job", new_callable=AsyncMock, return_value=fake_job()),
+            patch("app.workers.tasks.proposal_tasks.jobs_repo.update_progress", new_callable=AsyncMock),
+            patch("app.workers.tasks.proposal_tasks.jobs_repo.complete_job", new_callable=AsyncMock),
+            patch("app.workers.tasks.proposal_tasks.proposals_repo.update", new_callable=AsyncMock,
+                  return_value=saved) as upd,
+        ):
+            resp = await client.post(f"{PROPOSALS}/generate-draft", json={
+                "title": "T", "lineItems": [{"service": "X", "quantity": 1, "unitPrice": 1750}], "sync": True,
+            })
+        assert resp.status_code == 201
+        assert gen.await_args.kwargs["currency"] == "USD"
+        assert upd.await_args_list[-1].args[1]["currency"] == "USD"

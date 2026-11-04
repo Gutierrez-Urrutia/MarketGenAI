@@ -46,7 +46,11 @@ def _output_dir() -> Path:
     return output_dir
 
 
-def _format_proposal_line_items(line_items: list[dict] | None, total_amount: float | None) -> str:
+def _format_proposal_line_items(
+    line_items: list[dict] | None,
+    total_amount: float | None,
+    currency: str = "USD",
+) -> str:
     if not line_items:
         return (
             "No pricing items were provided. The cost table must contain only one row "
@@ -63,6 +67,7 @@ def _format_proposal_line_items(line_items: list[dict] | None, total_amount: flo
             f"Description: {item.get('description') or 'N/A'} | "
             f"Quantity: {qty if qty is not None else 'A definir'} | "
             f"Unit price: {unit_price if unit_price is not None else 'A definir'}"
+            + (f" {item.get('currency') or currency}" if unit_price is not None else "")
         )
 
     total = total_amount if total_amount is not None else "A definir"
@@ -140,20 +145,26 @@ def _to_number(value: Any) -> float | None:
         return None
 
 
-def format_usd(value: float | None, fallback: str, lang: str = "en") -> str:
-    """$21,950 USD en inglés; $21.950 USD en español/portugués, coherente con el texto del documento."""
+def format_money(value: float | None, fallback: str, lang: str = "en", currency: str = "USD") -> str:
+    """$21,950 USD en inglés; $21.950 USD en español/portugués, coherente con el texto del documento.
+    CLP sigue la misma regla de separadores y nunca lleva decimales (ej. $1.500 CLP)."""
     if value is None:
         return fallback
     text = f"{value:,.0f}"
     if lang in ("es", "pt"):
         text = text.replace(",", ".")
-    return f"${text} USD"
+    return f"${text} {currency or 'USD'}"
+
+
+def format_usd(value: float | None, fallback: str, lang: str = "en") -> str:
+    return format_money(value, fallback, lang, "USD")
 
 
 def build_pricing_table_html(
     line_items: list[dict] | None,
     total_amount: float | None,
     language: str = "es",
+    currency: str = "USD",
 ) -> str:
     """Tabla de precios determinista: el LLM nunca escribe cifras, solo se muestran las ingresadas."""
     lang = _lang_code(language)
@@ -165,9 +176,10 @@ def build_pricing_table_html(
         unit = _to_number(item.get("unitPrice") if item.get("unitPrice") is not None else item.get("unit_price"))
         subtotal = qty * unit if qty is not None and unit is not None else None
         qty_text = undefined if qty is None else f"{qty:g}"
+        line_currency = item.get("currency") or currency
         rows.append(
             f"<tr><td>{escape(str(name))}</td><td>{escape(str(item.get('description') or '—'))}</td>"
-            f"<td>{escape(qty_text)}</td><td>{format_usd(unit, undefined, lang)}</td><td>{format_usd(subtotal, undefined, lang)}</td></tr>"
+            f"<td>{escape(qty_text)}</td><td>{format_money(unit, undefined, lang, line_currency)}</td><td>{format_money(subtotal, undefined, lang, line_currency)}</td></tr>"
         )
     if not rows:
         rows.append(f"<tr><td>{undefined}</td><td>—</td><td>—</td><td>{undefined}</td><td>{undefined}</td></tr>")
@@ -244,12 +256,13 @@ async def _generate_proposal_content(
     language: str = "es",
     custom_prompt: str | None = None,
     user_id: str | None = None,
+    currency: str = "USD",
 ) -> dict:
     """Call the LLM with the real proposal context and persist its response."""
     lang = _lang_code(language)
     headings = SECTION_HEADINGS[lang]
     length_instructions = _length_instructions(headings)
-    pricing_context = _format_proposal_line_items(line_items, total_amount)
+    pricing_context = _format_proposal_line_items(line_items, total_amount, currency)
     rag_context, sources = await get_rag_context_and_sources(
         user_id,
         client_name=client_name,
@@ -300,7 +313,7 @@ CONTENT QUALITY INSTRUCTIONS:
 - Service levels must be measurable (indicator, target, measurement method). Label every target as a proposed target to be validated against the client's baseline during the diagnostic phase; never present it as a guarantee.
 - This is a client-facing document: NEVER mention internal CRM or sales-pipeline data such as the opportunity stage, "fit score", qualification score or lead status.
 - "About" section: include only company facts present in the historical company context (years, locations, capabilities). If there are none, write one short neutral paragraph about the service capability without figures, names or certifications.
-- Commercial terms: state the currency (USD), the billing period, and that prices exclude applicable taxes unless the data says otherwise (mark it as an assumption, writing the label in the output language). Contract duration, notice periods and payment terms taken from the historical context must be labeled as standard terms subject to agreement.
+- Commercial terms: state the currency ({currency}), the billing period, and that prices exclude applicable taxes unless the data says otherwise (mark it as an assumption, writing the label in the output language). Contract duration, notice periods and payment terms taken from the historical context must be labeled as standard terms subject to agreement.
 - General conditions must always include explicit exclusions (what is NOT included) and a termination clause with a proposed notice period. Label the notice period and any legal term as "subject to agreement and legal review"; never present them as fixed or final.
 - Team: use the provided sizing and roles when given; otherwise propose a reasonable structure and label it as a proposal.
 - Team and pricing must be consistent: every role beyond the provided sizing must be explicitly described as included in the unit price, or as optional and priced separately. Never list a role as part of the service without saying how it is covered commercially.
@@ -334,7 +347,7 @@ REQUIRED STRUCTURE:
     )
     content = inject_pricing_table(
         _strip_code_fences(content),
-        build_pricing_table_html(line_items, total_amount, lang),
+        build_pricing_table_html(line_items, total_amount, lang, currency),
     )
 
     output_dir = _output_dir()
@@ -387,6 +400,7 @@ async def generate_proposal_now(
     length = options.get("length", "standard")
     language = options.get("language", "es")
     custom_prompt = options.get("customPrompt") or options.get("custom_prompt")
+    currency = options.get("currency") or "USD"
 
     generated = await _generate_proposal_content(
         title,
@@ -400,6 +414,7 @@ async def generate_proposal_now(
         language=language,
         custom_prompt=custom_prompt,
         user_id=options.get("userId"),
+        currency=currency,
     )
 
     await jobs_repo.update_progress(job_id, 80, "processing")
@@ -412,6 +427,7 @@ async def generate_proposal_now(
         "status": "generated",
         "language": language,
         "customPrompt": custom_prompt,
+        "currency": currency,
     })
 
     await jobs_repo.complete_job(job_id, {
