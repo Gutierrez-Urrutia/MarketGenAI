@@ -32,6 +32,11 @@ def _infer_action(method: str, path: str) -> str:
         ("DELETE","/opportunities",         "",         "deleted_opportunity"),
         ("PATCH", "/auth/users",            "roles",    "updated_user_roles"),
         ("POST",  "/content/generate",      "",         "generated_content_item"),
+        # service-types first: "/catalog/services" is not a prefix of it, but keep the specific rule on top.
+        ("POST",  "/catalog/service-types", "",         "created_service_type"),
+        ("PATCH", "/catalog/service-types", "",         "updated_service_type"),
+        ("POST",  "/catalog/services",      "",         "created_service"),
+        ("PATCH", "/catalog/services",      "",         "updated_service"),
     ]
     for m, p, sub, label in rules:
         if method == m and p in path and (not sub or sub in path):
@@ -79,7 +84,7 @@ class AuditMiddleware(BaseHTTPMiddleware):
             log = {
                 "id": str(uuid.uuid4()),
                 "userId": user_id or "anonymous",
-                "action": _infer_action(method, path),
+                "action": getattr(request.state, "audit_action", None) or _infer_action(method, path),
                 "method": method,
                 "path": path,
                 "statusCode": response.status_code,

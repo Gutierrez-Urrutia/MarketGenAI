@@ -22,9 +22,14 @@ Collections used by this project:
   - pipeline_runs/{runId}
   - knowledge_documents/{docId}   (RAG: propuestas históricas cargadas por el usuario)
   - knowledge_chunks/{chunkId}    (RAG: fragmentos de cada documento)
+  - serviceCatalog/{serviceId}    (RF-VTA-02: catálogo de servicios de la empresa)
+  - serviceCatalogKeys/{hash}     (clave única nombre+unidad del catálogo)
+  - serviceTypes/{typeId}         (RF-VTA-02: tipos de servicio)
+  - serviceTypeKeys/{hash}        (clave única del nombre de tipo)
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import uuid
@@ -492,6 +497,87 @@ class EnablementDraftsRepo(FirestoreRepo):
     collection = "enablement_drafts"
 
 
+class DuplicateKeyError(Exception):
+    """Raised when a unique key (e.g. service name + unit) is already taken."""
+
+
+class UniqueKeyedRepo(FirestoreRepo):
+    """Repo whose documents must be unique under a normalized key.
+
+    For each document there is a key document (`keys_collection/{sha256(key)}`)
+    pointing at the owner. Creating or re-keying reads the key document and
+    writes both inside one Firestore transaction, so two simultaneous requests
+    with the same key cannot both succeed: Firestore retries/aborts the loser,
+    which then sees the key as taken."""
+
+    keys_collection: str = ""
+
+    @staticmethod
+    def make_key(*parts: str) -> str:
+        """Case-insensitive, whitespace-insensitive hash of the key parts."""
+        normalized = "".join(" ".join(p.split()).casefold() for p in parts)
+        return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+    def _key_ref(self, key: str) -> AsyncDocumentReference:
+        return self.db.collection(self.keys_collection).document(key)
+
+    async def create_unique(self, data: Dict[str, Any], key: str) -> Dict[str, Any]:
+        doc_id = new_id()
+        now = now_utc()
+        payload = {**data, "id": doc_id, "uniqueKey": key, "createdAt": now, "updatedAt": now}
+        doc_ref = self._doc(doc_id)
+        key_ref = self._key_ref(key)
+        transaction = self.db.transaction()
+
+        @firestore.async_transactional
+        async def _txn(txn):
+            if (await key_ref.get(transaction=txn)).exists:
+                raise DuplicateKeyError(key)
+            txn.set(key_ref, {"id": key, "ownerId": doc_id})
+            txn.set(doc_ref, payload)
+
+        await _txn(transaction)
+        return payload
+
+    async def update_unique(
+        self, doc_id: str, data: Dict[str, Any], new_key: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Partial update; pass `new_key` when a field that feeds the key changed."""
+        doc_ref = self._doc(doc_id)
+        transaction = self.db.transaction()
+
+        @firestore.async_transactional
+        async def _txn(txn):
+            snap = await doc_ref.get(transaction=txn)
+            if not snap.exists:
+                raise KeyError(f"{self.collection}/{doc_id} not found")
+            current = snap.to_dict()
+            payload = {**data, "updatedAt": now_utc()}
+            old_key = current.get("uniqueKey")
+            if new_key and new_key != old_key:
+                new_snap = await self._key_ref(new_key).get(transaction=txn)
+                if new_snap.exists and (new_snap.to_dict() or {}).get("ownerId") != doc_id:
+                    raise DuplicateKeyError(new_key)
+                if old_key:
+                    txn.delete(self._key_ref(old_key))
+                txn.set(self._key_ref(new_key), {"id": new_key, "ownerId": doc_id})
+                payload["uniqueKey"] = new_key
+            txn.update(doc_ref, payload)
+            return {**current, **payload}
+
+        return await _txn(transaction)
+
+
+class ServiceCatalogRepo(UniqueKeyedRepo):
+    collection = "serviceCatalog"
+    keys_collection = "serviceCatalogKeys"
+
+
+class ServiceTypesRepo(UniqueKeyedRepo):
+    collection = "serviceTypes"
+    keys_collection = "serviceTypeKeys"
+
+
 class PipelineRunLocksRepo(FirestoreRepo):
     """One lock document per PipelineConfig (doc id == config id) so two runs
     can never be active on the same config at once. Acquired inside a Firestore
@@ -593,3 +679,5 @@ pipeline_run_locks_repo = PipelineRunLocksRepo()
 knowledge_documents_repo = KnowledgeDocumentsRepo()
 knowledge_chunks_repo    = KnowledgeChunksRepo()
 enablement_drafts_repo   = EnablementDraftsRepo()
+service_catalog_repo     = ServiceCatalogRepo()
+service_types_repo       = ServiceTypesRepo()
