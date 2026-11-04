@@ -3,7 +3,7 @@ import { BRAND, docxColor, loadBrandLogo, rgbColor } from "@/config/brand";
 import html2pdf from "html2pdf.js";
 import { proposalsApi } from "@/api/proposalsApi";
 import { PROPOSAL_COPY, getProposalCopy } from "@/features/proposals/proposalCopy";
-import { formatUsd, normalizeLineItem, normalizeMoney, normalizeProposalDocument } from "@/features/proposals/proposalDocument";
+import { formatMoney, normalizeLineItem, normalizeMoney, normalizeProposalDocument } from "@/features/proposals/proposalDocument";
 import { PROPOSAL_PDF_PAGE_BREAK_CSS, additionalSectionTitle, proposalAdjustmentRows, proposalClientDetails, proposalDocumentToHtml } from "@/features/proposals/proposalHtml";
 
 export const sanitizeDownloadName = (title = "proposal") => String(title || "proposal")
@@ -383,7 +383,7 @@ function docxCell(children, options = {}) {
   });
 }
 
-function docxRowsFromLineItems(lineItems = [], copy = PROPOSAL_COPY.en) {
+function docxRowsFromLineItems(lineItems = [], copy = PROPOSAL_COPY.en, currency = "USD") {
   const header = new TableRow({
     tableHeader: true,
     cantSplit: true,
@@ -399,8 +399,8 @@ function docxRowsFromLineItems(lineItems = [], copy = PROPOSAL_COPY.en) {
       item.service,
       item.description,
       item.quantity,
-      formatUsd(item.unitPrice),
-      formatUsd(item.subtotal),
+      formatMoney(item.unitPrice, item.currency || currency),
+      formatMoney(item.subtotal, item.currency || currency),
     ].map((value) => docxCell(new Paragraph({ children: [docxText(value, { color: DOCX_COLORS.text })] }), {
       shading: { type: ShadingType.CLEAR, fill: index % 2 === 0 ? DOCX_COLORS.white : DOCX_COLORS.surface },
     })),
@@ -517,7 +517,7 @@ export async function buildProposalDocx(proposal, sourceElement) {
     });
     const costTable = new Table({
       width: { size: 100, type: WidthType.PERCENTAGE },
-      rows: docxRowsFromLineItems(doc.lineItems, copy),
+      rows: docxRowsFromLineItems(doc.lineItems, copy, doc.currency),
     });
     const signatureTable = new Table({
       width: { size: 100, type: WidthType.PERCENTAGE },

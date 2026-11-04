@@ -50,6 +50,34 @@ export const formatUsd = (value) => {
   }).format(amount)} USD`;
 };
 
+export const SUPPORTED_CURRENCIES = ["USD", "CLP"];
+
+export const normalizeCurrency = (value) => {
+  const code = String(value || "").trim().toUpperCase();
+  return SUPPORTED_CURRENCIES.includes(code) ? code : "USD";
+};
+
+/**
+ * Monto con su moneda: USD como siempre ($21,950 USD); CLP sin decimales ($1.500 CLP).
+ * Con `exact` el USD conserva sus centavos ($25.50 USD): para precios de catálogo, no para totales.
+ */
+export const formatMoney = (value, currency = "USD", { exact = false } = {}) => {
+  const code = normalizeCurrency(currency);
+  if (code === "USD" && !exact) return formatUsd(value);
+  const amount = normalizeMoney(value);
+  if (amount === null) return "Not calculated";
+  if (code === "USD") {
+    const decimals = Number.isInteger(amount) ? 0 : 2;
+    return `${new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency: "USD",
+      minimumFractionDigits: decimals,
+      maximumFractionDigits: decimals,
+    }).format(amount)} USD`;
+  }
+  return `$${new Intl.NumberFormat("es-CL", { maximumFractionDigits: 0 }).format(amount)} ${code}`;
+};
+
 function extractExplicitProposalTotal(text = "") {
   const cleanText = String(text)
     .replace(/<[^>]*>/g, " ")
@@ -103,12 +131,15 @@ export function calculateProposalTotal(proposal = {}) {
   const isLegacyPlaceholder = storedTotal === LEGACY_PLACEHOLDER_TOTAL && (safeCalculatedTotal !== null || contentTotal !== null || !lineItems.length);
   const totalAmount = safeCalculatedTotal ?? (!isLegacyPlaceholder ? storedTotal : null) ?? contentTotal;
 
+  const currency = normalizeCurrency(proposal.currency ?? (Array.isArray(lineItems) ? lineItems.find((item) => item?.currency)?.currency : undefined));
+
   return {
     subtotal,
     taxAmount,
     discountAmount,
     totalAmount,
-    formattedTotal: formatUsd(totalAmount),
+    currency,
+    formattedTotal: formatMoney(totalAmount, currency),
   };
 }
 
@@ -382,6 +413,11 @@ export function normalizeLineItem(row = {}) {
     quantity,
     unitPrice,
     subtotal,
+    // Copia del servicio del catálogo (RF-VTA-02); las filas manuales y antiguas no los traen.
+    ...(row.serviceId && { serviceId: row.serviceId }),
+    ...(row.unit && { unit: row.unit }),
+    ...(row.currency && { currency: normalizeCurrency(row.currency) }),
+    ...(row.conditions && { conditions: row.conditions }),
   };
 }
 
@@ -446,17 +482,19 @@ export function normalizeProposalDocument(proposal = {}) {
     || splitTextSection(text, names);
   // Non-list text inside a list section (intro or closing paragraphs).
   const listSectionNotes = (html) => (/<li[\s>]/i.test(html) ? extractTextBlocks(html, { exclude: ["UL", "OL"] }) : "");
-  const total = calculateProposalTotal(proposal);
   const lineItems = [
     ...(structured.lineItems || structured.line_items || proposal.lineItems || proposal.pricingRows || proposal.pricing_rows || []),
   ].map(normalizeLineItem);
   const parsedLineItems = lineItems.length ? lineItems : parseLineItemsFromHtml(content);
+  // Propuestas anteriores a RF-VTA-02 no traen moneda: se tratan como USD.
+  const currency = normalizeCurrency(proposal.currency ?? structured.currency ?? parsedLineItems.find((item) => item.currency)?.currency);
+  const total = calculateProposalTotal({ ...proposal, currency });
   const technologiesSection = section("technologiesUsed", ["Technologies Used"]);
   const problemsSection = section("problemsIdentified", ["Problems Identified", "Client Problem"]);
   const nextStepsSection = section("nextSteps", ["Next Steps"]);
   const costsSection = section("implementationCosts", ["Implementation Costs", "Pricing Table"]);
   // Discount/tax breakdown over the rows actually shown in the pricing table.
-  const pricing = calculateProposalTotal({ ...proposal, lineItems: parsedLineItems });
+  const pricing = calculateProposalTotal({ ...proposal, lineItems: parsedLineItems, currency });
   const structuredProblems = cleanStructuredList(structured.problemsIdentified || structured.problems_identified || proposal.problemsIdentified);
   const structuredTechnologies = cleanStructuredList(structured.technologiesUsed || structured.technologies_used || proposal.technologiesUsed);
   const structuredNextSteps = cleanStructuredList(structured.nextSteps || structured.next_steps || proposal.nextSteps);
@@ -475,7 +513,7 @@ export function normalizeProposalDocument(proposal = {}) {
   validUntilDate.setDate(validUntilDate.getDate() + PROPOSAL_VALIDITY_DAYS);
 
   const localizedTotal = (language === "es" || language === "pt") && total.totalAmount !== null && total.totalAmount !== undefined
-    ? `$${new Intl.NumberFormat("es-CL", { maximumFractionDigits: 0 }).format(total.totalAmount)} USD`
+    ? `$${new Intl.NumberFormat("es-CL", { maximumFractionDigits: 0 }).format(total.totalAmount)} ${currency}`
     : total.formattedTotal;
   const generatedMode = generated
     ? {
@@ -502,6 +540,7 @@ export function normalizeProposalDocument(proposal = {}) {
     clientCompany: proposal.clientCompany || proposal.client_company || structured.clientCompany || "",
     contact: structured.contact || proposal.contact || proposal.opportunity?.contact || "",
     totalAmount: total.totalAmount,
+    currency,
     industry: structured.industry || proposal.industryName || proposal.opportunity?.industry || proposal.industry || "",
     serviceLine: structured.serviceLine || structured.service_line || proposal.serviceLine || proposal.template || "",
     length: structured.length || proposal.length || "standard",
