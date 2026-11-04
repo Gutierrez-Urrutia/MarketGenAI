@@ -673,6 +673,51 @@ class LeadsRepo(FirestoreRepo):
 
         return await _txn(transaction)
 
+    # Statuses a contact review may move between; any other (researching: a
+    # search is running and will set its own; composing and later stages;
+    # error) is never touched by a review.
+    REVIEW_RECOMPUTABLE_STATUSES = ("new", "contacts_found")
+
+    @staticmethod
+    def plan_status_after_review(
+        lead: Optional[Dict[str, Any]], user_id: str, has_active: bool,
+    ) -> Optional[str]:
+        """The status to write after a contact review, or None to leave the
+        lead alone (missing, someone else's, outside REVIEW_RECOMPUTABLE_STATUSES,
+        or already right). Pure."""
+        if lead is None or lead.get("user_id") != user_id:
+            return None
+        current = lead.get("status") or "new"
+        if current not in LeadsRepo.REVIEW_RECOMPUTABLE_STATUSES:
+            return None
+        target = "contacts_found" if has_active else "new"
+        return None if target == current else target
+
+    async def recompute_status_after_review(
+        self, lead_id: str, user_id: str, has_active: bool, now: datetime,
+    ) -> Optional[str]:
+        """After a contact review: set the lead to contacts_found when it still
+        has a non-rejected contact, else new — inside a transaction that re-reads
+        the lead, so a search that started meanwhile (status researching) is
+        never overwritten. Only status and updatedAt are written, never
+        contacts_search. Returns the lead's status afterwards (None if missing)."""
+        ref = self._doc(lead_id)
+        transaction = self.db.transaction()
+
+        @firestore.async_transactional
+        async def _txn(txn):
+            snap = await ref.get(transaction=txn)
+            lead = snap.to_dict() if snap.exists else None
+            if lead is None:
+                return None
+            target = self.plan_status_after_review(lead, user_id, has_active)
+            if target is None:
+                return lead.get("status") or "new"
+            txn.update(ref, {"status": target, "updatedAt": now})
+            return target
+
+        return await _txn(transaction)
+
     async def list_by_contacts_domain(self, user_id: str, domain: str) -> List[Dict[str, Any]]:
         """The user's leads whose last contact search used `domain`
         (equality on user_id and the nested contacts_search.domain)."""

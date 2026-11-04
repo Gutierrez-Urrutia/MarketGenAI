@@ -236,9 +236,12 @@ export default function LeadContactsPanel({ lead, searchLock, onLeadChanged, onN
     try {
       const { data } = await leadsApi.reviewContact(leadId, contact.id, decision);
       if (!mountedRef.current) return;
+      // The backend recomputes the lead's status after a review (lead_status).
+      const { lead_status: leadStatus, ...updated } = data || {};
       setContacts((list) => (decision === "rejected" && !showRejected
         ? list.filter((item) => item.id !== contact.id)
-        : list.map((item) => (item.id === contact.id ? { ...item, ...data } : item))));
+        : list.map((item) => (item.id === contact.id ? { ...item, ...updated } : item))));
+      onLeadChanged?.(leadId, leadStatus ? { status: leadStatus } : null);
     } catch (error) {
       if (!mountedRef.current) return;
       const status = error?.response?.status;

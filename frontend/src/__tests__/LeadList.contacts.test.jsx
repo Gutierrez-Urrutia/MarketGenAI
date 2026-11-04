@@ -508,3 +508,69 @@ describe("no personal data in the console", () => {
     log.mockRestore(); err.mockRestore(); warn.mockRestore();
   });
 });
+
+describe("the lead row follows a review (lead_status)", () => {
+  const twelveLeads = () => Array.from({ length: 12 }, (_, i) => makeLead(`lead-${i + 1}`, {
+    status: i === 10 ? "contacts_found" : "new",
+    created_at: `2026-10-${String(20 - i).padStart(2, "0")}T12:00:00Z`,
+  }));
+
+  async function openOnPageTwo() {
+    await renderList(twelveLeads());
+    fireEvent.click(screen.getByRole("button", { name: "common.next" }));
+    await flush();
+    expect(screen.queryByText("Customer Support Agent lead-1")).toBeNull();
+    expect(screen.getByText("Customer Support Agent lead-11")).toBeTruthy();
+    fireEvent.click(screen.getAllByRole("button", { name: "leads.contacts.show" })[0]); // lead-11
+    await flush();
+  }
+
+  const rowOf = (title) => screen.getByText(title).closest("tr");
+
+  it("rejecting the last contact refreshes the row to new, without going back to page 1", async () => {
+    const ana = makeContact("c-1", { lead_id: "lead-11" });
+    leadsApi.listContacts.mockResolvedValue({ data: { items: [ana] } });
+    leadsApi.reviewContact.mockResolvedValue({ data: { ...ana, review_status: "rejected", lead_status: "new" } });
+    leadsApi.get.mockResolvedValue({ data: makeLead("lead-11", { status: "new" }) });
+    await openOnPageTwo();
+    expect(within(rowOf("Customer Support Agent lead-11")).getByText("leads.status.contacts_found")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "leads.contacts.review.reject: Ana Ficticia" }));
+    await flush();
+
+    expect(leadsApi.get).toHaveBeenCalledWith("lead-11");
+    expect(within(rowOf("Customer Support Agent lead-11")).getByText("leads.status.new")).toBeTruthy();
+    expect(screen.queryByText("Customer Support Agent lead-1")).toBeNull(); // still on page 2
+    expect(leadsApi.list).toHaveBeenCalledTimes(1);                         // the table was not reloaded
+  });
+
+  it("restoring a contact refreshes the row to contacts_found", async () => {
+    const ana = makeContact("c-1", { lead_id: "lead-11", review_status: "rejected" });
+    leadsApi.listContacts.mockResolvedValue({ data: { items: [] } });
+    await openOnPageTwo();
+    leadsApi.listContacts.mockResolvedValue({ data: { items: [ana] } });
+    fireEvent.click(screen.getByRole("checkbox", { name: "leads.contacts.list.showRejected" }));
+    await flush();
+
+    leadsApi.reviewContact.mockResolvedValue({ data: { ...ana, review_status: "approved", lead_status: "contacts_found" } });
+    leadsApi.get.mockResolvedValue({ data: makeLead("lead-11", { status: "contacts_found" }) });
+    fireEvent.click(screen.getByRole("button", { name: "leads.contacts.review.restore: Ana Ficticia" }));
+    await flush();
+
+    expect(leadsApi.get).toHaveBeenCalledWith("lead-11");
+    expect(within(rowOf("Customer Support Agent lead-11")).getByText("leads.status.contacts_found")).toBeTruthy();
+    expect(within(screen.getByText("Ana Ficticia").closest("li")).getByText("leads.contacts.review.approved")).toBeTruthy();
+    expect(screen.getByText("Ana Ficticia").closest("li").textContent).not.toContain("lead_status");
+  });
+
+  it("the row keeps its status when the backend left it unchanged", async () => {
+    const ana = makeContact("c-1", { lead_id: "lead-11" });
+    leadsApi.listContacts.mockResolvedValue({ data: { items: [ana, makeContact("c-2", { lead_id: "lead-11", full_name: "Bruno Inventado" })] } });
+    leadsApi.reviewContact.mockResolvedValue({ data: { ...ana, review_status: "rejected", lead_status: "contacts_found" } });
+    leadsApi.get.mockResolvedValue({ data: makeLead("lead-11", { status: "contacts_found" }) });
+    await openOnPageTwo();
+    fireEvent.click(screen.getByRole("button", { name: "leads.contacts.review.reject: Ana Ficticia" }));
+    await flush();
+    expect(within(rowOf("Customer Support Agent lead-11")).getByText("leads.status.contacts_found")).toBeTruthy();
+  });
+});

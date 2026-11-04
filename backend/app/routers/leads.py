@@ -22,6 +22,7 @@ from app.schemas.contact import (
     Contact,
     ContactListResponse,
     ContactReviewRequest,
+    ContactReviewResponse,
     ContactSearchRequest,
     ContactSearchResponse,
 )
@@ -119,7 +120,7 @@ async def list_lead_contacts(
     return ContactListResponse(items=items, total=len(items))
 
 
-@router.patch("/{lead_id}/contacts/{contact_id}/review", response_model=Contact)
+@router.patch("/{lead_id}/contacts/{contact_id}/review", response_model=ContactReviewResponse)
 async def review_lead_contact(
     lead_id: str,
     contact_id: str,
@@ -129,7 +130,9 @@ async def review_lead_contact(
     """Approve or reject one contact of the lead. Reject from not_required,
     pending or approved; approve from pending or rejected (restores a
     rejection). 404 when the contact is not this lead's / user's; 422 for
-    any other transition."""
+    any other transition. Afterwards the lead's status is recomputed from its
+    non-rejected contacts (only while it is new / contacts_found) and returned
+    as `lead_status`; contacts_search is never touched."""
     await _get_lead_for_user(lead_id, user.sub)
     contact = await contacts_repo.get(contact_id)
     if not contact or contact.get("user_id") != user.sub or contact.get("lead_id") != lead_id:
@@ -144,4 +147,7 @@ async def review_lead_contact(
                 "review_status": current,
             },
         )
-    return await contacts_repo.update(contact_id, {"review_status": body.decision, "reviewed_at": now_utc()})
+    updated = await contacts_repo.update(contact_id, {"review_status": body.decision, "reviewed_at": now_utc()})
+    active = await contact_research_service.get_service().list_contacts(lead_id, user.sub)
+    lead_status = await leads_repo.recompute_status_after_review(lead_id, user.sub, bool(active), now_utc())
+    return {**updated, "lead_status": lead_status}

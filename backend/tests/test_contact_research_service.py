@@ -65,6 +65,15 @@ class FakeLeads:
                 lead.update(LeadsRepo.contacts_search_start_fields(search_id, now, force))
             return plan
 
+    async def recompute_status_after_review(self, lead_id, user_id, has_active, now):
+        lead = self.docs.get(lead_id)
+        if lead is None:
+            return None
+        target = LeadsRepo.plan_status_after_review(lead, user_id, has_active)
+        if target is not None:
+            lead["status"] = target
+        return lead.get("status") or "new"
+
     async def finish_contacts_search(self, lead_id, search_id, status, contacts_search, now):
         self.finish_calls += 1
         lead = self.docs[lead_id]
@@ -812,3 +821,48 @@ async def test_repo_domain_query_filters_by_user_and_nested_domain():
         await LeadsRepo().list_by_contacts_domain(USER, "example.com")
     filters = mock_list.call_args.kwargs["filters"]
     assert filters == [("user_id", "==", USER), ("contacts_search.domain", "==", "example.com")]
+
+
+# ── lead.status after a contact review (RF15 fix) ─────────────────────────────
+@pytest.mark.parametrize("current, has_active, expected", [
+    ("contacts_found", False, "new"),
+    ("contacts_found", True, None),          # already right: no write
+    ("new", True, "contacts_found"),
+    ("new", False, None),
+    (None, True, "contacts_found"),          # a lead without status is new
+    ("researching", False, None), ("composing", False, None), ("sent", True, None), ("error", True, None),
+])
+def test_plan_status_after_review(current, has_active, expected):
+    lead = make_lead(status=current) if current else {**make_lead(), "status": None}
+    assert LeadsRepo.plan_status_after_review(lead, USER, has_active) == expected
+
+
+def test_plan_status_after_review_ignores_missing_or_foreign_leads():
+    assert LeadsRepo.plan_status_after_review(None, USER, False) is None
+    assert LeadsRepo.plan_status_after_review(make_lead(user=OTHER, status="contacts_found"), USER, False) is None
+
+
+async def test_repo_recompute_writes_only_status_and_only_when_allowed(plain_transactional):
+    lead = make_lead(status="contacts_found", search=found_search())
+    db, ref, txn = _repo_with_snapshot(lead)
+    with patch.object(LeadsRepo, "db", new_callable=PropertyMock, return_value=db):
+        status = await LeadsRepo().recompute_status_after_review("lead-1", USER, False, NOW)
+    assert status == "new"
+    txn.update.assert_called_once_with(ref, {"status": "new", "updatedAt": NOW})  # never contacts_search
+
+    for current, has_active in (("researching", False), ("contacts_found", True), ("sent", False)):
+        db, ref, txn = _repo_with_snapshot(make_lead(status=current))
+        with patch.object(LeadsRepo, "db", new_callable=PropertyMock, return_value=db):
+            status = await LeadsRepo().recompute_status_after_review("lead-1", USER, has_active, NOW)
+        assert status == current
+        txn.update.assert_not_called()
+
+    db, ref, txn = _repo_with_snapshot(make_lead(user=OTHER, status="contacts_found"))
+    with patch.object(LeadsRepo, "db", new_callable=PropertyMock, return_value=db):
+        await LeadsRepo().recompute_status_after_review("lead-1", USER, False, NOW)
+    txn.update.assert_not_called()
+
+    db, ref, txn = _repo_with_snapshot(None)
+    with patch.object(LeadsRepo, "db", new_callable=PropertyMock, return_value=db):
+        assert await LeadsRepo().recompute_status_after_review("lead-1", USER, False, NOW) is None
+    txn.update.assert_not_called()

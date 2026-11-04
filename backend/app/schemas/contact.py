@@ -184,6 +184,14 @@ class Contact(BaseModel):
         return ReviewStatus.NOT_REQUIRED if value is None else value
 
 
+class ContactReviewResponse(Contact):
+    """PATCH .../review: the updated contact, plus the lead's status after the
+    review (recomputed when it was new / contacts_found). Additive: every
+    Contact field is unchanged."""
+
+    lead_status: Optional[LeadStatus] = None
+
+
 class ContactListResponse(BaseModel):
     items: List[Contact]
     total: int

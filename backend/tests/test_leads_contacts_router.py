@@ -44,6 +44,8 @@ def world():
             leads.docs[lead_id]) if lead_id in leads.docs else (_ for _ in ()).throw(KeyError(lead_id)))),
         patch(f"{ROUTER}.contacts_repo.get", new=AsyncMock(side_effect=contacts.get)),
         patch(f"{ROUTER}.contacts_repo.update", new=AsyncMock(side_effect=contacts.update)),
+        patch(f"{ROUTER}.leads_repo.recompute_status_after_review",
+              new=AsyncMock(side_effect=leads.recompute_status_after_review)),
     ):
         yield type("World", (), {"leads": leads, "contacts": contacts, "provider": provider, "service": service})
 
@@ -200,3 +202,85 @@ async def test_lead_detail_exposes_contacts_search(client, world):
     assert resp.status_code == 200
     assert resp.json()["contacts_search"]["state"] == "contacts_found"
     assert resp.json()["contacts_search"]["domain"] == "example.com"
+
+
+# ── lead.status after a review (RF15 fix) ─────────────────────────────────────
+def _with_lead(world, status="contacts_found", search=None):
+    world.leads.docs["lead-1"]["status"] = status
+    world.leads.docs["lead-1"]["contacts_search"] = search or {
+        "state": "contacts_found", "search_id": "old-search", "reason": None,
+        "searched_at": NOW - timedelta(days=1), "domain": "example.com",
+    }
+    return copy.deepcopy(world.leads.docs["lead-1"]["contacts_search"])
+
+
+async def _review(client, contact_id, decision):
+    return await client.patch(f"{API}/lead-1/contacts/{contact_id}/review", json={"decision": decision})
+
+
+async def test_rejecting_the_last_contact_sets_the_lead_to_new(client, world):
+    search = _with_lead(world)
+    world.contacts.docs["c-1"] = stored("c-1", "lead-1", ANA, rank=1)
+    resp = await _review(client, "c-1", "rejected")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["review_status"] == "rejected" and body["id"] == "c-1"   # same contact contract
+    assert body["lead_status"] == "new"
+    assert world.leads.docs["lead-1"]["status"] == "new"
+    assert world.leads.docs["lead-1"]["contacts_search"] == search
+
+
+async def test_rejecting_one_of_several_keeps_contacts_found(client, world):
+    _with_lead(world)
+    world.contacts.docs["c-1"] = stored("c-1", "lead-1", ANA, rank=1)
+    world.contacts.docs["c-2"] = stored("c-2", "lead-1", BRUNO, rank=2)
+    resp = await _review(client, "c-1", "rejected")
+    assert resp.json()["lead_status"] == "contacts_found"
+    assert world.leads.docs["lead-1"]["status"] == "contacts_found"
+
+
+async def test_restoring_the_only_rejected_contact_sets_contacts_found(client, world):
+    search = _with_lead(world, status="new")
+    world.contacts.docs["c-1"] = stored("c-1", "lead-1", ANA, review="rejected")
+    resp = await _review(client, "c-1", "approved")
+    assert resp.json()["lead_status"] == "contacts_found"
+    assert world.leads.docs["lead-1"]["status"] == "contacts_found"
+    assert world.leads.docs["lead-1"]["contacts_search"] == search
+
+
+async def test_approving_a_pending_contact_of_a_new_lead_sets_contacts_found(client, world):
+    _with_lead(world, status="new")
+    world.contacts.docs["c-1"] = stored("c-1", "lead-1", ANA, review="pending")
+    assert (await _review(client, "c-1", "approved")).json()["lead_status"] == "contacts_found"
+
+
+@pytest.mark.parametrize("lead_status", [
+    "researching", "composing", "ready_for_review", "approved", "auto_approved", "sent", "replied",
+    "rejected", "error",
+])
+async def test_other_statuses_are_never_changed_by_a_review(client, world, lead_status):
+    search = _with_lead(world, status=lead_status)
+    world.contacts.docs["c-1"] = stored("c-1", "lead-1", ANA, rank=1)
+    resp = await _review(client, "c-1", "rejected")
+    assert resp.status_code == 200
+    assert resp.json()["lead_status"] == lead_status
+    assert world.leads.docs["lead-1"]["status"] == lead_status
+    assert world.leads.docs["lead-1"]["contacts_search"] == search
+
+
+async def test_contacts_of_another_user_or_lead_do_not_count_as_active(client, world):
+    _with_lead(world)
+    world.contacts.docs["c-1"] = stored("c-1", "lead-1", ANA, rank=1)
+    world.contacts.docs["c-other-user"] = stored("c-other-user", "lead-1", BRUNO, user=OTHER)
+    world.contacts.docs["c-other-lead"] = stored("c-other-lead", "lead-2", CARLA)
+    resp = await _review(client, "c-1", "rejected")
+    assert resp.json()["lead_status"] == "new"
+    assert world.leads.docs["lead-1"]["status"] == "new"
+
+
+async def test_a_refused_review_does_not_touch_the_lead(client, world):
+    _with_lead(world)
+    world.contacts.docs["c-1"] = stored("c-1", "lead-1", ANA, review="rejected")
+    resp = await _review(client, "c-1", "rejected")
+    assert resp.status_code == 422
+    assert world.leads.docs["lead-1"]["status"] == "contacts_found"
