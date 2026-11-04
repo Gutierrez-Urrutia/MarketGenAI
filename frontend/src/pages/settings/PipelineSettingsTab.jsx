@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 
 import { pipelineApi } from "@/api/axios";
+import { logApiError } from "@/api/apiLogging";
 import { useI18n } from "@/hooks/useI18n";
 
 const SOURCE_TYPE_FIELD_KEYS = {
@@ -213,7 +214,7 @@ export default function PipelineSettingsTab({ isDark = false }) {
       });
       setActive(data?.is_active ?? true);
     } catch (error) {
-      console.error(error);
+      logApiError("PipelineSettings", error);
       toast.error(t("settings.pipelineTab.toastLoadError"));
     } finally {
       setLoading(false);
@@ -328,7 +329,7 @@ export default function PipelineSettingsTab({ isDark = false }) {
       setSourceFormOpen(false);
       toast.success(t("settings.pipelineTab.toastSourceSaved"));
     } catch (error) {
-      console.error(error);
+      logApiError("PipelineSettings", error);
       toast.error(getApiErrorMessage(error, t("settings.pipelineTab.toastSourceSaveError")));
     }
   };
@@ -339,7 +340,7 @@ export default function PipelineSettingsTab({ isDark = false }) {
       setSources((current) => current.filter((source) => source.id !== sourceId));
       toast.success(t("settings.pipelineTab.toastSourceRemoved"));
     } catch (error) {
-      console.error(error);
+      logApiError("PipelineSettings", error);
       toast.error(getApiErrorMessage(error, t("settings.pipelineTab.toastSourceRemoveError")));
     }
   };
