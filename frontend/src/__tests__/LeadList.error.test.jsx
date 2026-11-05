@@ -74,7 +74,7 @@ describe("LeadList load errors", () => {
     const { container } = render(<LeadList />);
     await flush();
 
-    fireEvent.change(container.querySelector("select"), { target: { value: "sent" } }); // newer load
+    fireEvent.change(container.querySelector("select"), { target: { value: "contacts_found" } }); // newer load
     await flush();
     await act(async () => { rejectFirst({ response: { status: 500 }, message: "late" }); });
 
