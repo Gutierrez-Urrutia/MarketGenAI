@@ -456,6 +456,12 @@ class ProposalsRepo(FirestoreRepo):
         decision = decide_cambio_estado(previous, target, owner_id == actor_id, actor_is_admin)
         if isinstance(decision, StatusChangeError):
             return {"error": decision}
+        # RF-VTA-06 (etapa diferida): firmar exige haber adjuntado el documento firmado.
+        if decision.value == "firmada" and not proposal.get("signedDocumentPath"):
+            return {"error": StatusChangeError(
+                422,
+                "Debes adjuntar el documento firmado antes de marcar la propuesta como firmada.",
+            )}
         return {
             "new_status": decision.value,
             "audit_log": {

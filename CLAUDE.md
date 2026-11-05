@@ -99,7 +99,10 @@ python-docx) used by the `assets` and `reports` export endpoints.
 - `src/store/authStore.js` — Zustand auth state; `src/hooks/useAuth.js` composes it.
 - `src/context/` — `ThemeContext`, `LanguageContext` (see `src/i18n/translations.js` for the
   translation table — add new UI strings there, not inline).
-- `src/pages/<feature>/` — one directory per feature module, mirroring the backend router split.
+- Navigation is not router-based: `App.jsx` renders `Dashboard.jsx`, which maps pages in its `PAGES`
+  object (and URL paths in `PATH_TO_PAGE`) to components in `src/views/*Page.jsx`, with the sidebar
+  in `components/shell/AppSidebar.jsx`. `src/pages/<feature>/` holds sub-components used by those
+  views (e.g. `pages/settings/*Tab.jsx`); several older files there are unused.
 
 ### Adding a new feature module
 1. `backend/app/schemas/<feature>.py` — Pydantic models.
@@ -107,5 +110,5 @@ python-docx) used by the `assets` and `reports` export endpoints.
    real-vs-mock ordering if a mock counterpart exists or will exist).
 3. Async work → `backend/app/workers/tasks/`.
 4. `frontend/src/api/<feature>Api.js` helper.
-5. `frontend/src/pages/<feature>/` page components; route in `App.jsx`; nav item in
-   `components/layout/Sidebar.jsx`.
+5. `frontend/src/views/<Feature>Page.jsx`; register it in `PAGES` and `PATH_TO_PAGE` in
+   `frontend/src/Dashboard.jsx` (that also adds the sidebar entry).

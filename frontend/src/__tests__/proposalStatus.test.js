@@ -75,6 +75,25 @@ describe("getAllowedTransitions: las 36 combinaciones", () => {
   });
 });
 
+describe("getAllowedTransitions: hasSignedDocument (RF-VTA-06, etapa diferida)", () => {
+  it("sin documento firmado, en_negociacion no puede ir a firmada, pero sí a rechazada", () => {
+    expect(getAllowedTransitions("en_negociacion", { hasSignedDocument: false })).toEqual(["rechazada"]);
+    expect(getAllowedTransitions("en_negociacion", { hasSignedDocument: true })).toEqual(["firmada", "rechazada"]);
+  });
+
+  it("hasSignedDocument no afecta estados que no pueden llegar a firmada", () => {
+    for (const from of STATES) {
+      if (from === "en_negociacion") continue;
+      expect(getAllowedTransitions(from, { isAdmin: true, hasSignedDocument: false }))
+        .toEqual(getAllowedTransitions(from, { isAdmin: true, hasSignedDocument: true }));
+    }
+  });
+
+  it("por defecto (sin pasar la opción) se comporta como si hubiera documento", () => {
+    expect(getAllowedTransitions("en_negociacion")).toEqual(["firmada", "rechazada"]);
+  });
+});
+
 describe("toDisplayProposalStatus", () => {
   it("deja igual los 6 códigos", () => {
     for (const state of STATES) expect(toDisplayProposalStatus(state)).toBe(state);

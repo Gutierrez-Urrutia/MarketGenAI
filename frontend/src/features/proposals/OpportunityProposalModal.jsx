@@ -1,6 +1,7 @@
 import { ProposalDocumentPreview } from "@/features/proposals/ProposalDocumentPreview";
 import { calculateProposalTotal, formatUsd, normalizeLineItem, normalizeProposalDocument } from "@/features/proposals/proposalDocument";
 import { createProposal, generateProposalById, updateProposal } from "@/api/proposalsApi";
+import { ProposalTemplateFields, useProposalTemplatePicker } from "@/features/proposals/ProposalTemplatePicker";
 import { announceProposalGeneration } from "@/features/proposals/generationNotifier";
 import { exportProposalDocument } from "@/features/proposals/proposalExport";
 import { proposalDocumentToHtml } from "@/features/proposals/proposalHtml";
@@ -27,6 +28,7 @@ export function OpportunityProposalModal({ opportunity, onClose }) {
   const [editingPreview, setEditingPreview] = useState(false);
   const [customerEmail, setCustomerEmail] = useState("");
   const [teamSizing, setTeamSizing] = useState("");
+  const templatePicker = useProposalTemplatePicker(); // RF-VTA-07
   const mountedRef = useRef(true);
   const backgroundRef = useRef(false);
   useEffect(() => {
@@ -46,7 +48,7 @@ export function OpportunityProposalModal({ opportunity, onClose }) {
     customer: opportunity?.company || "",
     customerEmail,
     customerCompany: opportunity?.company || "",
-    template: "NoonDalton Standard Proposal",
+    template: templatePicker.templateName,
     date: new Date().toISOString().slice(0, 10),
     tags: opportunityTags.join(", "),
   };
@@ -164,8 +166,8 @@ export function OpportunityProposalModal({ opportunity, onClose }) {
       stage: opportunity?.stage || "N/A",
       score: opportunity?.score,
       totalAmount: pricingTotal,
-      industry: profile.industry,
-      serviceLine: proposalForm.template,
+      industry: templatePicker.industryLabel || profile.industry,
+      serviceLine: templatePicker.serviceTypeLabel || proposalForm.template,
       executiveSummary: `${proposalForm.customer} has a qualified opportunity to ${profile.executiveFocus}. NoonDalton proposes a focused AI-enabled delivery model that combines workflow automation, specialist execution, and management visibility. This proposal is based on the current opportunity for ${opportunity?.job || "the identified need"}, with a pipeline stage of ${opportunity?.stage || "N/A"} and a qualification score of ${opportunity?.score || "N/A"}%.`,
       problemsIdentified: profile.problems,
       proposedSolution: `${profile.solution} The solution will be configured around ${opportunityTags.length ? opportunityTags.join(", ") : "the client's core operating requirements"} and will use relevant existing content such as ${contentUsed} when appropriate.`,
@@ -206,6 +208,7 @@ export function OpportunityProposalModal({ opportunity, onClose }) {
     clientEmail: proposalForm.customerEmail || undefined,
     clientCompany: proposalForm.customerCompany || undefined,
     template: proposalForm.template,
+    ...templatePicker.persistenceFields(),
     tags: opportunityTags,
     pricing_rows: pricingRows,
     lineItems: pricingRows.map(normalizeLineItem),
@@ -275,6 +278,7 @@ export function OpportunityProposalModal({ opportunity, onClose }) {
         clientName: proposalForm.customer,
         customer: proposalForm.customer,
         template: proposalForm.template,
+        ...templatePicker.generationFields(),
         tags: opportunityTags,
         lineItems: pricingRows.map(normalizeLineItem),
         totalAmount: total.totalAmount,
@@ -437,7 +441,7 @@ export function OpportunityProposalModal({ opportunity, onClose }) {
                 <Input type="email" value={customerEmail} onChange={(event) => setCustomerEmail(event.target.value)} placeholder="client@company.com" />
               </Field>
               <Field label={t("opportunitiesPage.proposalModal.proposalName")}><Input value={proposalForm.name} readOnly /></Field>
-              <Field label={t("opportunitiesPage.proposalModal.template")}><Input value={proposalForm.template} readOnly /></Field>
+              <ProposalTemplateFields picker={templatePicker} />
               <Field label={t("opportunitiesPage.proposalModal.tags")}><Input value={proposalForm.tags} readOnly /></Field>
               <Field label={activeLanguage === "es" ? "Idioma de la propuesta" : activeLanguage === "pt" ? "Idioma da proposta" : "Proposal language"}>
                 <Select value={proposalLanguage} onChange={(event) => setProposalLanguage(event.target.value)}>

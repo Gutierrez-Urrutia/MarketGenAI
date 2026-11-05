@@ -10,6 +10,7 @@ import {
   toDisplayProposalStatus,
 } from "@/features/proposals/proposalStatus";
 import { ProposalStatusControl } from "@/features/proposals/ProposalStatusControl";
+import { SignedDocumentAttachment } from "@/features/proposals/SignedDocumentAttachment";
 import { isAdminUser } from "@/utils/permissions";
 import { ProgressModal } from "@/components/dashboard/ProgressModal";
 import { ProposalDocumentPreview } from "@/features/proposals/ProposalDocumentPreview";
@@ -24,6 +25,7 @@ import html2pdf from "html2pdf.js";
 import { proposalDocumentToHtml } from "@/features/proposals/proposalHtml";
 import { useEffect, useRef, useState } from "react";
 import { useI18n } from "@/hooks/useI18n";
+import { ProposalTemplateFields, pickerStateFromProposal, useProposalTemplatePicker } from "@/features/proposals/ProposalTemplatePicker";
 import { useLanguage } from "@/context/LanguageContext";
 import { useTheme } from "@/context/ThemeContext";
 
@@ -47,6 +49,8 @@ export function ContentLibraryPage({ navigationState = {}, onNavigate = () => {}
   const [statusFilter, setStatusFilter] = useState(navigationState.statusFilter || "");
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [createType, setCreateType] = useState("Proposal");
+  // RF-VTA-07: recarga plantillas cada vez que se abre el formulario de propuesta.
+  const templatePicker = useProposalTemplatePicker({ active: showCreateModal && createType === "Proposal" });
   const [contentLanguage, setContentLanguage] = useState(getStoredPreference(PREF_KEYS.language, "en"));
   const [editingProposal, setEditingProposal] = useState(null);
   const [viewingProposal, setViewingProposal] = useState(null);
@@ -116,7 +120,6 @@ export function ContentLibraryPage({ navigationState = {}, onNavigate = () => {}
     customer: "",
     customerEmail: "",
     customerCompany: "",
-    template: "NoonDalton Standard Proposal",
     date: new Date().toISOString().slice(0, 10),
     tags: [],
     tax: 0,
@@ -193,12 +196,12 @@ export function ContentLibraryPage({ navigationState = {}, onNavigate = () => {}
     setGeneratedContentItem(null);
     setContentGenerating(false);
     setStructuredEditingProposalId(null);
+    templatePicker.reset();
     setProposalForm({
       name: "BPO Proposal for Finance",
       customer: "",
       customerEmail: "",
       customerCompany: "",
-      template: "NoonDalton Standard Proposal",
       date: new Date().toISOString().slice(0, 10),
       tags: [],
       tax: 0,
@@ -813,7 +816,6 @@ export function ContentLibraryPage({ navigationState = {}, onNavigate = () => {}
       customer: proposal.customerName || proposal.clientName || proposal.client_name || structured.client || structured.customer || "",
       customerEmail: proposal.clientEmail || "",
       customerCompany: proposal.clientCompany || "",
-      template: proposal.template || "NoonDalton Standard Proposal",
       date: proposal.date || new Date().toISOString().slice(0, 10),
       tags: normalizeTags(proposal.tags || structured.tags || []),
       tax: proposal.tax || 0,
@@ -826,6 +828,8 @@ export function ContentLibraryPage({ navigationState = {}, onNavigate = () => {}
     setProposalLanguage(platformGenerationLanguage);
     setProposalLanguageManuallySelected(false);
     setProposalCustomPrompt(proposal.customPrompt || proposal.custom_prompt || "");
+    // Regenerar con la misma plantilla y valores con que se generó (después del reset de arriba).
+    templatePicker.reset(pickerStateFromProposal(proposal));
     setPricingRows(sourceRows.map((row, index) => ({
       id: row.id || `${proposal.id}-${index}`,
       service: row.service || row.name || "",
@@ -850,7 +854,7 @@ export function ContentLibraryPage({ navigationState = {}, onNavigate = () => {}
     const description = contentDescription.trim();
     const customer = proposalForm.customer.trim();
     const tags = proposalTags.join(", ");
-    const context = [description, customer, tags, title, proposalForm.template].filter(Boolean).join(" ");
+    const context = [description, customer, tags, title, templatePicker.templateName].filter(Boolean).join(" ");
     const domain = detectProposalDomain(context);
     const language = platformGenerationLanguage;
     const domainCopy = {
@@ -989,8 +993,8 @@ export function ContentLibraryPage({ navigationState = {}, onNavigate = () => {}
       stage: "Draft",
       score: null,
       totalAmount: pricingTotal,
-      industry: domainCopy.industry,
-      serviceLine: proposalForm.template,
+      industry: templatePicker.industryLabel || domainCopy.industry,
+      serviceLine: templatePicker.serviceTypeLabel || templatePicker.templateName,
       executiveSummary: description,
       problemsIdentified: [
         language === "es" ? `Desafío actual: ${description}` : language === "pt" ? `Desafio atual: ${description}` : `Current challenge: ${description}`,
@@ -1027,7 +1031,8 @@ export function ContentLibraryPage({ navigationState = {}, onNavigate = () => {}
     clientName: proposalForm.customer,
     clientEmail: proposalForm.customerEmail || undefined,
     clientCompany: proposalForm.customerCompany || undefined,
-    template: proposalForm.template,
+    template: templatePicker.templateName,
+    ...templatePicker.persistenceFields(),
     tags: proposalTags,
     pricing_rows: pricingRows,
     lineItems: pricingRows.map(normalizeLineItem),
@@ -1062,7 +1067,8 @@ export function ContentLibraryPage({ navigationState = {}, onNavigate = () => {}
         length: proposalLength,
         contentSource: proposalContentSource,
         customerName: proposalForm.customer,
-        template: proposalForm.template,
+        template: templatePicker.templateName,
+        ...templatePicker.persistenceFields(),
         tags: proposalTags,
         pricingRows,
         lineItems: pricingRows.map(normalizeLineItem),
@@ -1254,7 +1260,8 @@ export function ContentLibraryPage({ navigationState = {}, onNavigate = () => {}
     contextPriority: ["proposalDescription", "customer", "tags", "title", "template"],
     clientName: proposalForm.customer,
     customer: proposalForm.customer,
-    template: proposalForm.template,
+    template: templatePicker.templateName,
+    ...templatePicker.generationFields(),
     tags: proposalTags,
     lineItems: pricingRows.map(normalizeLineItem),
     totalAmount: pricingTotal,
@@ -1312,7 +1319,7 @@ export function ContentLibraryPage({ navigationState = {}, onNavigate = () => {}
       client: generatedStructure.client || safeContextualStructure.client || proposalForm.customer,
       contact: cleanStructuredText(generatedStructure.contact) || cleanStructuredText(safeContextualStructure.contact),
       industry: cleanStructuredText(generatedStructure.industry) || cleanStructuredText(safeContextualStructure.industry),
-      serviceLine: cleanStructuredText(generatedStructure.serviceLine) || cleanStructuredText(safeContextualStructure.serviceLine) || proposalForm.template,
+      serviceLine: cleanStructuredText(generatedStructure.serviceLine) || cleanStructuredText(safeContextualStructure.serviceLine) || templatePicker.templateName,
       lineItems: generatedStructure.lineItems?.length ? generatedStructure.lineItems : pricingRows.map(normalizeLineItem),
       totalAmount: proposalTotal.totalAmount ?? pricingTotal,
       language: safeGeneratedProposal.language || platformGenerationLanguage,
@@ -1342,7 +1349,7 @@ export function ContentLibraryPage({ navigationState = {}, onNavigate = () => {}
       content: professionalContent,
       customerName: safeGeneratedProposal.customerName || proposalForm.customer,
       date: safeGeneratedProposal.date || proposalForm.date,
-      template: safeGeneratedProposal.template || proposalForm.template,
+      template: safeGeneratedProposal.template || templatePicker.templateName,
       tags: normalizeTags(safeGeneratedProposal.tags || proposalTags),
       pricingRows: structuredContent.lineItems,
       lineItems: structuredContent.lineItems,
@@ -1413,7 +1420,8 @@ export function ContentLibraryPage({ navigationState = {}, onNavigate = () => {}
         clientName: proposalForm.customer,
         clientEmail: proposalForm.customerEmail || undefined,
         clientCompany: proposalForm.customerCompany || undefined,
-        template: proposalForm.template,
+        template: templatePicker.templateName,
+        ...templatePicker.persistenceFields(),
         tags: proposalTags,
         pricing_rows: pricingRows,
         total_amount: pricingTotal,
@@ -1743,26 +1751,35 @@ const filtered = allItems.filter((item) => {
   };
   const proposalStatusLabel = (proposalStatus) => t(proposalStatusLabelKey(proposalStatus));
   const canReopenProposals = isAdminUser(authTokenStore.getUser() || {});
+  // Fusiona campos en viewingProposal/proposals para un id dado (cambio de estado,
+  // adjuntar/quitar el documento firmado — RF-VTA-06 etapa diferida — etc.).
+  const applyProposalFields = (proposalId, fields) => {
+    setViewingProposal((current) => (current && current.id === proposalId ? { ...current, ...fields } : current));
+    setProposals((current) => current.map((item) => (
+      item.id === proposalId ? { ...item, ...fields } : item
+    )));
+  };
   const handleProposalStatusChange = async (proposal, proposalStatus) => {
     const previousStatus = proposal.proposal_status;
-    const applyStatus = (value) => {
-      setViewingProposal((current) => (current && current.id === proposal.id ? { ...current, proposal_status: value } : current));
-      setProposals((current) => current.map((item) => (
-        item.id === proposal.id ? { ...item, proposal_status: value } : item
-      )));
-    };
-    applyStatus(proposalStatus);
+    applyProposalFields(proposal.id, { proposal_status: proposalStatus });
     setStatusChangePendingId(proposal.id);
     try {
       const { data } = await updateProposalStatus(proposal.id, proposalStatus);
-      if (data?.proposal_status) applyStatus(data.proposal_status);
+      if (data?.proposal_status) applyProposalFields(proposal.id, { proposal_status: data.proposal_status });
     } catch (error) {
       console.error(error);
-      applyStatus(previousStatus);
+      applyProposalFields(proposal.id, { proposal_status: previousStatus });
       setToast({ type: "error", message: proposalStatusErrorMessage(error, { from: previousStatus, to: proposalStatus }, t) });
     } finally {
       setStatusChangePendingId(null);
     }
+  };
+  const handleSignedDocumentChange = (proposalId, updatedProposal) => {
+    applyProposalFields(proposalId, {
+      signedDocumentUrl: updatedProposal?.signedDocumentUrl ?? null,
+      signedDocumentName: updatedProposal?.signedDocumentName ?? null,
+      signedDocumentUploadedAt: updatedProposal?.signedDocumentUploadedAt ?? null,
+    });
   };
   const duplicateItem = (item) => {
     const copy = { ...item, id: `copy-${Date.now()}`, title: `${item.title} Copy`, status: "Draft", date: "Today" };
@@ -2382,13 +2399,9 @@ const filtered = allItems.filter((item) => {
                 <Field label={createT.customer}>
                   <Input value={proposalForm.customer} onChange={(e) => updateProposalForm("customer", e.target.value)} placeholder={createT.customerPlaceholder} />
                 </Field>
-                <Field label={createT.template}>
-                  <Select value={proposalForm.template} onChange={(e) => updateProposalForm("template", e.target.value)}>
-                    <option>NoonDalton Standard Proposal</option>
-                    <option>BPO Services Proposal</option>
-                    <option>AI Automation Proposal</option>
-                  </Select>
-                </Field>
+                </div>
+                <div className="grid grid-cols-2 gap-1.5">
+                  <ProposalTemplateFields picker={templatePicker} />
                 </div>
                 <div className="grid grid-cols-2 gap-1.5">
                 <Field label="Client email" hint="Used to send this proposal to your CRM">
@@ -2555,7 +2568,7 @@ const filtered = allItems.filter((item) => {
               <div className="grid grid-cols-2 gap-1.5 text-xs">
                 <div><span className="text-gray-400">{createT.title}</span><p className="font-medium text-gray-800">{proposalForm.name}</p></div>
                 <div><span className="text-gray-400">{createT.customer}</span><p className="font-medium text-gray-800">{proposalForm.customer}</p></div>
-                <div><span className="text-gray-400">{createT.template}</span><p className="font-medium text-gray-800">{proposalForm.template}</p></div>
+                <div><span className="text-gray-400">{createT.template}</span><p className="font-medium text-gray-800">{templatePicker.templateName}</p></div>
                 <div><span className="text-gray-400">{createT.length}</span><p className="font-medium text-gray-800">{createT[proposalLength]}</p></div>
                 <div><span className="text-gray-400">{createT.proposalLanguage}</span><p className="font-medium text-gray-800">{proposalLanguageLabels[platformGenerationLanguage]}</p></div>
                 <div className="col-span-2"><span className="text-gray-400">{createT.proposalDescription}</span><p className="whitespace-pre-wrap text-gray-700">{contentDescription || createT.notProvided}</p></div>
@@ -2921,14 +2934,21 @@ const filtered = allItems.filter((item) => {
             {editingProposal ? t("contentLibrary.editProposal") : t("contentLibrary.proposalPreview")}
           </p>
           {!editingProposal && (
-            <ProposalStatusControl
-              status={viewingProposal.proposal_status}
-              proposalTitle={viewingProposal.title}
-              isAdmin={canReopenProposals}
-              pending={statusChangePendingId === viewingProposal.id}
-              colorClassName={proposalStatusColor(viewingProposal.proposal_status)}
-              onChange={(proposalStatus) => handleProposalStatusChange(viewingProposal, proposalStatus)}
-            />
+            <>
+              <ProposalStatusControl
+                status={viewingProposal.proposal_status}
+                proposalTitle={viewingProposal.title}
+                isAdmin={canReopenProposals}
+                hasSignedDocument={Boolean(viewingProposal.signedDocumentUrl)}
+                pending={statusChangePendingId === viewingProposal.id}
+                colorClassName={proposalStatusColor(viewingProposal.proposal_status)}
+                onChange={(proposalStatus) => handleProposalStatusChange(viewingProposal, proposalStatus)}
+              />
+              <SignedDocumentAttachment
+                proposal={viewingProposal}
+                onChange={(updated) => handleSignedDocumentChange(viewingProposal.id, updated)}
+              />
+            </>
           )}
         </div>
 

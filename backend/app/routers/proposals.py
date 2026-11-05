@@ -15,7 +15,7 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Pt, RGBColor
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import FileResponse, JSONResponse
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import LETTER
@@ -41,16 +41,20 @@ from app.schemas.proposal import (
     GenerateProposalRequest,
     ProposalExportRequest,
     ProposalCreate,
+    MAX_SIGNED_DOCUMENT_BYTES,
     PROPOSAL_STATUS_VALUES,
     ProposalOut,
     ProposalStatus,
     ProposalUpdate,
     ProposalVersionCreate,
     SendToCrmRequest,
+    SIGNED_DOCUMENT_EXTENSIONS,
     invalid_status_detail,
 )
 from app.services.firestore_service import proposals_repo, jobs_repo, settings_repo
 from app.services import crm_service, deepseek_service
+from app.services.storage_service import storage_service
+from app.services.template_service import classification_labels
 from app.workers.tasks.proposal_tasks import _lang_code, format_usd
 from app.services.crm_service import (
     CrmAuthError,
@@ -106,6 +110,42 @@ async def _get_proposal_for_user(proposal_id: str, user_id: str) -> dict:
         )
     _assert_owner(proposal, user_id)
     return proposal
+
+
+async def _apply_proposal_template(proposal: dict, options: dict, user: CurrentUser) -> None:
+    """RF-VTA-07: con `templateId` en el cuerpo, aplica la plantilla a la propuesta y deja en
+    `options` el contenido y las condiciones comerciales ya renderizados para el worker.
+    Lo que el cliente mande como templateContent/commercialTerms se descarta: el texto
+    siempre sale de la plantilla guardada."""
+    options.pop("templateContent", None)
+    options.pop("commercialTerms", None)
+    template_id = options.get("templateId")
+    if not template_id:
+        # Regenerada sin plantilla: que no vuelva a aparecer la anterior al reabrirla.
+        if proposal.get("templateId"):
+            await proposals_repo.update(proposal["id"], {"templateId": None, "templateVariables": None})
+        return
+    variables = options.get("templateVariables") or {}
+    if not isinstance(variables, dict):
+        raise HTTPException(status_code=422, detail="templateVariables must be an object.")
+
+    # Import diferido: routers/templates.py importa helpers de este módulo.
+    from app.routers.templates import render_template_for_user
+    from app.schemas.template import ApplyTemplateRequest
+
+    applied = await render_template_for_user(
+        template_id,
+        ApplyTemplateRequest(proposalId=proposal["id"], variables=variables, language=options.get("language")),
+        user,
+    )
+    options["templateContent"] = applied.rendered
+    options["commercialTerms"] = applied.commercialTerms
+    await proposals_repo.update(proposal["id"], {
+        "templateId": template_id,
+        "templateVariables": variables,  # para regenerar con los mismos valores
+        "serviceType": proposal.get("serviceType") or applied.serviceType,
+        "industry": proposal.get("industry") or applied.industry,
+    })
 
 
 _EXPORT_LABELS = {
@@ -191,6 +231,8 @@ def _proposal_cover_fields(proposal: dict) -> dict:
     valid_until = issued_on + timedelta(days=30)
     lang = _lang_code(proposal.get("language") or structured.get("language"))
     labels = _EXPORT_LABELS[lang]
+    # RF-VTA-07: servicio e industria elegidos al crear la propuesta (no heurísticas).
+    classification = classification_labels(proposal.get("serviceType"), proposal.get("industry"), lang)
 
     return {
         "client": (
@@ -201,10 +243,10 @@ def _proposal_cover_fields(proposal: dict) -> dict:
             or ""
         ),
         "contact": structured.get("contact") or proposal.get("contact") or "",
-        # Industria y línea de servicio salían de heurísticas de la plantilla del frontend
-        # ("B2B Operations", "NoonDalton Standard Proposal"): no son datos del cliente.
-        "industry": "",
-        "service_line": "",
+        # Antes salían de heurísticas del frontend ("B2B Operations", "NoonDalton Standard
+        # Proposal"); ahora solo se muestran si la propuesta trae serviceType/industry válidos.
+        "industry": classification["industria"] or "",
+        "service_line": classification["servicio"] or "",
         "total_amount_display": _format_usd(total_amount, labels["not_calculated"], lang),
         "issued_on": _localized_date(issued_on, lang),
         "valid_until": _localized_date(valid_until, lang),
@@ -1020,6 +1062,7 @@ async def generate_proposal_draft(
     if extra:
         options.update(extra)
     options["userId"] = user.sub  # tras extra: el cliente no puede suplantarlo; el worker lo usa para recuperar el contexto RAG del usuario
+    await _apply_proposal_template(proposal, options, user)
 
     job = await jobs_repo.create_job(
         "proposal_generation",
@@ -1084,6 +1127,7 @@ async def generate_proposal_by_id(
     if body.model_extra:
         options.update(body.model_extra)
     options["userId"] = user.sub  # tras extra: el cliente no puede suplantarlo; el worker lo usa para recuperar el contexto RAG del usuario
+    await _apply_proposal_template(proposal, options, user)
 
     job = await jobs_repo.create_job(
         "proposal_generation",
@@ -1187,6 +1231,70 @@ async def update_proposal_status(
         error = outcome["error"]
         raise HTTPException(status_code=error.status_code, detail=error.detail)
     return outcome["proposal"]
+
+
+@router.post("/{proposal_id}/signed-document", response_model=ProposalOut)
+async def upload_signed_document(
+    proposal_id: str,
+    file: UploadFile = File(...),
+    user: CurrentUser = Depends(get_current_user),
+):
+    """RF-VTA-06 (etapa diferida): adjunta el documento firmado. Se puede subir o
+    reemplazar en cualquier estado, incluida `firmada` (el PATCH /status es lo
+    único que exige que ya exista un adjunto para llegar a `firmada`)."""
+    proposal = await _get_proposal_for_user(proposal_id, user.sub)
+
+    filename = file.filename or "documento.pdf"
+    ext = Path(filename).suffix.lower()
+    if ext not in SIGNED_DOCUMENT_EXTENSIONS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Formato no soportado. Solo se acepta: {', '.join(sorted(SIGNED_DOCUMENT_EXTENSIONS))}.",
+        )
+    data = await file.read(MAX_SIGNED_DOCUMENT_BYTES + 1)
+    if len(data) > MAX_SIGNED_DOCUMENT_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"El archivo supera el tamaño máximo permitido ({MAX_SIGNED_DOCUMENT_BYTES // (1024 * 1024)} MB).",
+        )
+
+    old_path = proposal.get("signedDocumentPath")
+    if old_path:
+        await storage_service.delete_file(old_path)
+
+    storage_path = storage_service.proposal_path(proposal_id, f"signed/{uuid.uuid4().hex}.pdf")
+    url = await storage_service.upload_bytes(data, storage_path, "application/pdf")
+
+    return await proposals_repo.update(proposal_id, {
+        "signedDocumentPath": storage_path,
+        "signedDocumentUrl": url,
+        "signedDocumentName": filename,
+        "signedDocumentUploadedAt": datetime.now(timezone.utc).isoformat(),
+    })
+
+
+@router.delete("/{proposal_id}/signed-document", response_model=ProposalOut)
+async def delete_signed_document(proposal_id: str, user: CurrentUser = Depends(get_current_user)):
+    """Quita el documento firmado adjunto, para corregir un archivo subido por
+    error antes de reemplazarlo. No se permite en una propuesta ya `firmada`:
+    eso la dejaría firmada sin el adjunto que sustenta ese estado — para
+    corregirla ahí, hay que subir el reemplazo directo (POST), sin pasar por
+    un estado intermedio sin documento."""
+    proposal = await _get_proposal_for_user(proposal_id, user.sub)
+    if proposal.get("proposal_status") == "firmada":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="No puedes quitar el documento de una propuesta ya firmada. Sube el reemplazo directamente.",
+        )
+    storage_path = proposal.get("signedDocumentPath")
+    if storage_path:
+        await storage_service.delete_file(storage_path)
+    return await proposals_repo.update(proposal_id, {
+        "signedDocumentPath": None,
+        "signedDocumentUrl": None,
+        "signedDocumentName": None,
+        "signedDocumentUploadedAt": None,
+    })
 
 
 @router.delete("/{proposal_id}", status_code=status.HTTP_204_NO_CONTENT)
