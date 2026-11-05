@@ -25,6 +25,7 @@ Collections used by this project:
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import uuid
@@ -518,6 +519,102 @@ class ProposalsRepo(FirestoreRepo):
             txn.update(ref, {"proposal_status": plan["new_status"], "updatedAt": updated_at})
             txn.set(audit_ref, plan["audit_log"])
             return {"proposal": {**proposal, "proposal_status": plan["new_status"], "updatedAt": updated_at}}
+
+        return await _txn(transaction)
+
+    # ── RF-VTA-11: historial de versiones ────────────────────────────────────
+    # Subcolección proposals/{id}/versions/{versionId}. El contador `versionCounter`
+    # y el hash `versionHash` viven en la propuesta y se actualizan en la misma
+    # transacción que escribe la versión (sin números duplicados ni lecturas extra).
+
+    VERSION_FIELDS = ("title", "content", "structured_content", "total_amount")
+
+    @classmethod
+    def version_snapshot(cls, proposal: Dict[str, Any]) -> Dict[str, Any]:
+        return {f: proposal.get(f) for f in cls.VERSION_FIELDS}
+
+    @staticmethod
+    def _snapshot_hash(snapshot: Dict[str, Any]) -> str:
+        raw = json.dumps(snapshot, sort_keys=True, default=str, ensure_ascii=False)
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+    def _versions_col(self, proposal_id: str):
+        return self._doc(proposal_id).collection("versions")
+
+    @staticmethod
+    def _legacy_versions(legacy: Optional[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+        """Versiones viejas embebidas en el documento (sin id ni autor)."""
+        return [
+            {**v, "id": f"legacy-{v.get('version', i + 1)}", "source": v.get("source") or "manual"}
+            for i, v in enumerate(legacy or [])
+        ]
+
+    async def list_versions(
+        self, proposal_id: str, legacy: Optional[List[Dict[str, Any]]] = None
+    ) -> List[Dict[str, Any]]:
+        """Más recientes primero. Si la subcolección está vacía, devuelve las versiones
+        embebidas anteriores a RF-VTA-11 (compatibilidad, sin migración obligatoria)."""
+        docs = await self._versions_col(proposal_id).order_by(
+            "version", direction=firestore.Query.DESCENDING
+        ).get()
+        items = [d.to_dict() for d in docs if d.exists]
+        if not items:
+            items = sorted(self._legacy_versions(legacy), key=lambda v: v.get("version", 0), reverse=True)
+        return items
+
+    async def get_version(
+        self, proposal_id: str, version_id: str, legacy: Optional[List[Dict[str, Any]]] = None
+    ) -> Optional[Dict[str, Any]]:
+        if version_id.startswith("legacy-"):
+            return next((v for v in self._legacy_versions(legacy) if v["id"] == version_id), None)
+        snap = await self._versions_col(proposal_id).document(version_id).get()
+        return snap.to_dict() if snap.exists else None
+
+    async def create_version(
+        self,
+        proposal_id: str,
+        snapshot: Dict[str, Any],
+        *,
+        author_id: str,
+        author_name: Optional[str],
+        author_email: Optional[str],
+        source: str = "manual",
+        label: Optional[str] = None,
+        skip_if_unchanged: bool = False,
+    ) -> Optional[Dict[str, Any]]:
+        """Guarda un snapshot con el siguiente número de versión. Devuelve la versión,
+        o None si la propuesta no existe o (con skip_if_unchanged) el contenido es
+        idéntico al de la última versión."""
+        ref = self._doc(proposal_id)
+        version_id = new_id()
+        version_ref = self._versions_col(proposal_id).document(version_id)
+        digest = self._snapshot_hash(snapshot)
+        transaction = self.db.transaction()
+
+        @firestore.async_transactional
+        async def _txn(txn):
+            snap = await ref.get(transaction=txn)
+            if not snap.exists:
+                return None
+            proposal = snap.to_dict()
+            if skip_if_unchanged and proposal.get("versionHash") == digest:
+                return None
+            number = max(proposal.get("versionCounter") or 0, len(proposal.get("versions") or [])) + 1
+            version = {
+                **snapshot,
+                "id": version_id,
+                "proposalId": proposal_id,
+                "version": number,
+                "label": label or f"Version {number}",
+                "source": source,
+                "authorId": author_id,
+                "authorName": author_name,
+                "authorEmail": author_email,
+                "createdAt": now_utc(),
+            }
+            txn.set(version_ref, version)
+            txn.update(ref, {"versionCounter": number, "versionHash": digest})
+            return version
 
         return await _txn(transaction)
 

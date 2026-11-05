@@ -122,5 +122,16 @@ export const uploadSignedDocument = (id, file) => {
 export const removeSignedDocument = (id) =>
   withProposalUpdated(api.delete(`/proposals/${id}/signed-document`));
 
-export const sendProposalToCrm = (id, provider) =>
+// RF-VTA-11: historial de versiones (fecha, autor y contenido de cada una).
+// El listado no trae el contenido; getProposalVersion sí.
+export const listProposalVersions = (id) => api.get(`/proposals/${id}/versions`);
+
+export const getProposalVersion = (id, versionId) => api.get(`/proposals/${id}/versions/${versionId}`);
+
+export const createProposalVersion = (id, data = {}) => api.post(`/proposals/${id}/versions`, data);
+
+export const restoreProposalVersion = (id, versionId) =>
+  withProposalUpdated(api.post(`/proposals/${id}/versions/${versionId}/restore`));
+
+export const sendProposalToCrm =(id, provider) =>
   withProposalUpdated(api.post(`/proposals/${id}/send-to-crm`, provider ? { provider } : {}, { suppressServerErrorToast: true, crmRequest: true }));

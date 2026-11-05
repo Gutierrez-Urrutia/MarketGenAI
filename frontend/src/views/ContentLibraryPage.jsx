@@ -11,6 +11,7 @@ import {
 } from "@/features/proposals/proposalStatus";
 import { ProposalStatusControl } from "@/features/proposals/ProposalStatusControl";
 import { SignedDocumentAttachment } from "@/features/proposals/SignedDocumentAttachment";
+import { ProposalVersionHistory } from "@/features/proposals/ProposalVersionHistory";
 import { isAdminUser } from "@/utils/permissions";
 import { ProgressModal } from "@/components/dashboard/ProgressModal";
 import { ProposalDocumentPreview } from "@/features/proposals/ProposalDocumentPreview";
@@ -54,6 +55,10 @@ export function ContentLibraryPage({ navigationState = {}, onNavigate = () => {}
   const [contentLanguage, setContentLanguage] = useState(getStoredPreference(PREF_KEYS.language, "en"));
   const [editingProposal, setEditingProposal] = useState(null);
   const [viewingProposal, setViewingProposal] = useState(null);
+  const [versionHistoryOpen, setVersionHistoryOpen] = useState(false);
+  useEffect(() => {
+    if (!viewingProposal) setVersionHistoryOpen(false);
+  }, [viewingProposal]);
   const [crmSending, setCrmSending] = useState(false);
   const [crmEmailPrompt, setCrmEmailPrompt] = useState(null); // { proposal, email } while asking for a missing client email
   const [crmEmailPromptSaving, setCrmEmailPromptSaving] = useState(false);
@@ -1796,6 +1801,17 @@ const filtered = allItems.filter((item) => {
       signedDocumentUploadedAt: updatedProposal?.signedDocumentUploadedAt ?? null,
     });
   };
+  // RF-VTA-11: tras restaurar una versión, refleja el contenido devuelto por el backend.
+  const handleProposalRestored = (proposalId, updated) => {
+    applyProposalFields(proposalId, {
+      title: updated?.title,
+      content: updated?.content,
+      // Sin estructura guardada, la vista se vuelve a derivar del HTML (content).
+      structuredContent: updated?.structured_content ?? undefined,
+      totalAmount: updated?.total_amount,
+    });
+    setToast({ type: "success", message: t("proposalVersions.restored") });
+  };
   const duplicateItem = (item) => {
     const copy = { ...item, id: `copy-${Date.now()}`, title: `${item.title} Copy`, status: "Draft", date: "Today" };
     if (item.type === "Proposal") setProposals((current) => [...current, copy]);
@@ -3043,6 +3059,7 @@ const filtered = allItems.filter((item) => {
         ) : (
           <>
             <Btn variant="secondary" onClick={() => setViewingProposal(null)}>{t("common.close")}</Btn>
+            <Btn variant="secondary" onClick={() => setVersionHistoryOpen(true)}>{t("proposalVersions.open")}</Btn>
             <Btn variant="secondary" icon={<PenIcon size={12} />} onClick={() => openProposalHtmlEditor(viewingProposal)}>{t("contentLibrary.editProposal")}</Btn>
             <Btn variant="secondary" icon={<PenIcon size={12} />} onClick={() => openStructuredProposalEditor(viewingProposal)}>{createT.editStructure}</Btn>
             <Btn variant="secondary" onClick={() => downloadItem(viewingProposal, "docx")}>{createT.downloadDocx}</Btn>
@@ -3053,6 +3070,13 @@ const filtered = allItems.filter((item) => {
       </div>
     </div>
   </div>
+)}
+{versionHistoryOpen && viewingProposal && (
+  <ProposalVersionHistory
+    proposal={viewingProposal}
+    onClose={() => setVersionHistoryOpen(false)}
+    onRestored={(updated) => handleProposalRestored(viewingProposal.id, updated)}
+  />
 )}
 {/* ── Client email prompt (asked before the first CRM send) ── */}
 {crmEmailPrompt && (
