@@ -108,5 +108,19 @@ export const downloadProposalDocx = (id) =>
 export const updateProposalStatus = (id, status) =>
   withProposalUpdated(api.patch(`/proposals/${id}/status`, { status }));
 
+// RF-VTA-06 (etapa diferida): documento firmado adjunto, sin proveedor de e-signature.
+export const uploadSignedDocument = (id, file) => {
+  const formData = new FormData();
+  formData.append("file", file);
+  return withProposalUpdated(
+    api.post(`/proposals/${id}/signed-document`, formData, {
+      headers: { "Content-Type": "multipart/form-data" },
+    })
+  );
+};
+
+export const removeSignedDocument = (id) =>
+  withProposalUpdated(api.delete(`/proposals/${id}/signed-document`));
+
 export const sendProposalToCrm = (id, provider) =>
   withProposalUpdated(api.post(`/proposals/${id}/send-to-crm`, provider ? { provider } : {}, { suppressServerErrorToast: true, crmRequest: true }));

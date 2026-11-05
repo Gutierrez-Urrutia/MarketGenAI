@@ -1035,6 +1035,7 @@ export const translations = {
       },
       noActions: "No status changes available",
       changeTo: "Change status",
+      needsSignedDocument: "Attach the signed document to be able to mark this proposal as signed.",
       confirm: {
         title: "Confirm status change",
         message: "Change “{title}” to {status}?",
@@ -1042,6 +1043,19 @@ export const translations = {
         warningRejected: "Only an administrator will be able to reopen this proposal.",
         cancel: "Cancel",
         confirm: "Confirm",
+      },
+    },
+    signedDocument: {
+      upload: "Attach signed document",
+      uploading: "Uploading…",
+      replace: "Replace",
+      remove: "Remove",
+      view: "Signed document",
+      noFile: "No signed document attached",
+      errors: {
+        invalidType: "Only PDF files are accepted.",
+        tooLarge: "The file exceeds the maximum allowed size.",
+        generic: "Could not save the signed document.",
       },
     },
     auditLogs: {
@@ -2079,6 +2093,7 @@ export const translations = {
       },
       noActions: "Sin cambios de estado disponibles",
       changeTo: "Cambiar estado",
+      needsSignedDocument: "Adjunta el documento firmado para poder marcar esta propuesta como firmada.",
       confirm: {
         title: "Confirmar cambio de estado",
         message: "¿Cambiar «{title}» a {status}?",
@@ -2086,6 +2101,19 @@ export const translations = {
         warningRejected: "Solo un administrador podrá reabrir esta propuesta.",
         cancel: "Cancelar",
         confirm: "Confirmar",
+      },
+    },
+    signedDocument: {
+      upload: "Adjuntar documento firmado",
+      uploading: "Subiendo…",
+      replace: "Reemplazar",
+      remove: "Quitar",
+      view: "Documento firmado",
+      noFile: "Sin documento firmado adjunto",
+      errors: {
+        invalidType: "Solo se aceptan archivos PDF.",
+        tooLarge: "El archivo supera el tamaño máximo permitido.",
+        generic: "No se pudo guardar el documento firmado.",
       },
     },
     auditLogs: {
@@ -3159,6 +3187,7 @@ export const translations = {
       },
       noActions: "Nenhuma mudança de status disponível",
       changeTo: "Mudar status",
+      needsSignedDocument: "Anexe o documento assinado para poder marcar esta proposta como assinada.",
       confirm: {
         title: "Confirmar mudança de status",
         message: "Mudar «{title}» para {status}?",
@@ -3166,6 +3195,19 @@ export const translations = {
         warningRejected: "Somente um administrador poderá reabrir esta proposta.",
         cancel: "Cancelar",
         confirm: "Confirmar",
+      },
+    },
+    signedDocument: {
+      upload: "Anexar documento assinado",
+      uploading: "Enviando…",
+      replace: "Substituir",
+      remove: "Remover",
+      view: "Documento assinado",
+      noFile: "Nenhum documento assinado anexado",
+      errors: {
+        invalidType: "Somente arquivos PDF são aceitos.",
+        tooLarge: "O arquivo excede o tamanho máximo permitido.",
+        generic: "Não foi possível salvar o documento assinado.",
       },
     },
     auditLogs: {

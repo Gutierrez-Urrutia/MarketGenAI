@@ -25,6 +25,10 @@ class ProposalStatus(str, Enum):
 
 PROPOSAL_STATUS_VALUES: FrozenSet[str] = frozenset(s.value for s in ProposalStatus)
 
+# RF-VTA-06 (etapa diferida): documento firmado adjunto a la propuesta.
+SIGNED_DOCUMENT_EXTENSIONS: FrozenSet[str] = frozenset({".pdf"})
+MAX_SIGNED_DOCUMENT_BYTES: int = 10 * 1024 * 1024
+
 # Transiciones permitidas. Todo lo que no está aquí es inválido, incluido
 # misma→misma. rechazada→en_negociacion (reapertura) además exige ser admin.
 PROPOSAL_STATUS_TRANSITIONS: Dict[ProposalStatus, FrozenSet[ProposalStatus]] = {
@@ -219,6 +223,9 @@ class ProposalOut(BaseModel):
     userId:      Optional[str] = None
     bookId:      Optional[str] = None
     downloadUrl: Optional[str] = None
+    signedDocumentUrl:        Optional[str] = None
+    signedDocumentName:       Optional[str] = None
+    signedDocumentUploadedAt: Optional[datetime] = None
     createdAt:   Optional[datetime] = None
     updatedAt:   Optional[datetime] = None
 

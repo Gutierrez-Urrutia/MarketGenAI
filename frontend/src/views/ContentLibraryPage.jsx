@@ -10,6 +10,7 @@ import {
   toDisplayProposalStatus,
 } from "@/features/proposals/proposalStatus";
 import { ProposalStatusControl } from "@/features/proposals/ProposalStatusControl";
+import { SignedDocumentAttachment } from "@/features/proposals/SignedDocumentAttachment";
 import { isAdminUser } from "@/utils/permissions";
 import { ProgressModal } from "@/components/dashboard/ProgressModal";
 import { ProposalDocumentPreview } from "@/features/proposals/ProposalDocumentPreview";
@@ -1750,26 +1751,35 @@ const filtered = allItems.filter((item) => {
   };
   const proposalStatusLabel = (proposalStatus) => t(proposalStatusLabelKey(proposalStatus));
   const canReopenProposals = isAdminUser(authTokenStore.getUser() || {});
+  // Fusiona campos en viewingProposal/proposals para un id dado (cambio de estado,
+  // adjuntar/quitar el documento firmado — RF-VTA-06 etapa diferida — etc.).
+  const applyProposalFields = (proposalId, fields) => {
+    setViewingProposal((current) => (current && current.id === proposalId ? { ...current, ...fields } : current));
+    setProposals((current) => current.map((item) => (
+      item.id === proposalId ? { ...item, ...fields } : item
+    )));
+  };
   const handleProposalStatusChange = async (proposal, proposalStatus) => {
     const previousStatus = proposal.proposal_status;
-    const applyStatus = (value) => {
-      setViewingProposal((current) => (current && current.id === proposal.id ? { ...current, proposal_status: value } : current));
-      setProposals((current) => current.map((item) => (
-        item.id === proposal.id ? { ...item, proposal_status: value } : item
-      )));
-    };
-    applyStatus(proposalStatus);
+    applyProposalFields(proposal.id, { proposal_status: proposalStatus });
     setStatusChangePendingId(proposal.id);
     try {
       const { data } = await updateProposalStatus(proposal.id, proposalStatus);
-      if (data?.proposal_status) applyStatus(data.proposal_status);
+      if (data?.proposal_status) applyProposalFields(proposal.id, { proposal_status: data.proposal_status });
     } catch (error) {
       console.error(error);
-      applyStatus(previousStatus);
+      applyProposalFields(proposal.id, { proposal_status: previousStatus });
       setToast({ type: "error", message: proposalStatusErrorMessage(error, { from: previousStatus, to: proposalStatus }, t) });
     } finally {
       setStatusChangePendingId(null);
     }
+  };
+  const handleSignedDocumentChange = (proposalId, updatedProposal) => {
+    applyProposalFields(proposalId, {
+      signedDocumentUrl: updatedProposal?.signedDocumentUrl ?? null,
+      signedDocumentName: updatedProposal?.signedDocumentName ?? null,
+      signedDocumentUploadedAt: updatedProposal?.signedDocumentUploadedAt ?? null,
+    });
   };
   const duplicateItem = (item) => {
     const copy = { ...item, id: `copy-${Date.now()}`, title: `${item.title} Copy`, status: "Draft", date: "Today" };
@@ -2924,14 +2934,21 @@ const filtered = allItems.filter((item) => {
             {editingProposal ? t("contentLibrary.editProposal") : t("contentLibrary.proposalPreview")}
           </p>
           {!editingProposal && (
-            <ProposalStatusControl
-              status={viewingProposal.proposal_status}
-              proposalTitle={viewingProposal.title}
-              isAdmin={canReopenProposals}
-              pending={statusChangePendingId === viewingProposal.id}
-              colorClassName={proposalStatusColor(viewingProposal.proposal_status)}
-              onChange={(proposalStatus) => handleProposalStatusChange(viewingProposal, proposalStatus)}
-            />
+            <>
+              <ProposalStatusControl
+                status={viewingProposal.proposal_status}
+                proposalTitle={viewingProposal.title}
+                isAdmin={canReopenProposals}
+                hasSignedDocument={Boolean(viewingProposal.signedDocumentUrl)}
+                pending={statusChangePendingId === viewingProposal.id}
+                colorClassName={proposalStatusColor(viewingProposal.proposal_status)}
+                onChange={(proposalStatus) => handleProposalStatusChange(viewingProposal, proposalStatus)}
+              />
+              <SignedDocumentAttachment
+                proposal={viewingProposal}
+                onChange={(updated) => handleSignedDocumentChange(viewingProposal.id, updated)}
+              />
+            </>
           )}
         </div>
 

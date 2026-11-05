@@ -44,8 +44,12 @@ export const isAdminOnlyTransition = (from, to) =>
   from === PROPOSAL_STATUS.RECHAZADA && to === PROPOSAL_STATUS.EN_NEGOCIACION;
 
 // Destinos que el usuario puede elegir desde `current`. Estado desconocido → ninguno.
-export const getAllowedTransitions = (current, { isAdmin = false } = {}) =>
-  (PROPOSAL_STATUS_TRANSITIONS[current] || []).filter((to) => isAdmin || !isAdminOnlyTransition(current, to));
+// `hasSignedDocument` (RF-VTA-06, etapa diferida): sin documento firmado adjunto no se
+// puede ofrecer "firmada" — el backend la rechazaría con 422.
+export const getAllowedTransitions = (current, { isAdmin = false, hasSignedDocument = true } = {}) =>
+  (PROPOSAL_STATUS_TRANSITIONS[current] || [])
+    .filter((to) => isAdmin || !isAdminOnlyTransition(current, to))
+    .filter((to) => to !== PROPOSAL_STATUS.FIRMADA || hasSignedDocument);
 
 // Destinos que piden confirmación antes de enviarse: firmada es final y rechazada
 // solo la reabre un admin.
