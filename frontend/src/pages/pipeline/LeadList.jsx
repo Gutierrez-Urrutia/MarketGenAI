@@ -9,7 +9,7 @@
  */
 import { Fragment, forwardRef, useEffect, useLayoutEffect, useRef, useState } from "react";
 import toast from "react-hot-toast";
-import { Radar, Loader2, RefreshCw, ArrowUp, ArrowDown, ChevronDown, ChevronRight } from "lucide-react";
+import { Radar, Loader2, RefreshCw, ArrowUp, ArrowDown, ChevronDown, ChevronRight, Search, X } from "lucide-react";
 
 import { leadsApi, pipelineApi } from "@/api/axios";
 import { useI18n } from "@/hooks/useI18n";
@@ -116,6 +116,28 @@ export function sortLeads(leads, sort, t) {
   });
 }
 
+// Text search over the leads already loaded (client side, at most
+// LEADS_LIMIT): case, accents and extra spaces do not count.
+export function normalizeSearch(text) {
+  return String(text ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+// Leads whose company or job title (the two columns the table shows)
+// contain the query. Runs on the list the backend sent, so it combines with
+// the status and minimum score filters (applied by the backend).
+export function searchLeads(leads, query) {
+  const needle = normalizeSearch(query);
+  if (!needle) return leads;
+  return leads.filter((lead) => (
+    normalizeSearch(lead.company_name).includes(needle) || normalizeSearch(lead.job_title).includes(needle)
+  ));
+}
+
 // Derived on every render (no effect): when the list shrinks under the page
 // being shown, that page is clamped to the last one that still exists.
 export function paginate(items, page, pageSize = PAGE_SIZE) {
@@ -218,6 +240,7 @@ export default function LeadList({ onNavigate } = {}) {
   const [loadError, setLoadError] = useState(null);
   const [statusFilter, setStatusFilter] = useState("");
   const [minScore, setMinScore] = useState("");
+  const [query, setQuery] = useState("");
   const [page, setPage] = useState(1);
   const [sort, setSort] = useState(null);
   const pollRef = useRef(null);
@@ -367,8 +390,21 @@ export default function LeadList({ onNavigate } = {}) {
     }
   };
 
-  const sortedLeads = sortLeads(leads, sort, t);
+  const matchingLeads = searchLeads(leads, query);
+  const searching = normalizeSearch(query) !== "";
+  const sortedLeads = sortLeads(matchingLeads, sort, t);
   const { pageCount, currentPage, firstIndex, pageItems: pageLeads } = paginate(sortedLeads, page);
+
+  const changeQuery = (value) => {
+    setQuery(value);
+    setPage(1);
+  };
+
+  // Counts are over the leads loaded with the current backend filters.
+  const countText = (searching ? t("leads.searchMatches") : t("leads.searchCount"))
+    .replace("{n}", matchingLeads.length)
+    .replace("{total}", leads.length)
+    + (statusFilter ? t("leads.searchStatusSuffix").replace("{status}", t(`leads.status.${statusFilter}`)) : "");
 
   const changeSort = (column) => {
     setSort((current) => nextSort(current, column));
@@ -395,6 +431,32 @@ export default function LeadList({ onNavigate } = {}) {
       </div>
 
       <Card className="p-4 flex flex-wrap gap-3 items-end">
+        <div className="min-w-[14rem] flex-1 sm:flex-none">
+          <label htmlFor="leads-search" className="block text-xs font-medium text-gray-600 mb-1">{t("leads.searchLabel")}</label>
+          <div className="relative">
+            <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400" aria-hidden="true" />
+            <input
+              id="leads-search"
+              type="search"
+              value={query}
+              onChange={(e) => changeQuery(e.target.value)}
+              placeholder={t("leads.searchPlaceholder")}
+              aria-describedby="leads-search-count"
+              className="border border-gray-300 rounded-lg text-xs pl-7 pr-7 py-1.5 w-full sm:w-64"
+            />
+            {query && (
+              <button
+                type="button"
+                onClick={() => changeQuery("")}
+                aria-label={t("leads.clearSearch")}
+                title={t("leads.clearSearch")}
+                className="absolute right-1.5 top-1/2 -translate-y-1/2 p-0.5 rounded text-gray-400 hover:text-gray-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
+              >
+                <X size={12} aria-hidden="true" />
+              </button>
+            )}
+          </div>
+        </div>
         <div>
           <label className="block text-xs font-medium text-gray-600 mb-1">{t("leads.filterStatus")}</label>
           <select
@@ -417,6 +479,14 @@ export default function LeadList({ onNavigate } = {}) {
             className="border border-gray-300 rounded-lg text-xs px-2.5 py-1.5 w-24"
           />
         </div>
+        {!loading && !loadError && (
+          <div id="leads-search-count" aria-live="polite" className="text-xs text-gray-600 pb-1.5">
+            <span>{countText}</span>
+            {leads.length >= LEADS_LIMIT && (
+              <span className="block text-amber-600">{t("leads.searchLimit").replace(/\{limit\}/g, LEADS_LIMIT)}</span>
+            )}
+          </div>
+        )}
       </Card>
 
       <Card className="overflow-x-auto" ref={tableBoxRef}>
@@ -434,6 +504,17 @@ export default function LeadList({ onNavigate } = {}) {
           </div>
         ) : leads.length === 0 ? (
           <div className="p-8 text-center text-gray-400 text-sm">{t("leads.empty")}</div>
+        ) : matchingLeads.length === 0 ? (
+          <div role="status" className="p-8 text-center text-sm text-gray-500 space-y-3">
+            <p>{t("leads.noMatches").replace("{query}", query.trim())}</p>
+            <button
+              type="button"
+              onClick={() => changeQuery("")}
+              className="px-3.5 py-2 rounded-lg text-xs font-medium border border-gray-300 text-gray-700 hover:bg-gray-50"
+            >
+              {t("leads.clearSearch")}
+            </button>
+          </div>
         ) : (
           <table className="min-w-full text-sm">
             <thead>
@@ -525,14 +606,14 @@ export default function LeadList({ onNavigate } = {}) {
             </tbody>
           </table>
         )}
-        {!loading && !loadError && leads.length > 0 && (
+        {!loading && !loadError && matchingLeads.length > 0 && (
           <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 border-t border-gray-100 bg-gray-50">
             <div>
               <span className="text-xs text-gray-400">
                 {t("leads.showing")
                   .replace("{from}", firstIndex + 1)
                   .replace("{to}", firstIndex + pageLeads.length)
-                  .replace("{total}", leads.length)}
+                  .replace("{total}", matchingLeads.length)}
               </span>
               {leads.length >= LEADS_LIMIT && (
                 <p className="text-xs text-amber-600">
