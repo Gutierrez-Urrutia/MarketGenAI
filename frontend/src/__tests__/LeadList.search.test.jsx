@@ -15,9 +15,6 @@ vi.mock("@/api/axios", () => ({
 // Keys come back as-is, except the templates whose placeholders the tests read.
 vi.mock("@/hooks/useI18n", () => {
   const templates = {
-    "leads.searchCount": "{total} loaded",
-    "leads.searchMatches": "{n} of {total} loaded",
-    "leads.searchStatusSuffix": " with {status}",
     "leads.searchLimit": "searching the {limit} most recent",
     "leads.noMatches": "no lead matches {query}",
     "leads.showing": "showing {from}-{to} of {total}",
@@ -75,7 +72,9 @@ async function renderList(items = DATA) {
 const searchBox = () => screen.getByRole("searchbox", { name: "leads.searchLabel" });
 const typeSearch = async (text) => { fireEvent.change(searchBox(), { target: { value: text } }); await flush(); };
 const rowIds = (container) => [...container.querySelectorAll("tbody tr a")].map((a) => a.getAttribute("href").split("/").pop());
-const counter = () => document.getElementById("leads-search-count").textContent;
+// The footer «Mostrando X–Y de N» counts the matching leads.
+const footer = () => screen.queryByText(/^showing /)?.textContent ?? null;
+const limitNotice = () => document.getElementById("leads-search-limit");
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -84,21 +83,20 @@ beforeEach(() => {
 });
 
 describe("LeadList search", () => {
-  it("(a) a company name leaves only that company's leads and the counter shows how many", async () => {
+  it("(a) a company name leaves only that company's leads and the footer counts them", async () => {
     const { container } = await renderList();
-    expect(counter()).toBe("7 loaded");
+    expect(footer()).toBe("showing 1-7 of 7");
 
     await typeSearch("acme");
     expect(rowIds(container).sort()).toEqual(["a1", "a2", "a3"]);
-    expect(counter()).toBe("3 of 7 loaded");
-    expect(searchBox().getAttribute("aria-describedby")).toBe("leads-search-count");
+    expect(footer()).toBe("showing 1-3 of 3");
   });
 
   it("(b) searches by job title, ignoring case, accents and extra spaces", async () => {
     const { container } = await renderList();
     await typeSearch("  SOPORTE   tecnico ");
     expect(rowIds(container)).toEqual(["g1"]);
-    expect(counter()).toBe("1 of 7 loaded");
+    expect(footer()).toBe("showing 1-1 of 1");
 
     await typeSearch("análista");
     expect(rowIds(container)).toEqual(["g2"]);
@@ -111,13 +109,13 @@ describe("LeadList search", () => {
     await flush();
     expect(leadsApi.list).toHaveBeenLastCalledWith({ limit: 200, status: "contacts_found" });
     expect(rowIds(container).sort()).toEqual(["a2", "a3"]);
-    expect(counter()).toBe("2 of 3 loaded with leads.status.contacts_found");
+    expect(footer()).toBe("showing 1-2 of 2");
 
     fireEvent.change(container.querySelector("input[type=number]"), { target: { value: "0.8" } });
     await flush();
     expect(leadsApi.list).toHaveBeenLastCalledWith({ limit: 200, status: "contacts_found", min_score: 0.8 });
     expect(rowIds(container)).toEqual(["a2"]);
-    expect(counter()).toBe("1 of 2 loaded with leads.status.contacts_found");
+    expect(footer()).toBe("showing 1-1 of 1");
   });
 
   it("(d) clearing the search brings back every lead", async () => {
@@ -129,7 +127,7 @@ describe("LeadList search", () => {
     await flush();
     expect(searchBox().value).toBe("");
     expect(rowIds(container)).toHaveLength(7);
-    expect(counter()).toBe("7 loaded");
+    expect(footer()).toBe("showing 1-7 of 7");
     expect(screen.queryByRole("button", { name: "leads.clearSearch" })).toBeNull();
   });
 
@@ -138,7 +136,7 @@ describe("LeadList search", () => {
     await typeSearch("zzz-no-existe");
     expect(screen.getByText("no lead matches zzz-no-existe")).toBeTruthy();
     expect(screen.queryByText("leads.empty")).toBeNull();
-    expect(counter()).toBe("0 of 7 loaded");
+    expect(footer()).toBeNull();
     expect(document.querySelector("tbody")).toBeNull();
   });
 
@@ -147,22 +145,42 @@ describe("LeadList search", () => {
     await renderList(many);
     fireEvent.click(screen.getByRole("button", { name: "common.next" }));
     await flush();
-    expect(screen.getByText("showing 11-15 of 15")).toBeTruthy();
+    expect(footer()).toBe("showing 11-15 of 15");
 
     await typeSearch("agent");
-    expect(screen.getByText("showing 1-10 of 15")).toBeTruthy();
+    expect(footer()).toBe("showing 1-10 of 15");
   });
 
-  it("(g) with 200 leads loaded the counter says the search only sees the most recent", async () => {
+  it("(g) searching 200 loaded leads says the search only sees the most recent", async () => {
     const full = Array.from({ length: 200 }, (_, i) => makeLead(`f${i + 1}`));
     await renderList(full);
-    expect(counter()).toBe("200 loadedsearching the 200 most recent");
     await typeSearch("f1");
-    expect(counter()).toMatch(/^\d+ of 200 loadedsearching the 200 most recent$/);
+    expect(limitNotice()?.textContent).toBe("searching the 200 most recent");
+    expect(searchBox().getAttribute("aria-describedby")).toBe("leads-search-limit");
+    expect(footer()).toBe("showing 1-10 of 111");
   });
 
-  it("(g) under the limit there is no limit notice", async () => {
+  it("(g) with 200 leads and no search text the limit notice is not shown", async () => {
+    const full = Array.from({ length: 200 }, (_, i) => makeLead(`f${i + 1}`));
+    await renderList(full);
+    expect(limitNotice()).toBeNull();
+    expect(searchBox().hasAttribute("aria-describedby")).toBe(false);
+  });
+
+  it("(g) searching fewer than 200 leads shows no limit notice", async () => {
     await renderList(DATA);
-    expect(counter()).not.toContain("most recent");
+    await typeSearch("acme");
+    expect(limitNotice()).toBeNull();
+  });
+
+  it("the filters come first (left) and the search box last, pushed to the right", async () => {
+    const { container } = await renderList();
+    const box = screen.getByTestId("leads-search-box");
+    const before = (a, b) => Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(before(screen.getByRole("combobox"), searchBox())).toBe(true);
+    expect(before(container.querySelector("input[type=number]"), searchBox())).toBe(true);
+    expect(box.parentElement.lastElementChild).toBe(box);
+    expect(box.className).toContain("sm:ml-auto");
+    expect(box.contains(screen.getByText("leads.searchLabel"))).toBe(true);
   });
 });

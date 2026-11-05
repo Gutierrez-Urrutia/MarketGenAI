@@ -400,11 +400,9 @@ export default function LeadList({ onNavigate } = {}) {
     setPage(1);
   };
 
-  // Counts are over the leads loaded with the current backend filters.
-  const countText = (searching ? t("leads.searchMatches") : t("leads.searchCount"))
-    .replace("{n}", matchingLeads.length)
-    .replace("{total}", leads.length)
-    + (statusFilter ? t("leads.searchStatusSuffix").replace("{status}", t(`leads.status.${statusFilter}`)) : "");
+  // The search only sees the leads loaded (at most LEADS_LIMIT): say so
+  // while searching a full response.
+  const showSearchLimit = searching && leads.length >= LEADS_LIMIT;
 
   const changeSort = (column) => {
     setSort((current) => nextSort(current, column));
@@ -431,32 +429,6 @@ export default function LeadList({ onNavigate } = {}) {
       </div>
 
       <Card className="p-4 flex flex-wrap gap-3 items-end">
-        <div className="min-w-[14rem] flex-1 sm:flex-none">
-          <label htmlFor="leads-search" className="block text-xs font-medium text-gray-600 mb-1">{t("leads.searchLabel")}</label>
-          <div className="relative">
-            <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400" aria-hidden="true" />
-            <input
-              id="leads-search"
-              type="search"
-              value={query}
-              onChange={(e) => changeQuery(e.target.value)}
-              placeholder={t("leads.searchPlaceholder")}
-              aria-describedby="leads-search-count"
-              className="border border-gray-300 rounded-lg text-xs pl-7 pr-7 py-1.5 w-full sm:w-64"
-            />
-            {query && (
-              <button
-                type="button"
-                onClick={() => changeQuery("")}
-                aria-label={t("leads.clearSearch")}
-                title={t("leads.clearSearch")}
-                className="absolute right-1.5 top-1/2 -translate-y-1/2 p-0.5 rounded text-gray-400 hover:text-gray-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
-              >
-                <X size={12} aria-hidden="true" />
-              </button>
-            )}
-          </div>
-        </div>
         <div>
           <label className="block text-xs font-medium text-gray-600 mb-1">{t("leads.filterStatus")}</label>
           <select
@@ -479,14 +451,38 @@ export default function LeadList({ onNavigate } = {}) {
             className="border border-gray-300 rounded-lg text-xs px-2.5 py-1.5 w-24"
           />
         </div>
-        {!loading && !loadError && (
-          <div id="leads-search-count" aria-live="polite" className="text-xs text-gray-600 pb-1.5">
-            <span>{countText}</span>
-            {leads.length >= LEADS_LIMIT && (
-              <span className="block text-amber-600">{t("leads.searchLimit").replace(/\{limit\}/g, LEADS_LIMIT)}</span>
+        {/* Search on the right; on narrow screens it wraps below the filters. */}
+        <div data-testid="leads-search-box" className="w-full sm:w-auto sm:ml-auto">
+          <label htmlFor="leads-search" className="block text-xs font-medium text-gray-600 mb-1">{t("leads.searchLabel")}</label>
+          <div className="relative">
+            <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400" aria-hidden="true" />
+            <input
+              id="leads-search"
+              type="search"
+              value={query}
+              onChange={(e) => changeQuery(e.target.value)}
+              placeholder={t("leads.searchPlaceholder")}
+              aria-describedby={showSearchLimit ? "leads-search-limit" : undefined}
+              className="border border-gray-300 rounded-lg text-xs pl-7 pr-7 py-1.5 w-full sm:w-64"
+            />
+            {query && (
+              <button
+                type="button"
+                onClick={() => changeQuery("")}
+                aria-label={t("leads.clearSearch")}
+                title={t("leads.clearSearch")}
+                className="absolute right-1.5 top-1/2 -translate-y-1/2 p-0.5 rounded text-gray-400 hover:text-gray-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
+              >
+                <X size={12} aria-hidden="true" />
+              </button>
             )}
           </div>
-        )}
+          {showSearchLimit && (
+            <p id="leads-search-limit" aria-live="polite" className="mt-1 text-xs text-amber-600">
+              {t("leads.searchLimit").replace(/\{limit\}/g, LEADS_LIMIT)}
+            </p>
+          )}
+        </div>
       </Card>
 
       <Card className="overflow-x-auto" ref={tableBoxRef}>

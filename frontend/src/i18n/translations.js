@@ -1067,9 +1067,6 @@ export const translations = {
       searchLabel: "Search by company or job title",
       searchPlaceholder: "Company or job title…",
       clearSearch: "Clear search",
-      searchCount: "{total} leads loaded",
-      searchMatches: "{n} of {total} leads loaded",
-      searchStatusSuffix: " with status «{status}»",
       searchLimit: "Searching the {limit} most recent.",
       noMatches: "No lead matches «{query}».",
       status: {
@@ -2182,9 +2179,6 @@ export const translations = {
       searchLabel: "Buscar por empresa o cargo",
       searchPlaceholder: "Empresa o cargo…",
       clearSearch: "Limpiar búsqueda",
-      searchCount: "{total} leads cargados",
-      searchMatches: "{n} de {total} leads cargados",
-      searchStatusSuffix: " con el estado «{status}»",
       searchLimit: "Búsqueda sobre los {limit} más recientes.",
       noMatches: "Ningún lead coincide con «{query}».",
       status: {
@@ -3333,9 +3327,6 @@ export const translations = {
       searchLabel: "Buscar por empresa ou cargo",
       searchPlaceholder: "Empresa ou cargo…",
       clearSearch: "Limpar busca",
-      searchCount: "{total} leads carregados",
-      searchMatches: "{n} de {total} leads carregados",
-      searchStatusSuffix: " com o status «{status}»",
       searchLimit: "Busca sobre os {limit} mais recentes.",
       noMatches: "Nenhum lead corresponde a «{query}».",
       status: {
