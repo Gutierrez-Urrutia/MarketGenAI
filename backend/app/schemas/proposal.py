@@ -195,6 +195,22 @@ class ProposalVersionCreate(BaseModel):
     label:   Optional[str] = None
 
 
+class ProposalVersionOut(BaseModel):
+    """RF-VTA-11: una versión guardada (fecha, autor y contenido). `content` y los
+    demás campos del snapshot solo se incluyen en el detalle, no en el listado."""
+    model_config = ConfigDict(extra="allow")
+
+    id:          str
+    version:     int
+    label:       Optional[str] = None
+    source:      Optional[str] = None
+    title:       Optional[str] = None
+    authorId:    Optional[str] = None
+    authorName:  Optional[str] = None
+    authorEmail: Optional[str] = None
+    createdAt:   Optional[datetime] = None
+
+
 class SendToCrmRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
 

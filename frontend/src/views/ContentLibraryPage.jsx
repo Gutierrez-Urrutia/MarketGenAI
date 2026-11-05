@@ -11,6 +11,7 @@ import {
 } from "@/features/proposals/proposalStatus";
 import { ProposalStatusControl } from "@/features/proposals/ProposalStatusControl";
 import { SignedDocumentAttachment } from "@/features/proposals/SignedDocumentAttachment";
+import { ProposalVersionHistory } from "@/features/proposals/ProposalVersionHistory";
 import { isAdminUser } from "@/utils/permissions";
 import { ProgressModal } from "@/components/dashboard/ProgressModal";
 import { ProposalDocumentPreview } from "@/features/proposals/ProposalDocumentPreview";
@@ -54,6 +55,10 @@ export function ContentLibraryPage({ navigationState = {}, onNavigate = () => {}
   const [contentLanguage, setContentLanguage] = useState(getStoredPreference(PREF_KEYS.language, "en"));
   const [editingProposal, setEditingProposal] = useState(null);
   const [viewingProposal, setViewingProposal] = useState(null);
+  const [versionHistoryOpen, setVersionHistoryOpen] = useState(false);
+  useEffect(() => {
+    if (!viewingProposal) setVersionHistoryOpen(false);
+  }, [viewingProposal]);
   const [crmSending, setCrmSending] = useState(false);
   const [crmEmailPrompt, setCrmEmailPrompt] = useState(null); // { proposal, email } while asking for a missing client email
   const [crmEmailPromptSaving, setCrmEmailPromptSaving] = useState(false);
@@ -781,6 +786,7 @@ export function ContentLibraryPage({ navigationState = {}, onNavigate = () => {}
       tags: normalizeTags(current.tags).filter((item) => item.toLowerCase() !== tag.toLowerCase()),
     }));
   };
+  const isEmailFormatValid = (value) => !value?.trim() || /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(value.trim());
   const goToProposalStep = (step) => {
     if (step > 1 && !proposalForm.customer.trim()) {
       setToast(createT.customerRequired);
@@ -788,6 +794,10 @@ export function ContentLibraryPage({ navigationState = {}, onNavigate = () => {}
     }
     if (step > 1 && !proposalForm.name.trim()) {
       setToast(createT.titleRequired);
+      return;
+    }
+    if (step > 1 && !isEmailFormatValid(proposalForm.customerEmail)) {
+      setToast(createT.crmEmailInvalid);
       return;
     }
     setWizardStep(step);
@@ -1041,6 +1051,10 @@ export function ContentLibraryPage({ navigationState = {}, onNavigate = () => {}
   });
   const saveCreateContentDraft = async () => {
     if (createType === "Proposal") {
+      if (!isEmailFormatValid(proposalForm.customerEmail)) {
+        setToast(createT.crmEmailInvalid);
+        return;
+      }
       if (structuredEditingProposalId) {
         try {
           await updateProposal(structuredEditingProposalId, buildProposalPersistencePayload());
@@ -1051,7 +1065,7 @@ export function ContentLibraryPage({ navigationState = {}, onNavigate = () => {}
           setToast(createT.draftSaved);
         } catch (error) {
           console.error(error);
-          setToast(createT.draftCreationFailed);
+          setToast(getApiErrorMessage(error, createT.draftCreationFailed));
         }
         return;
       }
@@ -1385,6 +1399,11 @@ export function ContentLibraryPage({ navigationState = {}, onNavigate = () => {}
       setWizardStep(1);
       return;
     }
+    if (!isEmailFormatValid(proposalForm.customerEmail)) {
+      setToast(createT.crmEmailInvalid);
+      setWizardStep(1);
+      return;
+    }
     const contextualStructure = buildProposalStructure(title);
     const generationPayload = buildProposalGenerationPayload(title);
     setGenerationModal({
@@ -1434,9 +1453,10 @@ export function ContentLibraryPage({ navigationState = {}, onNavigate = () => {}
       await completeProposalGeneration(generatedProposal, title, contextualStructure);
     } catch (error) {
       console.error(error);
+      const fallback = draftProposal ? createT.generationFailedDraftSaved : createT.draftCreationFailed;
       setGenerationModal((current) => ({
         ...current,
-        error: draftProposal ? createT.generationFailedDraftSaved : createT.draftCreationFailed,
+        error: getApiErrorMessage(error, fallback),
         draftId: draftProposal?.id || current?.draftId,
       }));
     }
@@ -1781,6 +1801,17 @@ const filtered = allItems.filter((item) => {
       signedDocumentUploadedAt: updatedProposal?.signedDocumentUploadedAt ?? null,
     });
   };
+  // RF-VTA-11: tras restaurar una versión, refleja el contenido devuelto por el backend.
+  const handleProposalRestored = (proposalId, updated) => {
+    applyProposalFields(proposalId, {
+      title: updated?.title,
+      content: updated?.content,
+      // Sin estructura guardada, la vista se vuelve a derivar del HTML (content).
+      structuredContent: updated?.structured_content ?? undefined,
+      totalAmount: updated?.total_amount,
+    });
+    setToast({ type: "success", message: t("proposalVersions.restored") });
+  };
   const duplicateItem = (item) => {
     const copy = { ...item, id: `copy-${Date.now()}`, title: `${item.title} Copy`, status: "Draft", date: "Today" };
     if (item.type === "Proposal") setProposals((current) => [...current, copy]);
@@ -1821,8 +1852,10 @@ const filtered = allItems.filter((item) => {
     }
     setToast({ type: "error", message: t("contentLibrary.exportUnsupported") });
   };
-  const getCrmErrorMessage = (error, fallback) => {
-    const detail = error?.response?.data?.detail;
+  const getApiErrorMessage = (error, fallback) => {
+    const data = error?.response?.data;
+    if (typeof data?.message === "string" && data.message.trim()) return data.message;
+    const detail = data?.detail;
     if (Array.isArray(detail) && typeof detail[0]?.msg === "string") return detail[0].msg;
     return (typeof detail === "string" && detail.trim()) ? detail : (error?.message || fallback);
   };
@@ -1839,7 +1872,7 @@ const filtered = allItems.filter((item) => {
       setToast({ type: "success", message: createT.crmSent.replace("{provider}", providerLabel) });
     } catch (error) {
       console.error(error);
-      setToast({ type: "error", message: getCrmErrorMessage(error, createT.crmSendFailed) });
+      setToast({ type: "error", message: getApiErrorMessage(error, createT.crmSendFailed) });
     } finally {
       setCrmSending(false);
     }
@@ -1868,7 +1901,7 @@ const filtered = allItems.filter((item) => {
       await sendProposalToCrmNow(updatedProposal);
     } catch (error) {
       console.error(error);
-      setToast({ type: "error", message: getCrmErrorMessage(error, createT.crmEmailSaveFailed) });
+      setToast({ type: "error", message: getApiErrorMessage(error, createT.crmEmailSaveFailed) });
     } finally {
       setCrmEmailPromptSaving(false);
     }
@@ -3026,6 +3059,7 @@ const filtered = allItems.filter((item) => {
         ) : (
           <>
             <Btn variant="secondary" onClick={() => setViewingProposal(null)}>{t("common.close")}</Btn>
+            <Btn variant="secondary" onClick={() => setVersionHistoryOpen(true)}>{t("proposalVersions.open")}</Btn>
             <Btn variant="secondary" icon={<PenIcon size={12} />} onClick={() => openProposalHtmlEditor(viewingProposal)}>{t("contentLibrary.editProposal")}</Btn>
             <Btn variant="secondary" icon={<PenIcon size={12} />} onClick={() => openStructuredProposalEditor(viewingProposal)}>{createT.editStructure}</Btn>
             <Btn variant="secondary" onClick={() => downloadItem(viewingProposal, "docx")}>{createT.downloadDocx}</Btn>
@@ -3036,6 +3070,13 @@ const filtered = allItems.filter((item) => {
       </div>
     </div>
   </div>
+)}
+{versionHistoryOpen && viewingProposal && (
+  <ProposalVersionHistory
+    proposal={viewingProposal}
+    onClose={() => setVersionHistoryOpen(false)}
+    onRestored={(updated) => handleProposalRestored(viewingProposal.id, updated)}
+  />
 )}
 {/* ── Client email prompt (asked before the first CRM send) ── */}
 {crmEmailPrompt && (

@@ -47,6 +47,7 @@ from app.schemas.proposal import (
     ProposalStatus,
     ProposalUpdate,
     ProposalVersionCreate,
+    ProposalVersionOut,
     SendToCrmRequest,
     SIGNED_DOCUMENT_EXTENSIONS,
     invalid_status_detail,
@@ -1170,6 +1171,28 @@ async def generate_proposal_by_id(
             raise
 
 
+async def _auto_snapshot(before: dict, after: dict, changes: dict, user: CurrentUser) -> None:
+    """RF-VTA-11: al guardar cambios de contenido, deja constancia en el historial.
+    Si aún no había versiones, primero guarda el estado previo (para poder volver a
+    él). Un fallo aquí no debe impedir el guardado de la propuesta."""
+    if not any(f in changes for f in proposals_repo.VERSION_FIELDS):
+        return
+    proposal_id = before.get("id")
+    author = _version_author(user)
+    try:
+        if not before.get("versionCounter") and not before.get("versions"):
+            await proposals_repo.create_version(
+                proposal_id, proposals_repo.version_snapshot(before),
+                source="auto", label="Initial", skip_if_unchanged=True, **author,
+            )
+        await proposals_repo.create_version(
+            proposal_id, proposals_repo.version_snapshot(after),
+            source="auto", skip_if_unchanged=True, **author,
+        )
+    except Exception:
+        logger.warning("No se pudo guardar la versión automática de %s", proposal_id, exc_info=True)
+
+
 @router.put("/{proposal_id}", response_model=ProposalOut)
 async def update_proposal(
     proposal_id: str,
@@ -1188,7 +1211,9 @@ async def update_proposal(
     update_data.pop("proposal_status", None)
     if not update_data:
         return proposal
-    return await proposals_repo.update(proposal_id, update_data)
+    updated = await proposals_repo.update(proposal_id, update_data)
+    await _auto_snapshot(proposal, updated, update_data, user)
+    return updated
 
 
 @router.patch("/{proposal_id}/status")
@@ -1304,39 +1329,101 @@ async def delete_proposal(proposal_id: str, user: CurrentUser = Depends(get_curr
     return None
 
 
+def _version_author(user: CurrentUser) -> dict:
+    return {
+        "author_id": user.sub,
+        "author_name": user.name or user.preferred_username or user.email,
+        "author_email": user.email,
+    }
+
+
+# RF-VTA-11: campos pesados que solo viajan en el detalle de una versión.
+_VERSION_HEAVY_FIELDS = ("content", "structured_content")
+
+
 @router.get("/{proposal_id}/versions")
 async def list_proposal_versions(proposal_id: str, user: CurrentUser = Depends(get_current_user)):
+    """Historial de versiones (más recientes primero), sin el contenido: usar
+    GET /versions/{version_id} para consultar una en particular."""
     proposal = await _get_proposal_for_user(proposal_id, user.sub)
-    versions = proposal.get("versions") or []
-    if not versions:
-        versions = [{
-            "version": 1,
-            "title": proposal.get("title"),
-            "content": proposal.get("content") or proposal.get("description") or "",
-            "createdAt": proposal.get("createdAt"),
-            "label": "Current",
-        }]
-    return {"items": versions, "total": len(versions)}
+    versions = await proposals_repo.list_versions(proposal_id, proposal.get("versions"))
+    items = [
+        ProposalVersionOut.model_validate(
+            {k: v for k, v in version.items() if k not in _VERSION_HEAVY_FIELDS}
+        )
+        for version in versions
+    ]
+    return {"items": items, "total": len(items)}
 
 
-@router.post("/{proposal_id}/versions")
+@router.get("/{proposal_id}/versions/{version_id}", response_model=ProposalVersionOut)
+async def get_proposal_version(
+    proposal_id: str,
+    version_id: str,
+    user: CurrentUser = Depends(get_current_user),
+):
+    proposal = await _get_proposal_for_user(proposal_id, user.sub)
+    version = await proposals_repo.get_version(proposal_id, version_id, proposal.get("versions"))
+    if version is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Version not found.")
+    return version
+
+
+@router.post("/{proposal_id}/versions", response_model=ProposalVersionOut)
 async def create_proposal_version(
     proposal_id: str,
     body: ProposalVersionCreate,
     user: CurrentUser = Depends(get_current_user),
 ):
+    """Guarda a pedido una versión con autor y fecha. Si el body trae `title` o
+    `content` (edición aún no guardada) se usan; si no, el estado actual."""
     proposal = await _get_proposal_for_user(proposal_id, user.sub)
-    versions = list(proposal.get("versions") or [])
-    version = {
-        "version": len(versions) + 1,
-        "title": body.title or proposal.get("title"),
-        "content": body.content or proposal.get("content") or "",
-        "label": body.label or f"Version {len(versions) + 1}",
-        "createdAt": datetime.now(timezone.utc).isoformat(),
-    }
-    versions.append(version)
-    await proposals_repo.update(proposal_id, {"versions": versions})
+    snapshot = proposals_repo.version_snapshot(proposal)
+    if body.title is not None:
+        snapshot["title"] = body.title
+    if body.content is not None:
+        snapshot["content"] = body.content
+    version = await proposals_repo.create_version(
+        proposal_id, snapshot, source="manual", label=body.label, **_version_author(user)
+    )
+    if version is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Proposal '{proposal_id}' not found.")
     return version
+
+
+@router.post("/{proposal_id}/versions/{version_id}/restore", response_model=ProposalOut)
+async def restore_proposal_version(
+    proposal_id: str,
+    version_id: str,
+    user: CurrentUser = Depends(get_current_user),
+):
+    """Vuelve al contenido de una versión anterior. Antes guarda el estado actual
+    (para poder deshacer) y registra la restauración como una versión nueva. No toca
+    el documento firmado ni el estado comercial; se bloquea si la propuesta está firmada."""
+    proposal = await _get_proposal_for_user(proposal_id, user.sub)
+    if proposal.get("proposal_status") == "firmada":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="No puedes restaurar una versión de una propuesta ya firmada.",
+        )
+    version = await proposals_repo.get_version(proposal_id, version_id, proposal.get("versions"))
+    if version is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Version not found.")
+
+    author = _version_author(user)
+    await proposals_repo.create_version(
+        proposal_id, proposals_repo.version_snapshot(proposal),
+        source="auto", label="Before restore", skip_if_unchanged=True, **author,
+    )
+    restored = {
+        f: version[f] for f in proposals_repo.VERSION_FIELDS if version.get(f) is not None
+    }
+    updated = await proposals_repo.update(proposal_id, restored)
+    await proposals_repo.create_version(
+        proposal_id, proposals_repo.version_snapshot(updated),
+        source="restore", label=f"Restored from v{version.get('version')}", **author,
+    )
+    return updated
 
 
 _CRM_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
