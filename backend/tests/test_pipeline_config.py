@@ -8,6 +8,7 @@ import pytest
 from cryptography.fernet import Fernet
 
 from app.core import url_safety
+from app.routers import pipeline as pipeline_router
 from app.services import encryption_service
 from tests.conftest import FAKE_USER_SUB
 
@@ -126,6 +127,39 @@ async def test_get_config_hides_retired_threshold_fields(client):
 
 
 # ── PUT /pipeline/config ──────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_first_tag_autosave_creates_the_doc_with_defaults(client):
+    """A user with no pipeline_configs doc autosaves one tag list: the doc is
+    first created with _default_config(), then only that list is updated."""
+    created = {}
+
+    async def fake_upsert(user_id, data):
+        created.update(data)
+        return {"id": user_id, "userId": user_id, **created}
+
+    with (
+        patch(
+            "app.routers.pipeline.pipeline_configs_repo.get_by_user",
+            new_callable=AsyncMock, return_value=None,
+        ),
+        patch(
+            "app.routers.pipeline.pipeline_configs_repo.upsert_for_user",
+            new_callable=AsyncMock, side_effect=fake_upsert,
+        ) as mock_upsert,
+    ):
+        resp = await client.put(API, json={"industries": ["finance"]})
+
+    assert resp.status_code == 200
+    assert mock_upsert.await_count == 2
+    defaults_call, update_call = mock_upsert.call_args_list
+    assert defaults_call.args[1] == pipeline_router._default_config()
+    assert update_call.args[1] == {"industries": ["finance"]}
+    body = resp.json()
+    assert body["industries"] == ["finance"]
+    assert body["keywords"] == []
+    assert body["excluded_companies"] == []
+    assert body["is_active"] is True
 
 @pytest.mark.asyncio
 async def test_update_config_encrypts_smtp_password(client):

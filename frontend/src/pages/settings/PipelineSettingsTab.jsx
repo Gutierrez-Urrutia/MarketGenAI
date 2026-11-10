@@ -4,7 +4,7 @@
  * Dashboard.jsx's Settings page as the "pipeline" tab. The former "automation
  * thresholds" section was removed: none of its fields had any effect.
  */
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import toast from "react-hot-toast";
 import {
   Radar, Search, Globe, Mail, Code, Rss, Plug, Briefcase,
@@ -175,6 +175,16 @@ export default function PipelineSettingsTab({ isDark = false }) {
   const [keywords, setKeywords] = useState([]);
   const [industries, setIndustries] = useState([]);
   const [excludedCompanies, setExcludedCompanies] = useState([]);
+  // Tag lists are saved on their own, one request at a time (tagSaveQueue).
+  // confirmedTags = last value the server confirmed; latestTags = what the
+  // screen shows. Each queued save sends the latest value, so quick edits are
+  // coalesced and the last one wins; a failure restores the confirmed list.
+  const confirmedTags = useRef({ keywords: [], industries: [], excluded_companies: [] });
+  const latestTags = useRef({ keywords: [], industries: [], excluded_companies: [] });
+  const tagSaveQueue = useRef(Promise.resolve());
+  const tagSavesPending = useRef(0);
+  const tagSaveFailed = useRef(false);
+  const [tagSaveStatus, setTagSaveStatus] = useState("idle"); // idle | saving | saved
   const [sources, setSources] = useState([]);
   const [smtp, setSmtp] = useState(DEFAULT_SMTP);
   const [smtpPasswordConfigured, setSmtpPasswordConfigured] = useState(false);
@@ -194,9 +204,16 @@ export default function PipelineSettingsTab({ isDark = false }) {
     setLoading(true);
     try {
       const { data } = await pipelineApi.getConfig();
-      setKeywords(data?.keywords || []);
-      setIndustries(data?.industries || []);
-      setExcludedCompanies(data?.excluded_companies || []);
+      const loadedTags = {
+        keywords: data?.keywords || [],
+        industries: data?.industries || [],
+        excluded_companies: data?.excluded_companies || [],
+      };
+      confirmedTags.current = { ...loadedTags };
+      latestTags.current = { ...loadedTags };
+      setKeywords(loadedTags.keywords);
+      setIndustries(loadedTags.industries);
+      setExcludedCompanies(loadedTags.excluded_companies);
       setSources(data?.sources || []);
       setSmtp({
         smtp_host: data?.smtp_host || "",
@@ -238,10 +255,9 @@ export default function PipelineSettingsTab({ isDark = false }) {
 
     setSaving(true);
     try {
+      // keywords / industries / excluded_companies are not sent: they are
+      // saved on their own as soon as a tag is added or removed (commitTags).
       const payload = {
-        keywords,
-        industries,
-        excluded_companies: excludedCompanies,
         smtp_host: smtp.smtp_host,
         smtp_port: smtp.smtp_port,
         smtp_user: trimmedUser,
@@ -345,6 +361,9 @@ export default function PipelineSettingsTab({ isDark = false }) {
   const testSource = async (sourceId) => {
     setSourceTesting(sourceId);
     try {
+      // The probe reads the keywords stored in Firestore: wait for the tag
+      // saves in flight so it uses exactly what the screen shows.
+      await tagSaveQueue.current;
       // The source is actually read (RF13-D-001); the server sends data, the text is built here.
       const { data } = await pipelineApi.testSource(sourceId);
       const warnings = (data?.warnings || []).join(" · ");
@@ -364,6 +383,55 @@ export default function PipelineSettingsTab({ isDark = false }) {
       setSourceTesting(null);
     }
   };
+
+  const TAG_SETTERS = { keywords: setKeywords, industries: setIndustries, excluded_companies: setExcludedCompanies };
+
+  const sameTags = (a = [], b = []) => a.length === b.length && a.every((tag, index) => tag === b[index]);
+
+  // Save one tag list right away (PUT /pipeline/config with only that field).
+  const commitTags = (field, nextTags) => {
+    const setTags = TAG_SETTERS[field];
+    latestTags.current = { ...latestTags.current, [field]: nextTags };
+    setTags(nextTags);
+    tagSavesPending.current += 1;
+    setTagSaveStatus("saving");
+
+    const run = async () => {
+      const sending = latestTags.current[field];
+      // An earlier save already sent this value (quick edits coalesce).
+      if (sameTags(sending, confirmedTags.current[field])) return;
+      try {
+        const { data } = await pipelineApi.updateConfig({ [field]: sending });
+        const saved = Array.isArray(data?.[field]) ? data[field] : sending;
+        confirmedTags.current = { ...confirmedTags.current, [field]: saved };
+        // Only adopt the server copy when nothing newer was typed meanwhile.
+        if (sameTags(latestTags.current[field], sending)) {
+          latestTags.current = { ...latestTags.current, [field]: saved };
+          setTags(saved);
+        }
+      } catch (error) {
+        logApiError("PipelineSettings", error);
+        tagSaveFailed.current = true;
+        const restored = confirmedTags.current[field];
+        latestTags.current = { ...latestTags.current, [field]: restored };
+        setTags(restored);
+        toast.error(t("settings.pipelineTab.tagsSaveError"));
+      }
+    };
+
+    tagSaveQueue.current = tagSaveQueue.current.then(run).finally(() => {
+      tagSavesPending.current -= 1;
+      if (tagSavesPending.current === 0) {
+        setTagSaveStatus(tagSaveFailed.current ? "idle" : "saved");
+        tagSaveFailed.current = false;
+      }
+    });
+  };
+
+  const tagSaveStatusText = {
+    saving: t("settings.pipelineTab.tagsSaving"),
+    saved: t("settings.pipelineTab.tagsSaved"),
+  }[tagSaveStatus] || "";
 
   const smtpPasswordHint = t(smtpPasswordConfigured
     ? "settings.pipelineTab.passwordConfiguredHint"
@@ -388,15 +456,21 @@ export default function PipelineSettingsTab({ isDark = false }) {
         <div className="flex justify-center py-10"><Loader2 size={20} className="animate-spin text-indigo-600" /></div>
       ) : (
         <>
-          <SettingsSection isDark={isDark} title={t("settings.pipelineTab.keywordsTitle")} IconComp={Search} desc={t("settings.pipelineTab.keywordsDesc")}>
+          <SettingsSection
+            isDark={isDark}
+            title={t("settings.pipelineTab.keywordsTitle")}
+            IconComp={Search}
+            desc={t("settings.pipelineTab.keywordsDesc")}
+            badge={<span role="status" aria-live="polite" className="text-xs text-gray-500">{tagSaveStatusText}</span>}
+          >
             <Field label={t("settings.pipelineTab.serviceKeywordsLabel")} hint={t("settings.pipelineTab.pressEnterHint")}>
-              <TagInput value={keywords} onChange={setKeywords} placeholder={t("settings.pipelineTab.addKeywordPlaceholder")} />
+              <TagInput value={keywords} onChange={(next) => commitTags("keywords", next)} placeholder={t("settings.pipelineTab.addKeywordPlaceholder")} />
             </Field>
             <Field label={t("settings.pipelineTab.targetIndustriesLabel")} hint={t("settings.pipelineTab.targetIndustriesHint")}>
-              <TagInput value={industries} onChange={setIndustries} placeholder={t("settings.pipelineTab.addIndustryPlaceholder")} />
+              <TagInput value={industries} onChange={(next) => commitTags("industries", next)} placeholder={t("settings.pipelineTab.addIndustryPlaceholder")} />
             </Field>
             <Field label={t("settings.pipelineTab.excludedCompaniesLabel")} hint={t("settings.pipelineTab.excludedCompaniesHint")}>
-              <TagInput value={excludedCompanies} onChange={setExcludedCompanies} placeholder={t("settings.pipelineTab.addCompanyPlaceholder")} />
+              <TagInput value={excludedCompanies} onChange={(next) => commitTags("excluded_companies", next)} placeholder={t("settings.pipelineTab.addCompanyPlaceholder")} />
             </Field>
           </SettingsSection>
 
