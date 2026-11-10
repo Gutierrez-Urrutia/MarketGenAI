@@ -101,7 +101,7 @@ class PipelineConfig(BaseModel):
     smtp_password: str                 # Encriptado en Firestore (ver sección 9)
     sender_email: str
     sender_name: str
-    # Umbrales de automatización
+    # Umbrales de automatización — RETIRADOS (ver nota abajo)
     auto_send_threshold: float = 0.80  # Confidence ≥ 80% → auto-envío
     max_emails_per_day: int = 50
     # Programación
@@ -110,6 +110,11 @@ class PipelineConfig(BaseModel):
     created_at: datetime
     updated_at: datetime
 ```
+
+> **Nota (09-11-2026):** se retiró la sección «Umbrales de Automatización» de Configuración → Pipeline
+> porque ningún código la usaba. `auto_send_threshold` y `max_emails_per_day` salieron de
+> `PipelineConfig`. `scan_frequency_hours` se mantiene en el backend, sin campo en pantalla, para el
+> escaneo programado del RF-VTA-17. Todo correo pasa por la cola de revisión (CP-060).
 
 ### 2.2 `leads/{leadId}`
 

@@ -117,8 +117,8 @@ class PipelineConfig(BaseModel):
     # encrypted as hunter_api_key_encrypted, never returned by the API.
     hunter_api_key_configured: bool = False
 
-    auto_send_threshold: float = Field(0.80, ge=0.0, le=1.0)
-    max_emails_per_day: int = Field(50, ge=1)
+    # Not shown in the UI and not used yet: kept for the scheduled scan of
+    # RF-VTA-17 (deferred).
     scan_frequency_hours: int = Field(24, ge=1)
     is_active: bool = True
 
@@ -145,8 +145,7 @@ class PipelineConfigUpdate(BaseModel):
     # whitespace-only value ("unchanged") from "" ("clear").
     hunter_api_key: Optional[str] = None
 
-    auto_send_threshold: Optional[float] = Field(None, ge=0.0, le=1.0)
-    max_emails_per_day: Optional[int] = Field(None, ge=1)
+    # Kept for RF-VTA-17 (scheduled scan); no UI field sends it today.
     scan_frequency_hours: Optional[int] = Field(None, ge=1)
     is_active: Optional[bool] = None
 

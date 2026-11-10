@@ -60,6 +60,11 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/pipeline", tags=["Pipeline"])
 
 
+# Removed "automation thresholds" settings. Existing pipeline_configs docs may
+# still hold them; they are ignored and never returned.
+RETIRED_CONFIG_FIELDS = ("auto_send_threshold", "max_emails_per_day")
+
+
 def _default_config() -> Dict[str, Any]:
     return {
         "keywords": [],
@@ -71,8 +76,7 @@ def _default_config() -> Dict[str, Any]:
         "smtp_user": "",
         "sender_email": "",
         "sender_name": "",
-        "auto_send_threshold": 0.80,
-        "max_emails_per_day": 50,
+        # Kept for the scheduled scan of RF-VTA-17; not shown in the UI.
         "scan_frequency_hours": 24,
         "is_active": True,
     }
@@ -211,6 +215,9 @@ def _to_public(doc: Dict[str, Any], user_id: str) -> Dict[str, Any]:
     public["hunter_api_key_configured"] = bool(public.get("hunter_api_key_encrypted"))
     public.pop("hunter_api_key_encrypted", None)
     public.pop("hunter_api_key", None)
+    # Retired settings that older documents still carry (they had no effect).
+    for retired in RETIRED_CONFIG_FIELDS:
+        public.pop(retired, None)
     public["sources"] = [_public_source(s) for s in public.get("sources") or []]
     return public
 

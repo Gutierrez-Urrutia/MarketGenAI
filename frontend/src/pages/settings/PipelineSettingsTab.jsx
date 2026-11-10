@@ -1,14 +1,14 @@
 /**
  * PipelineSettingsTab — configuration UI for the 3-agent prospecting pipeline
- * (Fase 1 — infra only: keywords/industries, job sources CRUD, SMTP, and
- * automation thresholds). Mounted by Dashboard.jsx's Settings page as the
- * "pipeline" tab.
+ * (keywords/industries, job sources CRUD, SMTP and the Hunter key). Mounted by
+ * Dashboard.jsx's Settings page as the "pipeline" tab. The former "automation
+ * thresholds" section was removed: none of its fields had any effect.
  */
 import { useEffect, useState } from "react";
 import toast from "react-hot-toast";
 import {
   Radar, Search, Globe, Mail, Code, Rss, Plug, Briefcase,
-  Pencil, Trash2, Plus, Save, Zap, Loader2, KeyRound, Undo2,
+  Pencil, Trash2, Plus, Save, Loader2, KeyRound, Undo2,
 } from "lucide-react";
 
 import { pipelineApi } from "@/api/axios";
@@ -162,7 +162,6 @@ function TagInput({ value = [], onChange, placeholder }) {
 }
 
 const DEFAULT_SMTP = { smtp_host: "", smtp_port: 587, smtp_user: "", sender_email: "", sender_name: "" };
-const DEFAULT_THRESHOLDS = { auto_send_threshold: 0.8, max_emails_per_day: 50, scan_frequency_hours: 24 };
 
 export default function PipelineSettingsTab({ isDark = false }) {
   const { t } = useI18n();
@@ -182,7 +181,6 @@ export default function PipelineSettingsTab({ isDark = false }) {
   const [hunterKeyConfigured, setHunterKeyConfigured] = useState(false);
   const [hunterKeyInput, setHunterKeyInput] = useState("");
   const [hunterKeyClearPending, setHunterKeyClearPending] = useState(false);
-  const [thresholds, setThresholds] = useState(DEFAULT_THRESHOLDS);
   const [sourceFormOpen, setSourceFormOpen] = useState(false);
   const [sourceForm, setSourceForm] = useState({ id: null, name: "", source_type: "rss", config: {} });
   const [sourceTesting, setSourceTesting] = useState(null);
@@ -207,11 +205,6 @@ export default function PipelineSettingsTab({ isDark = false }) {
       setHunterKeyConfigured(Boolean(data?.hunter_api_key_configured));
       setHunterKeyInput("");
       setHunterKeyClearPending(false);
-      setThresholds({
-        auto_send_threshold: data?.auto_send_threshold ?? 0.8,
-        max_emails_per_day: data?.max_emails_per_day ?? 50,
-        scan_frequency_hours: data?.scan_frequency_hours ?? 24,
-      });
       setActive(data?.is_active ?? true);
     } catch (error) {
       logApiError("PipelineSettings", error);
@@ -249,7 +242,6 @@ export default function PipelineSettingsTab({ isDark = false }) {
         smtp_user: trimmedUser,
         sender_email: trimmedSenderEmail,
         sender_name: trimmedSenderName,
-        ...thresholds,
         is_active: active,
       };
       // A whitespace-only password is treated as "not provided" (keeps the
@@ -375,7 +367,7 @@ export default function PipelineSettingsTab({ isDark = false }) {
           <Radar size={18} className={active ? "text-green-600" : "text-gray-400"} />
           <div>
             <p className="text-xs font-semibold text-gray-900">{t("settings.pipelineTab.statusTitle")}</p>
-            <p className="text-xs text-gray-500">{active ? t("settings.pipelineTab.statusActive").replace("{hours}", thresholds.scan_frequency_hours) : t("settings.pipelineTab.statusInactive")}</p>
+            <p className="text-xs text-gray-500">{active ? t("settings.pipelineTab.statusActive") : t("settings.pipelineTab.statusInactive")}</p>
           </div>
         </div>
         <button onClick={() => setActive(!active)} className="relative w-11 h-6 rounded-full transition-colors" style={{ backgroundColor: active ? "#16a34a" : "#d1d5db" }}>
@@ -547,20 +539,6 @@ export default function PipelineSettingsTab({ isDark = false }) {
                 </Btn>
               </div>
             )}
-          </SettingsSection>
-
-          <SettingsSection isDark={isDark} title={t("settings.pipelineTab.thresholdsTitle")} IconComp={Zap} desc={t("settings.pipelineTab.thresholdsDesc")}>
-            <div className="grid grid-cols-3 gap-1.5">
-              <Field label={t("settings.pipelineTab.autoSendThresholdLabel")} hint={t("settings.pipelineTab.autoSendThresholdHint")}>
-                <Input type="number" step="0.05" min="0" max="1" value={thresholds.auto_send_threshold} onChange={(event) => setThresholds((th) => ({ ...th, auto_send_threshold: Number(event.target.value) }))} />
-              </Field>
-              <Field label={t("settings.pipelineTab.maxEmailsLabel")}>
-                <Input type="number" min="1" value={thresholds.max_emails_per_day} onChange={(event) => setThresholds((th) => ({ ...th, max_emails_per_day: Number(event.target.value) }))} />
-              </Field>
-              <Field label={t("settings.pipelineTab.scanFrequencyLabel")}>
-                <Input type="number" min="1" value={thresholds.scan_frequency_hours} onChange={(event) => setThresholds((th) => ({ ...th, scan_frequency_hours: Number(event.target.value) }))} />
-              </Field>
-            </div>
           </SettingsSection>
 
           <div className="flex justify-end pb-2">

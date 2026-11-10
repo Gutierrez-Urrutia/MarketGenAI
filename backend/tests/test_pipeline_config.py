@@ -40,8 +40,6 @@ def fake_config(overrides: dict | None = None) -> dict:
         "smtp_user": "sales@noondalton.com",
         "sender_email": "sales@noondalton.com",
         "sender_name": "NoonDalton Sales",
-        "auto_send_threshold": 0.8,
-        "max_emails_per_day": 50,
         "scan_frequency_hours": 24,
         "is_active": True,
     }
@@ -108,6 +106,23 @@ async def test_get_config_never_returns_encrypted_password(client):
     assert "smtp_password" not in body
     assert "smtp_password_encrypted" not in body
     assert "s3cret" not in resp.text
+
+
+@pytest.mark.asyncio
+async def test_get_config_hides_retired_threshold_fields(client):
+    """An existing doc that still holds the retired automation thresholds
+    returns only scan_frequency_hours (kept for RF-VTA-17)."""
+    doc = fake_config({"auto_send_threshold": 0.8, "max_emails_per_day": 50, "scan_frequency_hours": 12})
+    with patch(
+        "app.routers.pipeline.pipeline_configs_repo.get_by_user",
+        new_callable=AsyncMock, return_value=doc,
+    ):
+        resp = await client.get(API)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "auto_send_threshold" not in body
+    assert "max_emails_per_day" not in body
+    assert body["scan_frequency_hours"] == 12
 
 
 # ── PUT /pipeline/config ──────────────────────────────────────────────────────
@@ -244,42 +259,6 @@ async def test_update_config_password_not_stripped(client):
     persisted_payload = mock_upsert.call_args.args[1]
     assert encryption_service.decrypt(persisted_payload["smtp_password_encrypted"]) == "  pad ded  "
 
-
-@pytest.mark.asyncio
-async def test_update_config_auto_send_threshold_persists_as_number(client):
-    """auto_send_threshold must round-trip as a JSON number (float), never
-    as a locale-formatted string, regardless of the client's locale."""
-    with (
-        patch(
-            "app.routers.pipeline.pipeline_configs_repo.get_by_user",
-            new_callable=AsyncMock, return_value=fake_config(),
-        ),
-        patch(
-            "app.routers.pipeline.pipeline_configs_repo.upsert_for_user",
-            new_callable=AsyncMock,
-        ) as mock_upsert,
-    ):
-        mock_upsert.return_value = fake_config({"auto_send_threshold": 0.8})
-        resp = await client.put(API, json={"auto_send_threshold": 0.8})
-
-    assert resp.status_code == 200
-    persisted_payload = mock_upsert.call_args.args[1]
-    assert persisted_payload["auto_send_threshold"] == 0.8
-    assert isinstance(persisted_payload["auto_send_threshold"], float)
-    assert isinstance(resp.json()["auto_send_threshold"], float)
-
-
-@pytest.mark.asyncio
-async def test_update_config_rejects_auto_send_threshold_as_string(client):
-    """A stringified threshold (e.g. '0,8' from a mis-parsed locale input)
-    must be rejected, not silently coerced or stored as text."""
-    with patch(
-        "app.routers.pipeline.pipeline_configs_repo.get_by_user",
-        new_callable=AsyncMock, return_value=fake_config(),
-    ):
-        resp = await client.put(API, json={"auto_send_threshold": "0,8"})
-
-    assert resp.status_code == 422
 
 
 @pytest.mark.asyncio
