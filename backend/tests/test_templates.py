@@ -678,3 +678,47 @@ async def test_extract_template_corrupt_docx_and_pdf_return_400(client):
     assert "Word" in docx_resp.json()["detail"]
     assert pdf_resp.status_code == 400
     assert "PDF" in pdf_resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_generate_uses_total_and_client_sent_in_the_request_not_yet_saved(client):
+    """RF07-D-002: el total, el título y el cliente que llegan en la solicitud de generar
+    (aún no guardados en la propuesta) deben completar {monto_total}, {propuesta_titulo} y {cliente_nombre}."""
+    proposal = fake_proposal({"totalAmount": None, "title": "Título guardado", "clientName": "Nombre guardado"})
+    tmpl = fake_template({
+        "content": "{propuesta_titulo} para {cliente_nombre}.",
+        "commercialTerms": "Valor total del contrato: {monto_total}.",
+    })
+    with (
+        patch("app.routers.proposals.proposals_repo.get", new_callable=AsyncMock, return_value=proposal),
+        patch("app.routers.proposals.proposals_repo.update", new_callable=AsyncMock, return_value=proposal),
+        patch("app.routers.templates.templates_repo.get", new_callable=AsyncMock, return_value=tmpl),
+        patch("app.routers.templates.templates_repo.update", new_callable=AsyncMock, return_value=tmpl),
+        patch("app.routers.proposals.jobs_repo.create_job", new_callable=AsyncMock, return_value=fake_job("proposal_generation")),
+        patch("app.routers.proposals.task_generate_proposal.delay") as delay_mock,
+    ):
+        resp = await client.post("/api/v1/proposals/prop-abcd1234/generate", json={
+            "language": "es", "templateId": "tmpl-001", "totalAmount": 15300,
+            "title": "Título de la solicitud", "clientName": "Cliente de la solicitud",
+        })
+    assert resp.status_code == 202
+    options = delay_mock.call_args.args[5]
+    assert options["commercialTerms"] == "Valor total del contrato: $15.300 USD."
+    assert options["templateContent"] == "Título de la solicitud para Cliente de la solicitud."
+
+
+@pytest.mark.asyncio
+async def test_generate_without_total_anywhere_leaves_monto_total_pending(client):
+    proposal = fake_proposal({"totalAmount": None})
+    tmpl = fake_template({"content": "Hola", "commercialTerms": "Total {monto_total}."})
+    with (
+        patch("app.routers.proposals.proposals_repo.get", new_callable=AsyncMock, return_value=proposal),
+        patch("app.routers.proposals.proposals_repo.update", new_callable=AsyncMock, return_value=proposal),
+        patch("app.routers.templates.templates_repo.get", new_callable=AsyncMock, return_value=tmpl),
+        patch("app.routers.templates.templates_repo.update", new_callable=AsyncMock, return_value=tmpl),
+        patch("app.routers.proposals.jobs_repo.create_job", new_callable=AsyncMock, return_value=fake_job("proposal_generation")),
+        patch("app.routers.proposals.task_generate_proposal.delay") as delay_mock,
+    ):
+        resp = await client.post("/api/v1/proposals/prop-abcd1234/generate", json={"language": "es", "templateId": "tmpl-001"})
+    assert resp.status_code == 202
+    assert delay_mock.call_args.args[5]["commercialTerms"] == "Total {monto_total}."

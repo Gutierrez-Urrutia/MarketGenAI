@@ -60,9 +60,13 @@ def _matches(template: dict, service_type: Optional[ServiceType], industry: Opti
     return True
 
 
-async def _variables_from_sources(body: ApplyTemplateRequest, template: dict, user: CurrentUser) -> dict[str, Any]:
+async def _variables_from_sources(
+    body: ApplyTemplateRequest, template: dict, user: CurrentUser, proposal_overrides: Optional[dict] = None,
+) -> dict[str, Any]:
     """Variables estándar desde la propuesta y el cliente. El cliente del CRM pisa la
-    copia que guarda la propuesta, y los valores manuales de `body.variables` pisan todo."""
+    copia que guarda la propuesta, y los valores manuales de `body.variables` pisan todo.
+    `proposal_overrides` son datos de la solicitud de generar que aún no están guardados en
+    la propuesta (título, cliente, total) y tienen prioridad sobre los guardados."""
     values: dict[str, Any] = {}
     language = body.language
     service_type = template["serviceType"]
@@ -70,6 +74,7 @@ async def _variables_from_sources(body: ApplyTemplateRequest, template: dict, us
 
     if body.proposalId:
         proposal = await _get_proposal_for_user(body.proposalId, user.sub)
+        proposal = {**proposal, **(proposal_overrides or {})}
         cover = _proposal_cover_fields(proposal)
         language = language or cover["language"]
         service_type = proposal.get("serviceType") or service_type
@@ -315,11 +320,13 @@ async def apply_template(
     return await render_template_for_user(template_id, body, user)
 
 
-async def render_template_for_user(template_id: str, body: ApplyTemplateRequest, user: CurrentUser) -> ApplyTemplateResponse:
+async def render_template_for_user(
+    template_id: str, body: ApplyTemplateRequest, user: CurrentUser, proposal_overrides: Optional[dict] = None,
+) -> ApplyTemplateResponse:
     """Aplica la plantilla (con control de acceso) y suma un uso. También lo usa la
     generación de propuestas (routers/proposals.py) cuando recibe `templateId`."""
     template = await _get_template_for_user(template_id, user)
-    values = await _variables_from_sources(body, template, user)
+    values = await _variables_from_sources(body, template, user, proposal_overrides)
     rendered, missing = render_placeholders(template["content"], values)
     terms, missing_terms = render_placeholders(template.get("commercialTerms"), values)
     # Increment usage counter

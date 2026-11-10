@@ -134,10 +134,18 @@ async def _apply_proposal_template(proposal: dict, options: dict, user: CurrentU
     from app.routers.templates import render_template_for_user
     from app.schemas.template import ApplyTemplateRequest
 
+    # El título, el cliente y el total pueden venir en esta solicitud y aún no estar guardados
+    # en la propuesta: la plantilla debe usar los mismos valores que el worker (RF07-D-002).
+    overrides = {
+        key: options[key]
+        for key in ("title", "clientName", "totalAmount")
+        if options.get(key) not in (None, "")
+    }
     applied = await render_template_for_user(
         template_id,
         ApplyTemplateRequest(proposalId=proposal["id"], variables=variables, language=options.get("language")),
         user,
+        proposal_overrides=overrides,
     )
     options["templateContent"] = applied.rendered
     options["commercialTerms"] = applied.commercialTerms
