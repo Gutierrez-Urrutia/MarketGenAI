@@ -172,16 +172,15 @@ describe("PipelineSettingsTab tag lists save on their own", () => {
     expect(pipelineApi.updateConfig.mock.calls[0][0]).toEqual({ keywords: [...nine, "kw10"] });
   });
 
-  it("«Save pipeline» still saves the rest, without the three lists", async () => {
+  it("«Save account» saves SMTP without the three lists", async () => {
     await renderTab();
     fireEvent.change(screen.getByDisplayValue("smtp.ejemplo.test"), { target: { value: "smtp.otro.test" } });
-    await act(async () => { fireEvent.click(screen.getByText("settings.pipelineTab.saveButton")); });
+    await act(async () => { fireEvent.click(screen.getByText("settings.pipelineTab.smtpSaveButton")); });
     await flush();
 
     expect(pipelineApi.updateConfig).toHaveBeenCalledTimes(1);
     const payload = pipelineApi.updateConfig.mock.calls[0][0];
     expect(payload.smtp_host).toBe("smtp.otro.test");
-    expect(payload).toHaveProperty("is_active", true);
     for (const field of ["keywords", "industries", "excluded_companies"]) {
       expect(payload).not.toHaveProperty(field);
     }

@@ -36,8 +36,8 @@ const save = async () => {
   fireEvent.click(saveButton());
   await flush();
 };
-const saveGlobal = async () => {
-  fireEvent.click(screen.getByRole("button", { name: "settings.pipelineTab.saveButton" }));
+const saveSmtpCard = async () => {
+  fireEvent.click(screen.getByRole("button", { name: "settings.pipelineTab.smtpSaveButton" }));
   await flush();
 };
 const sentPayload = () => pipelineApi.updateConfig.mock.calls.at(-1)[0];
@@ -178,7 +178,7 @@ describe("Hunter key field", () => {
       fireEvent.change(document.querySelector('input[autocomplete="new-password"]:not([aria-label])'), {
         target: { value: "pw-sintetica" },
       });
-      await saveGlobal();
+      await saveSmtpCard();
     }
     expect(pipelineApi.updateConfig).toHaveBeenCalledTimes(1);
     const logged = JSON.stringify([...log.mock.calls, ...err.mock.calls], (k, v) => (v instanceof Error ? { ...v, message: v.message } : v));
@@ -188,10 +188,10 @@ describe("Hunter key field", () => {
     log.mockRestore(); err.mockRestore();
   });
 
-  it("the global button no longer sends the key, and a typed key survives it", async () => {
+  it("«Save account» does not send the key, and a typed key survives it", async () => {
     await renderTab(config({ hunter_api_key_configured: true }));
     fireEvent.change(keyInput(), { target: { value: KEY } });
-    await saveGlobal();
+    await saveSmtpCard();
     expect("hunter_api_key" in sentPayload()).toBe(false);
     expect(keyInput().value).toBe(KEY);
     expect(saveButton().disabled).toBe(false);

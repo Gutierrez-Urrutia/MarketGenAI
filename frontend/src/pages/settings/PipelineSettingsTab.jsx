@@ -199,6 +199,7 @@ export default function PipelineSettingsTab({ isDark = false }) {
   const [hunterKeyInput, setHunterKeyInput] = useState("");
   const [hunterKeyClearPending, setHunterKeyClearPending] = useState(false);
   const [hunterSaving, setHunterSaving] = useState(false);
+  const [smtpSaving, setSmtpSaving] = useState(false);
   const [sourceFormOpen, setSourceFormOpen] = useState(false);
   const [sourceForm, setSourceForm] = useState({ id: null, name: "", source_type: "rss", config: {} });
   const [sourceTesting, setSourceTesting] = useState(null);
@@ -243,7 +244,9 @@ export default function PipelineSettingsTab({ isDark = false }) {
     loadConfig();
   }, []);
 
-  const saveConfig = async () => {
+  // SMTP card's own save: sends only the SMTP fields and resets only this
+  // card, so unsaved edits in other cards are neither sent nor lost.
+  const saveSmtp = async () => {
     // Trim incidental leading/trailing whitespace on free-text fields.
     // smtp_password is intentionally left untouched below — a password's
     // own spaces can be meaningful.
@@ -256,25 +259,20 @@ export default function PipelineSettingsTab({ isDark = false }) {
       return;
     }
 
-    setSaving(true);
+    setSmtpSaving(true);
     try {
-      // keywords / industries / excluded_companies are not sent: they are
-      // saved on their own as soon as a tag is added or removed (commitTags).
       const payload = {
         smtp_host: smtp.smtp_host,
         smtp_port: smtp.smtp_port,
         smtp_user: trimmedUser,
         sender_email: trimmedSenderEmail,
         sender_name: trimmedSenderName,
-        is_active: active,
       };
       // A whitespace-only password is treated as "not provided" (keeps the
       // saved password) — only a non-blank value is sent.
       if (smtpPasswordInput.trim()) {
         payload.smtp_password = smtpPasswordInput;
       }
-      // The Hunter key is not sent here: its card has its own button
-      // (saveHunterKey), and a key typed there stays untouched.
       const { data } = await pipelineApi.updateConfig(payload);
       setSmtp({
         smtp_host: data?.smtp_host || "",
@@ -285,12 +283,26 @@ export default function PipelineSettingsTab({ isDark = false }) {
       });
       setSmtpPasswordConfigured(Boolean(data?.smtp_password_configured));
       setSmtpPasswordInput("");
-      toast.success(t("settings.pipelineTab.toastSaved"));
+      toast.success(t("settings.pipelineTab.smtpSaved"));
     } catch (error) {
       // Not logged: the request may carry smtp_password.
       toast.error(error?.response?.status === 503
         ? t("settings.pipelineTab.toastEncryptionUnavailable")
-        : getApiErrorMessage(error, t("settings.pipelineTab.toastSaveError")));
+        : getApiErrorMessage(error, t("settings.pipelineTab.smtpSaveError")));
+    } finally {
+      setSmtpSaving(false);
+    }
+  };
+
+  // Global button: only what has no save of its own yet (the toggle).
+  // Tag lists, SMTP and the Hunter key are saved by their own cards.
+  const saveConfig = async () => {
+    setSaving(true);
+    try {
+      await pipelineApi.updateConfig({ is_active: active });
+      toast.success(t("settings.pipelineTab.toastSaved"));
+    } catch (error) {
+      toast.error(getApiErrorMessage(error, t("settings.pipelineTab.toastSaveError")));
     } finally {
       setSaving(false);
     }
@@ -604,6 +616,11 @@ export default function PipelineSettingsTab({ isDark = false }) {
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-1.5">
               <Field label={t("settings.pipelineTab.senderEmailLabel")}><Input value={smtp.sender_email} onChange={(event) => setSmtp((s) => ({ ...s, sender_email: event.target.value }))} placeholder="sales@noondalton.com" /></Field>
               <Field label={t("settings.pipelineTab.senderNameLabel")}><Input value={smtp.sender_name} onChange={(event) => setSmtp((s) => ({ ...s, sender_name: event.target.value }))} placeholder="NoonDalton Sales" /></Field>
+            </div>
+            <div className="flex justify-end">
+              <Btn small className="disabled:opacity-50 disabled:cursor-not-allowed" icon={<Save size={12} />} onClick={saveSmtp} disabled={smtpSaving}>
+                {smtpSaving ? t("settings.pipelineTab.savingButton") : t("settings.pipelineTab.smtpSaveButton")}
+              </Btn>
             </div>
           </SettingsSection>
 
