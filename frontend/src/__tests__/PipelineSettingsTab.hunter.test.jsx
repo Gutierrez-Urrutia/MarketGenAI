@@ -31,7 +31,12 @@ const config = (overrides = {}) => ({
 });
 
 const keyInput = () => screen.getByLabelText("settings.pipelineTab.hunterKeyLabel");
+const saveButton = () => screen.getByRole("button", { name: "settings.pipelineTab.hunterSaveButton" });
 const save = async () => {
+  fireEvent.click(saveButton());
+  await flush();
+};
+const saveGlobal = async () => {
   fireEvent.click(screen.getByRole("button", { name: "settings.pipelineTab.saveButton" }));
   await flush();
 };
@@ -69,27 +74,38 @@ describe("Hunter key field", () => {
     expect(document.body.innerHTML).not.toContain(KEY);
   });
 
-  it("saving without touching the field does not send the key", async () => {
+  it("with nothing to apply, «Save key» is disabled and nothing is sent", async () => {
     await renderTab(config({ hunter_api_key_configured: true }));
+    expect(saveButton().disabled).toBe(true);
     await save();
-    expect(pipelineApi.updateConfig).toHaveBeenCalledTimes(1);
-    expect("hunter_api_key" in sentPayload()).toBe(false);
+    expect(pipelineApi.updateConfig).not.toHaveBeenCalled();
   });
 
-  it("a whitespace-only value is not sent", async () => {
+  it("a whitespace-only value keeps «Save key» disabled", async () => {
     await renderTab(config({ hunter_api_key_configured: true }));
     fireEvent.change(keyInput(), { target: { value: "   " } });
+    expect(saveButton().disabled).toBe(true);
     await save();
-    expect("hunter_api_key" in sentPayload()).toBe(false);
+    expect(pipelineApi.updateConfig).not.toHaveBeenCalled();
+  });
+
+  it("typing a key enables «Save key»; emptying the field disables it again", async () => {
+    await renderTab();
+    fireEvent.change(keyInput(), { target: { value: KEY } });
+    expect(saveButton().disabled).toBe(false);
+    fireEvent.change(keyInput(), { target: { value: "" } });
+    expect(saveButton().disabled).toBe(true);
   });
 
   it("a new key is sent trimmed, then the field is emptied", async () => {
     await renderTab();
     fireEvent.change(keyInput(), { target: { value: `  ${KEY}  ` } });
     await save();
-    expect(sentPayload().hunter_api_key).toBe(KEY);
+    expect(sentPayload()).toEqual({ hunter_api_key: KEY });
     expect(keyInput().value).toBe("");
     expect(screen.getByText("settings.pipelineTab.hunterStatusConfigured")).toBeTruthy();
+    expect(toast.success).toHaveBeenCalledWith("settings.pipelineTab.hunterSaved");
+    expect(saveButton().disabled).toBe(true);
   });
 
   it("'Clear key' is applied on save and sends an empty string", async () => {
@@ -97,9 +113,11 @@ describe("Hunter key field", () => {
     fireEvent.click(screen.getByRole("button", { name: "settings.pipelineTab.hunterClear" }));
     expect(screen.getByText("settings.pipelineTab.hunterClearPending")).toBeTruthy();
     expect(pipelineApi.updateConfig).not.toHaveBeenCalled();
+    expect(saveButton().disabled).toBe(false);
     await save();
-    expect(sentPayload().hunter_api_key).toBe("");
+    expect(sentPayload()).toEqual({ hunter_api_key: "" });
     expect(screen.getByText("settings.pipelineTab.hunterStatusNotConfigured")).toBeTruthy();
+    expect(toast.success).toHaveBeenCalledWith("settings.pipelineTab.hunterCleared");
   });
 
   it("'Undo' before saving keeps the key", async () => {
@@ -107,8 +125,9 @@ describe("Hunter key field", () => {
     fireEvent.click(screen.getByRole("button", { name: "settings.pipelineTab.hunterClear" }));
     fireEvent.click(screen.getByRole("button", { name: "settings.pipelineTab.hunterUndoClear" }));
     expect(screen.queryByText("settings.pipelineTab.hunterClearPending")).toBeNull();
+    expect(saveButton().disabled).toBe(true);
     await save();
-    expect("hunter_api_key" in sentPayload()).toBe(false);
+    expect(pipelineApi.updateConfig).not.toHaveBeenCalled();
   });
 
   it("typing a new key after 'Clear key' replaces it instead of clearing", async () => {
@@ -129,7 +148,21 @@ describe("Hunter key field", () => {
     expect(toast.error).toHaveBeenCalledWith("settings.pipelineTab.toastEncryptionUnavailable");
   });
 
-  it("a failed save logs neither the Hunter key nor the SMTP password", async () => {
+  it("a failed save keeps the typed key and shows the card's error", async () => {
+    // No server detail and no message: the card's own fallback text is shown.
+    pipelineApi.updateConfig.mockRejectedValue(Object.assign(new Error(""), { response: { status: 500 } }));
+    await renderTab();
+    fireEvent.change(keyInput(), { target: { value: KEY } });
+    await save();
+    expect(toast.error).toHaveBeenCalledWith("settings.pipelineTab.hunterSaveError");
+    expect(keyInput().value).toBe(KEY);
+    expect(saveButton().disabled).toBe(false);
+  });
+
+  it.each([
+    ["the Hunter key", "hunter"],
+    ["the SMTP password", "smtp"],
+  ])("a failed save does not log %s", async (_what, card) => {
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
     const err = vi.spyOn(console, "error").mockImplementation(() => {});
     const failure = Object.assign(new Error("HTTP 400"), {
@@ -138,15 +171,38 @@ describe("Hunter key field", () => {
     });
     pipelineApi.updateConfig.mockRejectedValue(failure);
     await renderTab();
-    fireEvent.change(keyInput(), { target: { value: KEY } });
-    fireEvent.change(document.querySelector('input[autocomplete="new-password"]:not([aria-label])'), {
-      target: { value: "pw-sintetica" },
-    });
-    await save();
+    if (card === "hunter") {
+      fireEvent.change(keyInput(), { target: { value: KEY } });
+      await save();
+    } else {
+      fireEvent.change(document.querySelector('input[autocomplete="new-password"]:not([aria-label])'), {
+        target: { value: "pw-sintetica" },
+      });
+      await saveGlobal();
+    }
+    expect(pipelineApi.updateConfig).toHaveBeenCalledTimes(1);
     const logged = JSON.stringify([...log.mock.calls, ...err.mock.calls], (k, v) => (v instanceof Error ? { ...v, message: v.message } : v));
     expect(logged).not.toContain(KEY);
     expect(logged).not.toContain("pw-sintetica");
     expect(err).not.toHaveBeenCalled();
     log.mockRestore(); err.mockRestore();
+  });
+
+  it("the global button no longer sends the key, and a typed key survives it", async () => {
+    await renderTab(config({ hunter_api_key_configured: true }));
+    fireEvent.change(keyInput(), { target: { value: KEY } });
+    await saveGlobal();
+    expect("hunter_api_key" in sentPayload()).toBe(false);
+    expect(keyInput().value).toBe(KEY);
+    expect(saveButton().disabled).toBe(false);
+  });
+
+  it("«Save key» sends nothing from the other cards", async () => {
+    await renderTab(config({ smtp_host: "smtp.ejemplo.test" }));
+    fireEvent.change(screen.getByDisplayValue("smtp.ejemplo.test"), { target: { value: "smtp.otro.test" } });
+    fireEvent.change(keyInput(), { target: { value: KEY } });
+    await save();
+    expect(sentPayload()).toEqual({ hunter_api_key: KEY });
+    expect(screen.getByDisplayValue("smtp.otro.test")).toBeTruthy();
   });
 });

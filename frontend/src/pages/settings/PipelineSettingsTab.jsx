@@ -198,6 +198,7 @@ export default function PipelineSettingsTab({ isDark = false }) {
   const [hunterKeyConfigured, setHunterKeyConfigured] = useState(false);
   const [hunterKeyInput, setHunterKeyInput] = useState("");
   const [hunterKeyClearPending, setHunterKeyClearPending] = useState(false);
+  const [hunterSaving, setHunterSaving] = useState(false);
   const [sourceFormOpen, setSourceFormOpen] = useState(false);
   const [sourceForm, setSourceForm] = useState({ id: null, name: "", source_type: "rss", config: {} });
   const [sourceTesting, setSourceTesting] = useState(null);
@@ -272,13 +273,8 @@ export default function PipelineSettingsTab({ isDark = false }) {
       if (smtpPasswordInput.trim()) {
         payload.smtp_password = smtpPasswordInput;
       }
-      // The Hunter key is sent only when the user typed one (trimmed) or asked
-      // to clear it (""); otherwise it is left out and the stored one stays.
-      if (hunterKeyInput.trim()) {
-        payload.hunter_api_key = hunterKeyInput.trim();
-      } else if (hunterKeyClearPending) {
-        payload.hunter_api_key = "";
-      }
+      // The Hunter key is not sent here: its card has its own button
+      // (saveHunterKey), and a key typed there stays untouched.
       const { data } = await pipelineApi.updateConfig(payload);
       setSmtp({
         smtp_host: data?.smtp_host || "",
@@ -289,17 +285,39 @@ export default function PipelineSettingsTab({ isDark = false }) {
       });
       setSmtpPasswordConfigured(Boolean(data?.smtp_password_configured));
       setSmtpPasswordInput("");
-      setHunterKeyConfigured(Boolean(data?.hunter_api_key_configured));
-      setHunterKeyInput("");
-      setHunterKeyClearPending(false);
       toast.success(t("settings.pipelineTab.toastSaved"));
     } catch (error) {
-      // Not logged: the request carried smtp_password / hunter_api_key.
+      // Not logged: the request may carry smtp_password.
       toast.error(error?.response?.status === 503
         ? t("settings.pipelineTab.toastEncryptionUnavailable")
         : getApiErrorMessage(error, t("settings.pipelineTab.toastSaveError")));
     } finally {
       setSaving(false);
+    }
+  };
+
+  // Something to apply: a typed key (trimmed) or a pending "Clear key".
+  const hunterHasChange = Boolean(hunterKeyInput.trim()) || hunterKeyClearPending;
+
+  // Hunter card's own save: sends only hunter_api_key and resets only this
+  // card, so unsaved edits in other cards are neither sent nor lost.
+  const saveHunterKey = async () => {
+    if (!hunterHasChange) return;
+    const typedKey = hunterKeyInput.trim();
+    setHunterSaving(true);
+    try {
+      const { data } = await pipelineApi.updateConfig({ hunter_api_key: typedKey || "" });
+      setHunterKeyConfigured(Boolean(data?.hunter_api_key_configured));
+      setHunterKeyInput("");
+      setHunterKeyClearPending(false);
+      toast.success(t(typedKey ? "settings.pipelineTab.hunterSaved" : "settings.pipelineTab.hunterCleared"));
+    } catch (error) {
+      // Not logged: the request carried hunter_api_key.
+      toast.error(error?.response?.status === 503
+        ? t("settings.pipelineTab.toastEncryptionUnavailable")
+        : getApiErrorMessage(error, t("settings.pipelineTab.hunterSaveError")));
+    } finally {
+      setHunterSaving(false);
     }
   };
 
@@ -617,19 +635,30 @@ export default function PipelineSettingsTab({ isDark = false }) {
                 spellCheck={false}
               />
             </Field>
-            {hunterKeyConfigured && !hunterKeyClearPending && !hunterKeyInput.trim() && (
-              <Btn variant="secondary" small icon={<Trash2 size={12} />} onClick={() => setHunterKeyClearPending(true)}>
-                {t("settings.pipelineTab.hunterClear")}
-              </Btn>
-            )}
-            {hunterKeyClearPending && (
-              <div role="status" className="flex flex-wrap items-center gap-1.5 text-xs text-amber-800">
-                <span>{t("settings.pipelineTab.hunterClearPending")}</span>
-                <Btn variant="secondary" small icon={<Undo2 size={12} />} onClick={() => setHunterKeyClearPending(false)}>
-                  {t("settings.pipelineTab.hunterUndoClear")}
+            <div className="flex flex-wrap items-center gap-1.5">
+              {hunterKeyConfigured && !hunterKeyClearPending && !hunterKeyInput.trim() && (
+                <Btn variant="secondary" small icon={<Trash2 size={12} />} onClick={() => setHunterKeyClearPending(true)}>
+                  {t("settings.pipelineTab.hunterClear")}
                 </Btn>
-              </div>
-            )}
+              )}
+              {hunterKeyClearPending && (
+                <div role="status" className="flex flex-wrap items-center gap-1.5 text-xs text-amber-800">
+                  <span>{t("settings.pipelineTab.hunterClearPending")}</span>
+                  <Btn variant="secondary" small icon={<Undo2 size={12} />} onClick={() => setHunterKeyClearPending(false)}>
+                    {t("settings.pipelineTab.hunterUndoClear")}
+                  </Btn>
+                </div>
+              )}
+              <Btn
+                small
+                className="ml-auto disabled:opacity-50 disabled:cursor-not-allowed"
+                icon={<Save size={12} />}
+                onClick={saveHunterKey}
+                disabled={!hunterHasChange || hunterSaving}
+              >
+                {hunterSaving ? t("settings.pipelineTab.savingButton") : t("settings.pipelineTab.hunterSaveButton")}
+              </Btn>
+            </div>
           </SettingsSection>
 
           <div className="flex justify-end pb-2">
