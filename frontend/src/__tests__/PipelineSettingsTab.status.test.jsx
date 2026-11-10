@@ -187,7 +187,7 @@ describe("PipelineSettingsTab without the automation thresholds section", () => 
     render(<PipelineSettingsTab />);
     await flush();
 
-    await act(async () => { fireEvent.click(screen.getByText("settings.pipelineTab.saveButton")); });
+    await act(async () => { fireEvent.click(screen.getByText("settings.pipelineTab.smtpSaveButton")); });
     const payload = pipelineApi.updateConfig.mock.calls[0][0];
     expect(payload).not.toHaveProperty("auto_send_threshold");
     expect(payload).not.toHaveProperty("max_emails_per_day");
@@ -199,5 +199,27 @@ describe("PipelineSettingsTab without the automation thresholds section", () => 
     for (const key of SECTION_KEYS) {
       expect(tab).not.toHaveProperty(key);
     }
+  });
+});
+
+// Each card saves on its own, so the global «Save pipeline» button is gone.
+describe("PipelineSettingsTab without a global save button", () => {
+  it("renders no global button, and each card keeps its own way to save", async () => {
+    pipelineApi.getConfig.mockResolvedValue({ data: { sources: [], is_active: true } });
+    render(<PipelineSettingsTab />);
+    await flush();
+
+    expect(screen.queryByText("settings.pipelineTab.saveButton")).toBeNull();
+    expect(screen.getByRole("button", { name: "settings.pipelineTab.smtpSaveButton" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "settings.pipelineTab.hunterSaveButton" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /settings\.pipelineTab\.addSourceButton/ })).toBeTruthy();
+  });
+
+  it.each(["en", "es", "pt"])("has no texts left for the global button in %s", (lang) => {
+    const tab = translations[lang].settings.pipelineTab;
+    for (const key of ["saveButton", "toastSaved", "toastSaveError"]) {
+      expect(tab).not.toHaveProperty(key);
+    }
+    expect(tab.savingButton).toBeTruthy(); // still used by the cards' buttons
   });
 });

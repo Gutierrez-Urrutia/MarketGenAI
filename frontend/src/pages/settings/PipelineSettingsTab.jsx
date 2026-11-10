@@ -3,6 +3,10 @@
  * (keywords/industries, job sources CRUD, SMTP and the Hunter key). Mounted by
  * Dashboard.jsx's Settings page as the "pipeline" tab. The former "automation
  * thresholds" section was removed: none of its fields had any effect.
+ *
+ * Each card saves on its own (there is no global save button): the tag lists
+ * and the toggle right away, SMTP with «Save account», Hunter with «Save key»
+ * and each source with its own form button.
  */
 import { useEffect, useId, useRef, useState } from "react";
 import toast from "react-hot-toast";
@@ -200,7 +204,6 @@ const DEFAULT_SMTP ={ smtp_host: "", smtp_port: 587, smtp_user: "", sender_email
 export default function PipelineSettingsTab({ isDark = false }) {
   const { t } = useI18n();
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
   const [active, setActive] = useState(true);
   const [keywords, setKeywords] = useState([]);
   const [industries, setIndustries] = useState([]);
@@ -323,22 +326,6 @@ export default function PipelineSettingsTab({ isDark = false }) {
         : getApiErrorMessage(error, t("settings.pipelineTab.smtpSaveError")));
     } finally {
       setSmtpSaving(false);
-    }
-  };
-
-  // Global button: every group now saves on its own (tags and the toggle
-  // right away, SMTP and Hunter with their cards' buttons). Until it is
-  // removed it only re-sends the toggle's latest value, after its saves.
-  const saveConfig = async () => {
-    setSaving(true);
-    try {
-      await activeSaves.queue.current;
-      await pipelineApi.updateConfig({ is_active: latestActive.current });
-      toast.success(t("settings.pipelineTab.toastSaved"));
-    } catch (error) {
-      toast.error(getApiErrorMessage(error, t("settings.pipelineTab.toastSaveError")));
-    } finally {
-      setSaving(false);
     }
   };
 
@@ -734,10 +721,6 @@ export default function PipelineSettingsTab({ isDark = false }) {
               </Btn>
             </div>
           </SettingsSection>
-
-          <div className="flex justify-end pb-2">
-            <Btn icon={<Save size={13} />} onClick={saveConfig} disabled={saving}>{saving ? t("settings.pipelineTab.savingButton") : t("settings.pipelineTab.saveButton")}</Btn>
-          </div>
         </>
       )}
     </>

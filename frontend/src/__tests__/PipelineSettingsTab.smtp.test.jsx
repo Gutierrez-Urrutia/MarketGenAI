@@ -172,10 +172,11 @@ describe("PipelineSettingsTab SMTP card save", () => {
     expect(toast.error).toHaveBeenCalledWith("settings.pipelineTab.toastEncryptionUnavailable");
   });
 
-  it("the global button no longer sends the SMTP fields nor resets them", async () => {
+  it("unsaved SMTP edits are not sent by other saves and are kept", async () => {
     await renderSmtp();
     fireEvent.change(screen.getByDisplayValue("smtp.ejemplo.test"), { target: { value: "smtp.otro.test" } });
-    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "settings.pipelineTab.saveButton" })); });
+    fireEvent.change(hunterInput(), { target: { value: "hk-sintetica-0000" } });
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "settings.pipelineTab.hunterSaveButton" })); });
     await flushAll();
 
     const payload = pipelineApi.updateConfig.mock.calls[0][0];
