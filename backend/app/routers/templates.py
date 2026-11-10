@@ -146,9 +146,17 @@ def _extract_template_content(filename: str, content: bytes) -> str:
     if extension in {".txt", ".md", ".html", ".htm"}:
         return _decode_text_file(content)
     if extension == ".docx":
-        return _extract_docx_text(content)
+        try:
+            return _extract_docx_text(content)
+        except Exception:
+            raise HTTPException(status_code=400, detail="Could not read this Word file. Make sure it is a valid .docx document.")
     if extension == ".pdf":
-        return _extract_pdf_text(content)
+        try:
+            return _extract_pdf_text(content)
+        except HTTPException:
+            raise
+        except Exception:
+            raise HTTPException(status_code=400, detail="Could not read this PDF file. Make sure it is a valid, unprotected PDF.")
     supported = ", ".join(sorted(SUPPORTED_UPLOAD_EXTENSIONS))
     raise HTTPException(status_code=400, detail=f"Unsupported template file type. Supported formats: {supported}.")
 

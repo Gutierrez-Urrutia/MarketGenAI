@@ -667,3 +667,14 @@ async def test_extract_template_rejects_empty_unsupported_and_textless_files(cli
     assert unsupported.status_code == 400
     assert "Supported formats" in unsupported.json()["detail"]
     assert textless.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_extract_template_corrupt_docx_and_pdf_return_400(client):
+    """RF07-D-001: un .docx o .pdf corrupto debe dar 400 controlado, no 500."""
+    docx_resp = await client.post(f"{API}/extract", files={"file": ("falso.docx", b"esto no es un word", DOCX_MIME)})
+    pdf_resp = await client.post(f"{API}/extract", files={"file": ("falso.pdf", b"esto no es un pdf", "application/pdf")})
+    assert docx_resp.status_code == 400
+    assert "Word" in docx_resp.json()["detail"]
+    assert pdf_resp.status_code == 400
+    assert "PDF" in pdf_resp.json()["detail"]
