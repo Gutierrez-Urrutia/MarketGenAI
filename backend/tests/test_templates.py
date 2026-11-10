@@ -473,3 +473,197 @@ async def test_delete_template_forbidden(client):
     with patch("app.routers.templates.templates_repo.get", new_callable=AsyncMock, return_value=other):
         resp = await client.delete(f"{API}/tmpl-001")
     assert resp.status_code == 403
+
+
+# ── RF-VTA-07 (cierre): límite de texto, límite de uso, plantillas públicas ────
+
+@pytest.mark.asyncio
+async def test_create_template_rejects_text_over_limit(client):
+    """CP-131: el contenido y las condiciones comerciales tienen un máximo de 50 000 caracteres."""
+    too_long = "x" * 50_001
+    resp = await client.post(API, json={"name": "Larga", "type": "proposal", "content": too_long})
+    assert resp.status_code == 422
+    resp = await client.post(API, json={"name": "Larga", "type": "proposal", "content": "ok", "commercialTerms": too_long})
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_create_template_accepts_text_at_limit(client):
+    async def echo(data):
+        return {"id": "tmpl-max", **data}
+
+    with patch("app.routers.templates.templates_repo.create", new_callable=AsyncMock, side_effect=echo):
+        resp = await client.post(API, json={"name": "Justa", "type": "proposal", "content": "x" * 50_000})
+    assert resp.status_code == 201
+
+
+@pytest.mark.asyncio
+async def test_update_template_rejects_text_over_limit(client):
+    existing = fake_template()
+    with patch("app.routers.templates.templates_repo.get", new_callable=AsyncMock, return_value=existing):
+        resp = await client.put(f"{API}/tmpl-001", json={"content": "x" * 50_001})
+        assert resp.status_code == 422
+        resp = await client.put(f"{API}/tmpl-001", json={"commercialTerms": "x" * 50_001})
+        assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_create_template_is_rate_limited(client):
+    """Las rutas que escriben o procesan archivos aceptan 20 solicitudes por minuto; la 21 recibe 429."""
+    async def echo(data):
+        return {"id": "tmpl-x", **data}
+
+    with patch("app.routers.templates.templates_repo.create", new_callable=AsyncMock, side_effect=echo):
+        statuses = [
+            (await client.post(API, json={"name": "Plantilla", "type": "proposal", "content": "Hola"})).status_code
+            for _ in range(21)
+        ]
+    assert statuses[:20] == [201] * 20
+    assert statuses[20] == 429
+
+
+@pytest.mark.asyncio
+async def test_apply_delete_and_extract_are_rate_limited(client):
+    from app.core.rate_limit import limiter
+
+    tmpl = fake_template()
+    with (
+        patch("app.routers.templates.templates_repo.get",    new_callable=AsyncMock, return_value=tmpl),
+        patch("app.routers.templates.templates_repo.update", new_callable=AsyncMock, return_value=tmpl),
+        patch("app.routers.templates.templates_repo.delete", new_callable=AsyncMock),
+    ):
+        apply_codes = [(await client.post(f"{API}/tmpl-001/apply", json={})).status_code for _ in range(21)]
+        assert apply_codes[:20] == [200] * 20 and apply_codes[20] == 429
+        limiter.reset()
+        update_codes = [(await client.put(f"{API}/tmpl-001", json={"name": "Otro nombre"})).status_code for _ in range(21)]
+        assert update_codes[:20] == [200] * 20 and update_codes[20] == 429
+        limiter.reset()
+        delete_codes = [(await client.delete(f"{API}/tmpl-001")).status_code for _ in range(21)]
+        assert delete_codes[:20] == [204] * 20 and delete_codes[20] == 429
+        limiter.reset()
+        extract_codes = [
+            (await client.post(f"{API}/extract", files={"file": ("a.txt", b"Hola {x}", "text/plain")})).status_code
+            for _ in range(21)
+        ]
+    assert extract_codes[:20] == [200] * 20 and extract_codes[20] == 429
+
+
+@pytest.mark.asyncio
+async def test_public_template_of_other_user_can_be_read_and_applied(client):
+    public = fake_template({"userId": "other-user", "isPublic": True})
+    with (
+        patch("app.routers.templates.templates_repo.get",    new_callable=AsyncMock, return_value=public),
+        patch("app.routers.templates.templates_repo.update", new_callable=AsyncMock, return_value=public),
+    ):
+        got = await client.get(f"{API}/tmpl-001")
+        applied = await client.post(f"{API}/tmpl-001/apply", json={"variables": {"client_name": "Acme", "product": "BPO"}})
+    assert got.status_code == 200
+    assert applied.status_code == 200
+    assert "Acme" in applied.json()["rendered"]
+
+
+@pytest.mark.asyncio
+async def test_private_template_of_other_user_is_forbidden_to_read_and_apply(client):
+    private = fake_template({"userId": "other-user", "isPublic": False})
+    with patch("app.routers.templates.templates_repo.get", new_callable=AsyncMock, return_value=private):
+        assert (await client.get(f"{API}/tmpl-001")).status_code == 403
+        assert (await client.post(f"{API}/tmpl-001/apply", json={})).status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_public_template_of_other_user_cannot_be_edited_or_deleted(client):
+    public = fake_template({"userId": "other-user", "isPublic": True})
+    with patch("app.routers.templates.templates_repo.get", new_callable=AsyncMock, return_value=public):
+        assert (await client.put(f"{API}/tmpl-001", json={"name": "Mía ahora"})).status_code == 403
+        assert (await client.delete(f"{API}/tmpl-001")).status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_update_and_delete_unknown_template_return_404(client):
+    with patch("app.routers.templates.templates_repo.get", new_callable=AsyncMock, return_value=None):
+        assert (await client.delete(f"{API}/nonexistent")).status_code == 404
+        assert (await client.put(f"{API}/nonexistent", json={"name": "Nada"})).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_apply_increments_usage_count(client):
+    tmpl = fake_template({"usageCount": 5})
+    with (
+        patch("app.routers.templates.templates_repo.get",    new_callable=AsyncMock, return_value=tmpl),
+        patch("app.routers.templates.templates_repo.update", new_callable=AsyncMock, return_value=tmpl) as update_mock,
+    ):
+        resp = await client.post(f"{API}/tmpl-001/apply", json={"variables": {"client_name": "A", "product": "B"}})
+    assert resp.status_code == 200
+    update_mock.assert_awaited_once_with("tmpl-001", {"usageCount": 6})
+
+
+@pytest.mark.asyncio
+async def test_list_search_matches_name_or_description(client):
+    templates = [
+        fake_template({"id": "t1", "name": "Cobranza bancaria", "description": "Mora temprana"}),
+        fake_template({"id": "t2", "name": "Nómina", "description": "Liquidación mensual con cobranza"}),
+        fake_template({"id": "t3", "name": "Soporte", "description": "Mesa de ayuda"}),
+    ]
+    with patch("app.routers.templates.templates_repo.list", new_callable=AsyncMock, return_value=templates):
+        resp = await client.get(API, params={"search": "COBRANZA", "include_public": "false"})
+    assert resp.status_code == 200
+    assert {t["id"] for t in resp.json()["items"]} == {"t1", "t2"}
+    assert resp.json()["total"] == 2
+
+
+@pytest.mark.asyncio
+async def test_list_include_public_false_skips_public_templates(client):
+    own = fake_template({"id": "mine"})
+    public = fake_template({"id": "theirs", "userId": "other-user", "isPublic": True})
+
+    async def fake_list(filters=None, **_):
+        return [public] if ("isPublic", "==", True) in (filters or []) else [own]
+
+    with patch("app.routers.templates.templates_repo.list", new_callable=AsyncMock, side_effect=fake_list):
+        with_public = await client.get(API)
+        without_public = await client.get(API, params={"include_public": "false"})
+    assert {t["id"] for t in with_public.json()["items"]} == {"mine", "theirs"}
+    assert {t["id"] for t in without_public.json()["items"]} == {"mine"}
+    # El total solo cuenta las plantillas propias que cumplen los filtros.
+    assert with_public.json()["total"] == 1
+
+
+DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+
+def _docx_bytes(paragraphs: list[str], table_rows: list[list[str]] | None = None) -> bytes:
+    from io import BytesIO
+    from docx import Document
+
+    document = Document()
+    for text in paragraphs:
+        document.add_paragraph(text)
+    if table_rows:
+        table = document.add_table(rows=len(table_rows), cols=len(table_rows[0]))
+        for r, row in enumerate(table_rows):
+            for c, value in enumerate(row):
+                table.cell(r, c).text = value
+    buffer = BytesIO()
+    document.save(buffer)
+    return buffer.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_extract_template_docx_keeps_variables_and_table_text(client):
+    data = _docx_bytes(["Estimado {nombre}"], [["Servicio", "Monto"], ["Back office", "{monto}"]])
+    resp = await client.post(f"{API}/extract", files={"file": ("plantilla.docx", data, DOCX_MIME)})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["name"] == "plantilla"
+    assert "{nombre}" in body["content"] and "{monto}" in body["content"] and "Back office" in body["content"]
+
+
+@pytest.mark.asyncio
+async def test_extract_template_rejects_empty_unsupported_and_textless_files(client):
+    empty = await client.post(f"{API}/extract", files={"file": ("vacio.txt", b"", "text/plain")})
+    unsupported = await client.post(f"{API}/extract", files={"file": ("programa.exe", b"MZ", "application/octet-stream")})
+    textless = await client.post(f"{API}/extract", files={"file": ("sin_texto.docx", _docx_bytes([]), DOCX_MIME)})
+    assert empty.status_code == 400
+    assert unsupported.status_code == 400
+    assert "Supported formats" in unsupported.json()["detail"]
+    assert textless.status_code == 400

@@ -3,13 +3,11 @@
 Plantillas de propuesta (RF-VTA-07): se clasifican por línea de servicio e industria,
 traen un bloque de condiciones comerciales y, al aplicarse, completan las variables
 estándar con datos de la propuesta y del cliente."""
-from __future__ import annotations
-
 from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Optional
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from docx import Document
 
 try:
@@ -17,6 +15,7 @@ try:
 except ImportError:  # pragma: no cover - dependency is declared in requirements.txt
     PdfReader = None
 
+from app.core.rate_limit import limiter
 from app.dependencies.auth import CurrentUser, get_current_user
 from app.routers.customers import _get_customer_for_user
 from app.routers.proposals import (
@@ -160,7 +159,9 @@ def _template_name_from_filename(filename: str) -> str:
 
 
 @router.post("/extract")
+@limiter.limit("20/minute")
 async def extract_template_file(
+    request: Request,
     file: UploadFile = File(...),
     user: CurrentUser = Depends(get_current_user),
 ):
@@ -224,7 +225,9 @@ async def list_templates(
 
 # ── Create ────────────────────────────────────────────────────────────────────
 @router.post("", response_model=TemplateOut, status_code=201)
+@limiter.limit("20/minute")
 async def create_template(
+    request: Request,
     body: TemplateCreate,
     user: CurrentUser = Depends(get_current_user),
 ):
@@ -247,7 +250,9 @@ async def get_template(
 
 # ── Update ────────────────────────────────────────────────────────────────────
 @router.put("/{template_id}", response_model=TemplateOut)
+@limiter.limit("20/minute")
 async def update_template(
+    request:     Request,
     template_id: str,
     body:        TemplateUpdate,
     user:        CurrentUser = Depends(get_current_user),
@@ -271,7 +276,9 @@ async def update_template(
 
 # ── Delete ────────────────────────────────────────────────────────────────────
 @router.delete("/{template_id}", status_code=204)
+@limiter.limit("20/minute")
 async def delete_template(
+    request:     Request,
     template_id: str,
     user:        CurrentUser = Depends(get_current_user),
 ):
@@ -285,7 +292,9 @@ async def delete_template(
 
 # ── Apply template (fill in variables) ───────────────────────────────────────
 @router.post("/{template_id}/apply", response_model=ApplyTemplateResponse)
+@limiter.limit("20/minute")
 async def apply_template(
+    request:     Request,
     template_id: str,
     body:        ApplyTemplateRequest,
     user:        CurrentUser = Depends(get_current_user),
