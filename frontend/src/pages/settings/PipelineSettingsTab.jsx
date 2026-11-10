@@ -159,7 +159,9 @@ function TagInput({ value = [], onChange, placeholder }) {
         onKeyDown={handleKeyDown}
         onBlur={() => addTag(draft)}
         placeholder={value.length === 0 ? placeholder : ""}
-        className="flex-1 min-w-[100px] outline-none text-xs bg-transparent placeholder-gray-400"
+        // The container already shows the focus ring (focus-within); drop the
+        // global input:focus-visible shadow so the field has a single border.
+        className="flex-1 min-w-[100px] outline-none focus-visible:shadow-none text-xs bg-transparent placeholder-gray-400"
       />
     </div>
   );
