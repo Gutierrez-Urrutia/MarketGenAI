@@ -20,6 +20,7 @@ vi.mock("react-hot-toast", () => {
 import { pipelineApi } from "@/api/axios";
 import toast from "react-hot-toast";
 import PipelineSettingsTab from "@/pages/settings/PipelineSettingsTab";
+import { translations } from "@/i18n/translations";
 
 const flush = () => act(async () => { for (let i = 0; i < 5; i += 1) await Promise.resolve(); });
 
@@ -201,5 +202,20 @@ describe("PipelineSettingsTab tag lists save on their own", () => {
     await act(async () => { pending.resolve(); });
     await flush();
     expect(pipelineApi.testSource).toHaveBeenCalledWith("src-1");
+  });
+});
+
+// The «Saving… / Saved» indicator texts (renamed from tagsSaving/tagsSaved
+// without changing them) are now used only by the tag lists.
+describe("PipelineSettingsTab tag save indicator texts", () => {
+  it.each([
+    ["es", "Guardando…", "Guardado"],
+    ["en", "Saving…", "Saved"],
+    ["pt", "Salvando…", "Salvo"],
+  ])("%s keeps its texts", (lang, saving, saved) => {
+    const tab = translations[lang].settings.pipelineTab;
+    expect([tab.autoSaving, tab.autoSaved]).toEqual([saving, saved]);
+    expect(tab).not.toHaveProperty("tagsSaving");
+    expect(tab).not.toHaveProperty("tagsSaved");
   });
 });

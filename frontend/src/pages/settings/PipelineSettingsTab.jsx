@@ -2,16 +2,18 @@
  * PipelineSettingsTab — configuration UI for the 3-agent prospecting pipeline
  * (keywords/industries, job sources CRUD, SMTP and the Hunter key). Mounted by
  * Dashboard.jsx's Settings page as the "pipeline" tab. The former "automation
- * thresholds" section was removed: none of its fields had any effect.
+ * thresholds" section and the "Prospecting Pipeline" on/off toggle were
+ * removed: none of them had any effect (scanning is manual; the scheduled
+ * scan is RF-VTA-17, deferred).
  *
  * Each card saves on its own (there is no global save button): the tag lists
- * and the toggle right away, SMTP with «Save account», Hunter with «Save key»
- * and each source with its own form button.
+ * right away, SMTP with «Save account», Hunter with «Save key» and each source
+ * with its own form button.
  */
 import { useEffect, useId, useRef, useState } from "react";
 import toast from "react-hot-toast";
 import {
-  Radar, Search, Globe, Mail, Code, Rss, Plug, Briefcase,
+  Search, Globe, Mail, Code, Rss, Plug, Briefcase,
   Pencil, Trash2, Plus, Save, Loader2, KeyRound, Undo2,
 } from "lucide-react";
 
@@ -204,7 +206,6 @@ const DEFAULT_SMTP ={ smtp_host: "", smtp_port: 587, smtp_user: "", sender_email
 export default function PipelineSettingsTab({ isDark = false }) {
   const { t } = useI18n();
   const [loading, setLoading] = useState(true);
-  const [active, setActive] = useState(true);
   const [keywords, setKeywords] = useState([]);
   const [industries, setIndustries] = useState([]);
   const [excludedCompanies, setExcludedCompanies] = useState([]);
@@ -215,10 +216,6 @@ export default function PipelineSettingsTab({ isDark = false }) {
   const confirmedTags = useRef({ keywords: [], industries: [], excluded_companies: [] });
   const latestTags = useRef({ keywords: [], industries: [], excluded_companies: [] });
   const tagSaves = useAutoSaveQueue();
-  // The pipeline toggle is saved right away too, with the same rules.
-  const confirmedActive = useRef(true);
-  const latestActive = useRef(true);
-  const activeSaves = useAutoSaveQueue();
   const [sources, setSources] = useState([]);
   const [smtp, setSmtp] = useState(DEFAULT_SMTP);
   const [smtpPasswordConfigured, setSmtpPasswordConfigured] = useState(false);
@@ -263,10 +260,6 @@ export default function PipelineSettingsTab({ isDark = false }) {
       setHunterKeyConfigured(Boolean(data?.hunter_api_key_configured));
       setHunterKeyInput("");
       setHunterKeyClearPending(false);
-      const loadedActive = data?.is_active ?? true;
-      confirmedActive.current = loadedActive;
-      latestActive.current = loadedActive;
-      setActive(loadedActive);
     } catch (error) {
       logApiError("PipelineSettings", error);
       toast.error(t("settings.pipelineTab.toastLoadError"));
@@ -472,35 +465,6 @@ export default function PipelineSettingsTab({ isDark = false }) {
     });
   };
 
-  // Save the pipeline toggle right away (PUT /pipeline/config with only
-  // is_active); quick clicks coalesce, a failure restores the confirmed value.
-  const toggleActive = () => {
-    const next = !latestActive.current;
-    latestActive.current = next;
-    setActive(next);
-
-    activeSaves.enqueue(async () => {
-      const sending = latestActive.current;
-      if (sending === confirmedActive.current) return true;
-      try {
-        const { data } = await pipelineApi.updateConfig({ is_active: sending });
-        const saved = typeof data?.is_active === "boolean" ? data.is_active : sending;
-        confirmedActive.current = saved;
-        if (latestActive.current === sending) {
-          latestActive.current = saved;
-          setActive(saved);
-        }
-        return true;
-      } catch (error) {
-        logApiError("PipelineSettings", error);
-        latestActive.current = confirmedActive.current;
-        setActive(confirmedActive.current);
-        toast.error(t("settings.pipelineTab.statusSaveError"));
-        return false;
-      }
-    });
-  };
-
   const autoSaveText = (status) => ({
     saving: t("settings.pipelineTab.autoSaving"),
     saved: t("settings.pipelineTab.autoSaved"),
@@ -512,21 +476,6 @@ export default function PipelineSettingsTab({ isDark = false }) {
 
   return (
     <>
-      <div className={`flex items-center justify-between p-3.5 rounded-2xl border ${active ? "border-green-200 bg-green-50" : "border-gray-200 bg-gray-50"}`}>
-        <div className="flex items-center gap-1.5">
-          <Radar size={18} className={active ? "text-green-600" : "text-gray-400"} />
-          <div>
-            <p className="text-xs font-semibold text-gray-900">{t("settings.pipelineTab.statusTitle")}</p>
-            <p className="text-xs text-gray-500">{active ? t("settings.pipelineTab.statusActive") : t("settings.pipelineTab.statusInactive")}</p>
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
-          <span role="status" aria-live="polite" className="text-xs text-gray-500">{autoSaveText(activeSaves.status)}</span>
-          <button onClick={toggleActive} className="relative w-11 h-6 rounded-full transition-colors" style={{ backgroundColor: active ? "#16a34a" : "#d1d5db" }}>
-            <span className="absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform" style={{ transform: active ? "translateX(20px)" : "translateX(0)" }} />
-          </button>
-        </div>
-      </div>
 
       {loading ? (
         <div className="flex justify-center py-10"><Loader2 size={20} className="animate-spin text-indigo-600" /></div>

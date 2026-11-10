@@ -120,6 +120,11 @@ class PipelineConfig(BaseModel):
     # Not shown in the UI and not used yet: kept for the scheduled scan of
     # RF-VTA-17 (deferred).
     scan_frequency_hours: int = Field(24, ge=1)
+    # Same: no control in the UI (the on/off toggle was removed, it had no
+    # effect) and nothing reads it; kept for RF-VTA-17. Warning for RF-VTA-17:
+    # users who switched the old toggle off still have is_active=False stored,
+    # so honouring it as-is would silently skip their scheduled scans — show
+    # the control again or reset the value when that feature is built.
     is_active: bool = True
 
     created_at: Optional[datetime] = None
@@ -147,6 +152,7 @@ class PipelineConfigUpdate(BaseModel):
 
     # Kept for RF-VTA-17 (scheduled scan); no UI field sends it today.
     scan_frequency_hours: Optional[int] = Field(None, ge=1)
+    # Kept for RF-VTA-17 too; no UI control sends it today (see PipelineConfig).
     is_active: Optional[bool] = None
 
     # smtp_user/sender_name are free text: only strip incidental leading/

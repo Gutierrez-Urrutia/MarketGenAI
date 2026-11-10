@@ -115,6 +115,13 @@ class PipelineConfig(BaseModel):
 > porque ningún código la usaba. `auto_send_threshold` y `max_emails_per_day` salieron de
 > `PipelineConfig`. `scan_frequency_hours` se mantiene en el backend, sin campo en pantalla, para el
 > escaneo programado del RF-VTA-17. Todo correo pasa por la cola de revisión (CP-060).
+>
+> **Nota (10-11-2026):** se retiró el interruptor «Pipeline de Prospección» de Configuración → Pipeline
+> porque no tenía efecto: el escaneo es solo manual y ningún código lee `is_active`. El campo se
+> mantiene en el backend (esquema, valor por defecto y respuesta), sin control en pantalla, para el
+> RF-VTA-17. **Aviso para el RF-VTA-17:** quien apagó el interruptor conserva `is_active: false` en su
+> documento; si el escaneo programado respeta ese valor tal cual, esos usuarios quedarían sin escaneo
+> sin saberlo. Al implementarlo, volver a mostrar el control o restablecer el valor.
 
 ### 2.2 `leads/{leadId}`
 

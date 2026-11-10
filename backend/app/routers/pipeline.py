@@ -78,6 +78,9 @@ def _default_config() -> Dict[str, Any]:
         "sender_name": "",
         # Kept for the scheduled scan of RF-VTA-17; not shown in the UI.
         "scan_frequency_hours": 24,
+        # Kept for RF-VTA-17; not shown in the UI and read by nothing today.
+        # Older docs may hold is_active=False from the removed toggle (see
+        # PipelineConfig in schemas/pipeline.py).
         "is_active": True,
     }
 
