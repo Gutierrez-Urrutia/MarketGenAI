@@ -4,7 +4,7 @@
  * Dashboard.jsx's Settings page as the "pipeline" tab. The former "automation
  * thresholds" section was removed: none of its fields had any effect.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import toast from "react-hot-toast";
 import {
   Radar, Search, Globe, Mail, Code, Rss, Plug, Briefcase,
@@ -93,11 +93,15 @@ const Select = ({ children, ...props }) => (
   </select>
 );
 
-const Field = ({ label, hint, children }) => (
+// hintBelow puts the hint after the control, so the label and the control
+// line up with the neighbouring column; hintId lets the control point at it
+// with aria-describedby.
+const Field = ({ label, hint, hintBelow = false, hintId, children }) => (
   <div className="mb-[18px]">
     <label className="block text-xs font-medium text-gray-700 mb-1">{label}</label>
-    {hint && <p className="text-xs text-gray-400 mb-1">{hint}</p>}
+    {hint && !hintBelow && <p id={hintId} className="text-xs text-gray-400 mb-1">{hint}</p>}
     {children}
+    {hint && hintBelow && <p id={hintId} className="text-xs text-gray-400 mt-1">{hint}</p>}
   </div>
 );
 
@@ -175,6 +179,7 @@ export default function PipelineSettingsTab({ isDark = false }) {
   const [smtp, setSmtp] = useState(DEFAULT_SMTP);
   const [smtpPasswordConfigured, setSmtpPasswordConfigured] = useState(false);
   const [smtpPasswordInput, setSmtpPasswordInput] = useState("");
+  const smtpPasswordHintId = useId();
   // Hunter API key (RF15): write-only like smtp_password. The field always
   // starts empty — the API never returns the key, only whether one is set.
   // "Borrar clave" only marks it; "" is sent when the user presses Save.
@@ -360,6 +365,10 @@ export default function PipelineSettingsTab({ isDark = false }) {
     }
   };
 
+  const smtpPasswordHint = t(smtpPasswordConfigured
+    ? "settings.pipelineTab.passwordConfiguredHint"
+    : "settings.pipelineTab.passwordNotConfiguredHint");
+
   return (
     <>
       <div className={`flex items-center justify-between p-3.5 rounded-2xl border ${active ? "border-green-200 bg-green-50" : "border-gray-200 bg-gray-50"}`}>
@@ -476,15 +485,21 @@ export default function PipelineSettingsTab({ isDark = false }) {
           </SettingsSection>
 
           <SettingsSection isDark={isDark} title={t("settings.pipelineTab.smtpTitle")} IconComp={Mail} desc={t("settings.pipelineTab.smtpDesc")}>
-            <div className="grid grid-cols-2 gap-1.5">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-1.5">
               <Field label={t("settings.pipelineTab.smtpServerLabel")}><Input value={smtp.smtp_host} onChange={(event) => setSmtp((s) => ({ ...s, smtp_host: event.target.value }))} placeholder="smtp.gmail.com" /></Field>
               <Field label={t("settings.pipelineTab.portLabel")}><Input type="number" value={smtp.smtp_port} onChange={(event) => setSmtp((s) => ({ ...s, smtp_port: Number(event.target.value) || 587 }))} /></Field>
             </div>
-            <div className="grid grid-cols-2 gap-1.5">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-1.5">
               <Field label={t("settings.pipelineTab.usernameLabel")}><Input value={smtp.smtp_user} onChange={(event) => setSmtp((s) => ({ ...s, smtp_user: event.target.value }))} placeholder="sales@noondalton.com" /></Field>
-              <Field label={t("settings.pipelineTab.passwordLabel")} hint={smtpPasswordConfigured ? t("settings.pipelineTab.passwordConfiguredHint") : t("settings.pipelineTab.passwordNotConfiguredHint")}>
+              <Field
+                label={t("settings.pipelineTab.passwordLabel")}
+                hint={smtpPasswordHint}
+                hintBelow
+                hintId={smtpPasswordHintId}
+              >
                 <Input
                   type="password"
+                  aria-describedby={smtpPasswordHint ? smtpPasswordHintId : undefined}
                   value={smtpPasswordInput}
                   onChange={(event) => setSmtpPasswordInput(event.target.value)}
                   placeholder={smtpPasswordConfigured ? "••••••••" : t("settings.pipelineTab.enterPasswordPlaceholder")}
@@ -492,7 +507,7 @@ export default function PipelineSettingsTab({ isDark = false }) {
                 />
               </Field>
             </div>
-            <div className="grid grid-cols-2 gap-1.5">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-1.5">
               <Field label={t("settings.pipelineTab.senderEmailLabel")}><Input value={smtp.sender_email} onChange={(event) => setSmtp((s) => ({ ...s, sender_email: event.target.value }))} placeholder="sales@noondalton.com" /></Field>
               <Field label={t("settings.pipelineTab.senderNameLabel")}><Input value={smtp.sender_name} onChange={(event) => setSmtp((s) => ({ ...s, sender_name: event.target.value }))} placeholder="NoonDalton Sales" /></Field>
             </div>
