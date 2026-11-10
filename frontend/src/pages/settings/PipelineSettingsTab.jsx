@@ -167,7 +167,35 @@ function TagInput({ value = [], onChange, placeholder }) {
   );
 }
 
-const DEFAULT_SMTP = { smtp_host: "", smtp_port: 587, smtp_user: "", sender_email: "", sender_name: "" };
+// Serialized auto-save: one request at a time, in order. `status` is
+// "saving" while any is pending, then "saved" — or "idle" if one of the batch
+// failed (the caller already restored the value and showed the error).
+// `run` returns false on failure.
+function useAutoSaveQueue() {
+  const queue = useRef(Promise.resolve());
+  const pending = useRef(0);
+  const failed = useRef(false);
+  const [status, setStatus] = useState("idle"); // idle | saving | saved
+
+  const enqueue = (run) => {
+    pending.current += 1;
+    setStatus("saving");
+    queue.current = queue.current
+      .then(async () => { if ((await run()) === false) failed.current = true; })
+      .catch(() => { failed.current = true; })
+      .finally(() => {
+        pending.current -= 1;
+        if (pending.current === 0) {
+          setStatus(failed.current ? "idle" : "saved");
+          failed.current = false;
+        }
+      });
+  };
+
+  return { queue, status, enqueue };
+}
+
+const DEFAULT_SMTP ={ smtp_host: "", smtp_port: 587, smtp_user: "", sender_email: "", sender_name: "" };
 
 export default function PipelineSettingsTab({ isDark = false }) {
   const { t } = useI18n();
@@ -183,10 +211,11 @@ export default function PipelineSettingsTab({ isDark = false }) {
   // coalesced and the last one wins; a failure restores the confirmed list.
   const confirmedTags = useRef({ keywords: [], industries: [], excluded_companies: [] });
   const latestTags = useRef({ keywords: [], industries: [], excluded_companies: [] });
-  const tagSaveQueue = useRef(Promise.resolve());
-  const tagSavesPending = useRef(0);
-  const tagSaveFailed = useRef(false);
-  const [tagSaveStatus, setTagSaveStatus] = useState("idle"); // idle | saving | saved
+  const tagSaves = useAutoSaveQueue();
+  // The pipeline toggle is saved right away too, with the same rules.
+  const confirmedActive = useRef(true);
+  const latestActive = useRef(true);
+  const activeSaves = useAutoSaveQueue();
   const [sources, setSources] = useState([]);
   const [smtp, setSmtp] = useState(DEFAULT_SMTP);
   const [smtpPasswordConfigured, setSmtpPasswordConfigured] = useState(false);
@@ -231,7 +260,10 @@ export default function PipelineSettingsTab({ isDark = false }) {
       setHunterKeyConfigured(Boolean(data?.hunter_api_key_configured));
       setHunterKeyInput("");
       setHunterKeyClearPending(false);
-      setActive(data?.is_active ?? true);
+      const loadedActive = data?.is_active ?? true;
+      confirmedActive.current = loadedActive;
+      latestActive.current = loadedActive;
+      setActive(loadedActive);
     } catch (error) {
       logApiError("PipelineSettings", error);
       toast.error(t("settings.pipelineTab.toastLoadError"));
@@ -294,12 +326,14 @@ export default function PipelineSettingsTab({ isDark = false }) {
     }
   };
 
-  // Global button: only what has no save of its own yet (the toggle).
-  // Tag lists, SMTP and the Hunter key are saved by their own cards.
+  // Global button: every group now saves on its own (tags and the toggle
+  // right away, SMTP and Hunter with their cards' buttons). Until it is
+  // removed it only re-sends the toggle's latest value, after its saves.
   const saveConfig = async () => {
     setSaving(true);
     try {
-      await pipelineApi.updateConfig({ is_active: active });
+      await activeSaves.queue.current;
+      await pipelineApi.updateConfig({ is_active: latestActive.current });
       toast.success(t("settings.pipelineTab.toastSaved"));
     } catch (error) {
       toast.error(getApiErrorMessage(error, t("settings.pipelineTab.toastSaveError")));
@@ -395,7 +429,7 @@ export default function PipelineSettingsTab({ isDark = false }) {
     try {
       // The probe reads the keywords stored in Firestore: wait for the tag
       // saves in flight so it uses exactly what the screen shows.
-      await tagSaveQueue.current;
+      await tagSaves.queue.current;
       // The source is actually read (RF13-D-001); the server sends data, the text is built here.
       const { data } = await pipelineApi.testSource(sourceId);
       const warnings = (data?.warnings || []).join(" · ");
@@ -425,13 +459,11 @@ export default function PipelineSettingsTab({ isDark = false }) {
     const setTags = TAG_SETTERS[field];
     latestTags.current = { ...latestTags.current, [field]: nextTags };
     setTags(nextTags);
-    tagSavesPending.current += 1;
-    setTagSaveStatus("saving");
 
-    const run = async () => {
+    tagSaves.enqueue(async () => {
       const sending = latestTags.current[field];
       // An earlier save already sent this value (quick edits coalesce).
-      if (sameTags(sending, confirmedTags.current[field])) return;
+      if (sameTags(sending, confirmedTags.current[field])) return true;
       try {
         const { data } = await pipelineApi.updateConfig({ [field]: sending });
         const saved = Array.isArray(data?.[field]) ? data[field] : sending;
@@ -441,29 +473,51 @@ export default function PipelineSettingsTab({ isDark = false }) {
           latestTags.current = { ...latestTags.current, [field]: saved };
           setTags(saved);
         }
+        return true;
       } catch (error) {
         logApiError("PipelineSettings", error);
-        tagSaveFailed.current = true;
         const restored = confirmedTags.current[field];
         latestTags.current = { ...latestTags.current, [field]: restored };
         setTags(restored);
         toast.error(t("settings.pipelineTab.tagsSaveError"));
-      }
-    };
-
-    tagSaveQueue.current = tagSaveQueue.current.then(run).finally(() => {
-      tagSavesPending.current -= 1;
-      if (tagSavesPending.current === 0) {
-        setTagSaveStatus(tagSaveFailed.current ? "idle" : "saved");
-        tagSaveFailed.current = false;
+        return false;
       }
     });
   };
 
-  const tagSaveStatusText = {
-    saving: t("settings.pipelineTab.tagsSaving"),
-    saved: t("settings.pipelineTab.tagsSaved"),
-  }[tagSaveStatus] || "";
+  // Save the pipeline toggle right away (PUT /pipeline/config with only
+  // is_active); quick clicks coalesce, a failure restores the confirmed value.
+  const toggleActive = () => {
+    const next = !latestActive.current;
+    latestActive.current = next;
+    setActive(next);
+
+    activeSaves.enqueue(async () => {
+      const sending = latestActive.current;
+      if (sending === confirmedActive.current) return true;
+      try {
+        const { data } = await pipelineApi.updateConfig({ is_active: sending });
+        const saved = typeof data?.is_active === "boolean" ? data.is_active : sending;
+        confirmedActive.current = saved;
+        if (latestActive.current === sending) {
+          latestActive.current = saved;
+          setActive(saved);
+        }
+        return true;
+      } catch (error) {
+        logApiError("PipelineSettings", error);
+        latestActive.current = confirmedActive.current;
+        setActive(confirmedActive.current);
+        toast.error(t("settings.pipelineTab.statusSaveError"));
+        return false;
+      }
+    });
+  };
+
+  const autoSaveText = (status) => ({
+    saving: t("settings.pipelineTab.autoSaving"),
+    saved: t("settings.pipelineTab.autoSaved"),
+  }[status] || "");
 
   const smtpPasswordHint = t(smtpPasswordConfigured
     ? "settings.pipelineTab.passwordConfiguredHint"
@@ -479,9 +533,12 @@ export default function PipelineSettingsTab({ isDark = false }) {
             <p className="text-xs text-gray-500">{active ? t("settings.pipelineTab.statusActive") : t("settings.pipelineTab.statusInactive")}</p>
           </div>
         </div>
-        <button onClick={() => setActive(!active)} className="relative w-11 h-6 rounded-full transition-colors" style={{ backgroundColor: active ? "#16a34a" : "#d1d5db" }}>
-          <span className="absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform" style={{ transform: active ? "translateX(20px)" : "translateX(0)" }} />
-        </button>
+        <div className="flex items-center gap-2">
+          <span role="status" aria-live="polite" className="text-xs text-gray-500">{autoSaveText(activeSaves.status)}</span>
+          <button onClick={toggleActive} className="relative w-11 h-6 rounded-full transition-colors" style={{ backgroundColor: active ? "#16a34a" : "#d1d5db" }}>
+            <span className="absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform" style={{ transform: active ? "translateX(20px)" : "translateX(0)" }} />
+          </button>
+        </div>
       </div>
 
       {loading ? (
@@ -493,7 +550,7 @@ export default function PipelineSettingsTab({ isDark = false }) {
             title={t("settings.pipelineTab.keywordsTitle")}
             IconComp={Search}
             desc={t("settings.pipelineTab.keywordsDesc")}
-            badge={<span role="status" aria-live="polite" className="text-xs text-gray-500">{tagSaveStatusText}</span>}
+            badge={<span role="status" aria-live="polite" className="text-xs text-gray-500">{autoSaveText(tagSaves.status)}</span>}
           >
             <Field label={t("settings.pipelineTab.serviceKeywordsLabel")} hint={t("settings.pipelineTab.pressEnterHint")}>
               <TagInput value={keywords} onChange={(next) => commitTags("keywords", next)} placeholder={t("settings.pipelineTab.addKeywordPlaceholder")} />

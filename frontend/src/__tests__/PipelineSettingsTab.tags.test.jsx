@@ -77,7 +77,7 @@ describe("PipelineSettingsTab tag lists save on their own", () => {
     expect(pipelineApi.updateConfig).toHaveBeenCalledTimes(1);
     expect(pipelineApi.updateConfig.mock.calls[0][0]).toEqual({ [field]: [existing, "Nueva"] });
     expect(screen.getByText("Nueva")).toBeTruthy();
-    expect(screen.getByText("settings.pipelineTab.tagsSaved")).toBeTruthy();
+    expect(screen.getByText("settings.pipelineTab.autoSaved")).toBeTruthy();
   });
 
   it.each(LISTS)("removing from %s with × sends only that list", async (field, _labelKey, existing) => {
@@ -125,7 +125,7 @@ describe("PipelineSettingsTab tag lists save on their own", () => {
     expect(screen.queryByText("Nueva")).toBeNull();
     expect(screen.getByText("BPO")).toBeTruthy();
     expect(toast.error).toHaveBeenCalledWith("settings.pipelineTab.tagsSaveError");
-    expect(screen.queryByText("settings.pipelineTab.tagsSaved")).toBeNull();
+    expect(screen.queryByText("settings.pipelineTab.autoSaved")).toBeNull();
   });
 
   it("saves quick additions one at a time and the last value wins", async () => {
@@ -149,7 +149,7 @@ describe("PipelineSettingsTab tag lists save on their own", () => {
     await addTag("settings.pipelineTab.serviceKeywordsLabel", "C");
     await flush();
     expect(pipelineApi.updateConfig).toHaveBeenCalledTimes(1);
-    expect(screen.getByText("settings.pipelineTab.tagsSaving")).toBeTruthy();
+    expect(screen.getByText("settings.pipelineTab.autoSaving")).toBeTruthy();
 
     await act(async () => { first.resolve(); });
     await flush();
@@ -160,7 +160,7 @@ describe("PipelineSettingsTab tag lists save on their own", () => {
     expect(sent.length).toBeLessThanOrEqual(3);
     expect(maxInFlight).toBe(1);
     for (const tag of ["A", "B", "C"]) expect(screen.getByText(tag)).toBeTruthy();
-    expect(screen.getByText("settings.pipelineTab.tagsSaved")).toBeTruthy();
+    expect(screen.getByText("settings.pipelineTab.autoSaved")).toBeTruthy();
   });
 
   it("sends more than 8 keywords untouched (JSearch still uses the first 8 on the server)", async () => {

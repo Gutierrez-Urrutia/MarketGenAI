@@ -17,6 +17,7 @@ vi.mock("react-hot-toast", () => {
   return { default: toast };
 });
 
+import toast from "react-hot-toast";
 import { pipelineApi } from "@/api/axios";
 import PipelineSettingsTab from "@/pages/settings/PipelineSettingsTab";
 import { translations } from "@/i18n/translations";
@@ -51,6 +52,7 @@ describe("PipelineSettingsTab status text", () => {
 
   it("keeps the toggle", async () => {
     pipelineApi.getConfig.mockResolvedValue({ data: { sources: [], is_active: true } });
+    pipelineApi.updateConfig.mockImplementation(async (payload) => ({ data: payload }));
     render(<PipelineSettingsTab />);
     await flush();
 
@@ -59,6 +61,99 @@ describe("PipelineSettingsTab status text", () => {
     const status = screen.getByText("settings.pipelineTab.statusTitle").closest("div.flex.items-center.justify-between");
     await act(async () => { fireEvent.click(status.querySelector("button")); });
     expect(screen.getByText("settings.pipelineTab.statusInactive")).toBeTruthy();
+  });
+});
+
+// The toggle is saved right away, like the tag lists: only is_active is sent,
+// quick clicks coalesce (the last one wins) and a failure restores it.
+describe("PipelineSettingsTab toggle saves right away", () => {
+  const flushAll = () => act(async () => { for (let i = 0; i < 6; i += 1) await Promise.resolve(); });
+  const toggle = () => screen.getByText("settings.pipelineTab.statusTitle")
+    .closest("div.flex.items-center.justify-between").querySelector("button");
+  const renderTab = async (config = {}) => {
+    pipelineApi.getConfig.mockResolvedValue({
+      data: { sources: [], is_active: true, smtp_host: "smtp.ejemplo.test", smtp_port: 587, ...config },
+    });
+    render(<PipelineSettingsTab />);
+    await flushAll();
+  };
+
+  beforeEach(() => {
+    pipelineApi.updateConfig.mockImplementation(async (payload) => ({ data: { is_active: true, ...payload } }));
+  });
+
+  it("sends only is_active and shows «Saved»", async () => {
+    await renderTab();
+    await act(async () => { fireEvent.click(toggle()); });
+    await flushAll();
+
+    expect(pipelineApi.updateConfig.mock.calls).toEqual([[{ is_active: false }]]);
+    expect(screen.getByText("settings.pipelineTab.statusInactive")).toBeTruthy();
+    expect(screen.getByText("settings.pipelineTab.autoSaved")).toBeTruthy();
+  });
+
+  it("does not send other cards' unsaved edits, and keeps them", async () => {
+    await renderTab();
+    fireEvent.change(screen.getByDisplayValue("smtp.ejemplo.test"), { target: { value: "smtp.otro.test" } });
+    await act(async () => { fireEvent.click(toggle()); });
+    await flushAll();
+
+    expect(pipelineApi.updateConfig.mock.calls).toEqual([[{ is_active: false }]]);
+    expect(screen.getByDisplayValue("smtp.otro.test")).toBeTruthy();
+  });
+
+  it("restores the previous value and shows an error when the save fails", async () => {
+    pipelineApi.updateConfig.mockRejectedValue(Object.assign(new Error("HTTP 500"), { response: { status: 500 } }));
+    await renderTab();
+    await act(async () => { fireEvent.click(toggle()); });
+    await flushAll();
+
+    expect(screen.getByText("settings.pipelineTab.statusActive")).toBeTruthy();
+    expect(toast.error).toHaveBeenCalledWith("settings.pipelineTab.statusSaveError");
+    expect(screen.queryByText("settings.pipelineTab.autoSaved")).toBeNull();
+  });
+
+  it("quick clicks are saved one at a time and the last value wins", async () => {
+    let release;
+    const first = new Promise((resolve) => { release = resolve; });
+    let inFlight = 0;
+    let maxInFlight = 0;
+    pipelineApi.updateConfig.mockImplementation(async (payload) => {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      try {
+        if (pipelineApi.updateConfig.mock.calls.length === 1) await first;
+        return { data: payload };
+      } finally {
+        inFlight -= 1;
+      }
+    });
+    await renderTab();
+
+    await act(async () => { fireEvent.click(toggle()); }); // → off (sent, waiting)
+    await act(async () => { fireEvent.click(toggle()); }); // → on
+    await act(async () => { fireEvent.click(toggle()); }); // → off
+    await flushAll();
+    expect(pipelineApi.updateConfig).toHaveBeenCalledTimes(1);
+    expect(screen.getByText("settings.pipelineTab.autoSaving")).toBeTruthy();
+
+    await act(async () => { release(); });
+    await flushAll();
+
+    const sent = pipelineApi.updateConfig.mock.calls.map(([payload]) => payload);
+    expect(sent[0]).toEqual({ is_active: false });
+    expect(sent.at(-1)).toEqual({ is_active: false });
+    expect(maxInFlight).toBe(1);
+    expect(screen.getByText("settings.pipelineTab.statusInactive")).toBeTruthy();
+  });
+
+  it.each(["en", "es", "pt"])("has the error text and keeps the indicator texts in %s", (lang) => {
+    const tab = translations[lang].settings.pipelineTab;
+    expect(tab.statusSaveError).toBeTruthy();
+    expect(tab).not.toHaveProperty("tagsSaving");
+    expect(tab).not.toHaveProperty("tagsSaved");
+    expect({ es: ["Guardando…", "Guardado"], en: ["Saving…", "Saved"], pt: ["Salvando…", "Salvo"] }[lang])
+      .toEqual([tab.autoSaving, tab.autoSaved]);
   });
 });
 
