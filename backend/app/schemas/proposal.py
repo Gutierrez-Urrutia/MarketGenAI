@@ -28,6 +28,7 @@ PROPOSAL_STATUS_VALUES: FrozenSet[str] = frozenset(s.value for s in ProposalStat
 # RF-VTA-06 (etapa diferida): documento firmado adjunto a la propuesta.
 SIGNED_DOCUMENT_EXTENSIONS: FrozenSet[str] = frozenset({".pdf"})
 MAX_SIGNED_DOCUMENT_BYTES: int = 10 * 1024 * 1024
+SIGNED_DOCUMENT_MAGIC: bytes = b"%PDF-"
 
 # Transiciones permitidas. Todo lo que no está aquí es inválido, incluido
 # misma→misma. rechazada→en_negociacion (reapertura) además exige ser admin.

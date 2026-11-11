@@ -50,6 +50,7 @@ from app.schemas.proposal import (
     ProposalVersionOut,
     SendToCrmRequest,
     SIGNED_DOCUMENT_EXTENSIONS,
+    SIGNED_DOCUMENT_MAGIC,
     invalid_status_detail,
 )
 from app.services.firestore_service import proposals_repo, jobs_repo, settings_repo
@@ -1267,7 +1268,9 @@ async def update_proposal_status(
 
 
 @router.post("/{proposal_id}/signed-document", response_model=ProposalOut)
+@limiter.limit("20/minute")
 async def upload_signed_document(
+    request: Request,
     proposal_id: str,
     file: UploadFile = File(...),
     user: CurrentUser = Depends(get_current_user),
@@ -1290,6 +1293,12 @@ async def upload_signed_document(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"El archivo supera el tamaño máximo permitido ({MAX_SIGNED_DOCUMENT_BYTES // (1024 * 1024)} MB).",
         )
+    # La extensión la elige quien sube el archivo: se comprueba también que el contenido sea un PDF.
+    if not data.lstrip(b"\x00\t\n\r\x0c ").startswith(SIGNED_DOCUMENT_MAGIC):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="El archivo no es un PDF válido. Adjunta el documento firmado en formato PDF.",
+        )
 
     old_path = proposal.get("signedDocumentPath")
     if old_path:
@@ -1307,7 +1316,8 @@ async def upload_signed_document(
 
 
 @router.delete("/{proposal_id}/signed-document", response_model=ProposalOut)
-async def delete_signed_document(proposal_id: str, user: CurrentUser = Depends(get_current_user)):
+@limiter.limit("20/minute")
+async def delete_signed_document(request: Request, proposal_id: str, user: CurrentUser = Depends(get_current_user)):
     """Quita el documento firmado adjunto, para corregir un archivo subido por
     error antes de reemplazarlo. No se permite en una propuesta ya `firmada`:
     eso la dejaría firmada sin el adjunto que sustenta ese estado — para
