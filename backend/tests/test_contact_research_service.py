@@ -432,7 +432,7 @@ async def test_live_running_search_blocks_a_new_one():
 
 
 @pytest.mark.parametrize("lead_status", [
-    "composing", "ready_for_review", "approved", "auto_approved", "sent", "replied", "rejected",
+    "composing", "ready_for_review", "approved", "sent", "replied", "rejected",
 ])
 async def test_later_stages_are_not_searchable(lead_status):
     lead = make_lead(status=lead_status)

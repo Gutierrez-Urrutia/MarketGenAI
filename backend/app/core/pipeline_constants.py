@@ -191,6 +191,19 @@ CONTACT_SEARCH_SEARCHABLE_STATUSES = ("new", "researching", "contacts_found", "e
 # Leads of one user and domain read when looking for a search to reuse.
 CONTACT_REUSE_MAX_CANDIDATES = 50
 
+# ── Agente 3 — prospecting email of one contact (RF-VTA-16) ─────────────────
+# A lead still `composing` this long after the generation started is presumed
+# stuck (the process died) and a new generation may take it over.
+COMPOSING_STALE_SECONDS = 120
+# Lead statuses a generation may start from ("composing" only once stale):
+# the lead has a contact, and maybe other contacts' emails already.
+COMPOSE_STARTABLE_STATUSES = ("contacts_found", "ready_for_review", "approved", "sent")
+# Lead statuses an email decision recomputes. researching / composing set
+# their own when they finish; rejected, replied and error are left alone.
+EMAIL_RECOMPUTABLE_STATUSES = ("new", "contacts_found", "ready_for_review", "approved", "sent")
+# Most emails of one lead read when summarizing its status.
+OUTREACH_EMAILS_PER_LEAD_LIMIT = 200
+
 # ── Agente 2 — contact role, ranking and confidence ─────────────────────────
 # app/services/contact_ranking_service.py. Titles and vacancy titles are
 # matched as whole words/phrases after folding accents and case. All values

@@ -42,8 +42,13 @@ from app.core.pipeline_constants import (
     CONTACT_SEARCH_CONSIDERED_DEAD_AFTER_SECONDS,
     CONTACT_SEARCH_COOLDOWN_SECONDS,
     CONTACT_SEARCH_SEARCHABLE_STATUSES,
+    COMPOSE_STARTABLE_STATUSES,
+    COMPOSING_STALE_SECONDS,
+    EMAIL_RECOMPUTABLE_STATUSES,
+    OUTREACH_EMAILS_PER_LEAD_LIMIT,
 )
 from app.schemas.contact import ContactCreate
+from app.schemas.outreach_email import ACTIVE_EMAIL_STATUSES, plan_email_transition
 from app.schemas.proposal import (
     PROPOSAL_STATUS_VALUES,
     StatusChangeError,
@@ -726,6 +731,170 @@ class LeadsRepo(FirestoreRepo):
             limit=CONTACT_REUSE_MAX_CANDIDATES,
         )
 
+    # ── Prospecting emails (Agente 3, RF-VTA-16) ──────────────────────────────
+    # While an email is written the lead is `composing`; the generation is
+    # guarded like the contact search: it starts inside a transaction that
+    # reads and writes the lead, and only the generation whose `composing_id`
+    # is still the lead's may close it. One stuck for COMPOSING_STALE_SECONDS
+    # may be taken over.
+    COMPOSING_FIELDS = ("composing_id", "composing_started_at", "composing_previous_status")
+
+    @staticmethod
+    def lead_status_from_emails(email_statuses: List[Optional[str]], has_active_contact: bool) -> str:
+        """The lead's status summarizing its emails: the most advanced
+        non-rejected email wins (sent > approved > pending_review). With none,
+        contacts_found while a non-rejected contact remains, else new (RF15
+        rule). Pure."""
+        statuses = set(email_statuses)
+        if "sent" in statuses:
+            return "sent"
+        if "approved" in statuses:
+            return "approved"
+        if "pending_review" in statuses:
+            return "ready_for_review"
+        return "contacts_found" if has_active_contact else "new"
+
+    @staticmethod
+    def plan_lead_status_from_emails(
+        lead: Optional[Dict[str, Any]], user_id: str, email_statuses: List[Optional[str]], has_active_contact: bool,
+    ) -> Optional[str]:
+        """The status to write after an email decision, or None to leave the
+        lead alone (missing, someone else's, outside
+        EMAIL_RECOMPUTABLE_STATUSES, or already right). Pure."""
+        if lead is None or lead.get("user_id") != user_id:
+            return None
+        current = lead.get("status") or "new"
+        if current not in EMAIL_RECOMPUTABLE_STATUSES:
+            return None
+        target = LeadsRepo.lead_status_from_emails(email_statuses, has_active_contact)
+        return None if target == current else target
+
+    async def recompute_status_from_emails(
+        self, lead_id: str, user_id: str, email_statuses: List[Optional[str]], has_active_contact: bool, now: datetime,
+    ) -> Optional[str]:
+        """After an email decision: write the lead's summarized status inside
+        a transaction that re-reads the lead (a generation or search that
+        started meanwhile is never overwritten). Returns the lead's status
+        afterwards (None if missing)."""
+        ref = self._doc(lead_id)
+        transaction = self.db.transaction()
+
+        @firestore.async_transactional
+        async def _txn(txn):
+            snap = await ref.get(transaction=txn)
+            lead = snap.to_dict() if snap.exists else None
+            if lead is None:
+                return None
+            target = self.plan_lead_status_from_emails(lead, user_id, email_statuses, has_active_contact)
+            if target is None:
+                return lead.get("status") or "new"
+            txn.update(ref, {"status": target, "updatedAt": now})
+            return target
+
+        return await _txn(transaction)
+
+    @staticmethod
+    def plan_compose_start(lead: Optional[Dict[str, Any]], user_id: str, now: datetime) -> Dict[str, Any]:
+        """Whether a generation may start on `lead` now. Pure. Returns
+        {"started": bool, "code": None | "lead_not_found" | "forbidden" |
+        "compose_in_progress" | "lead_not_composable",
+        "previous_status": str|None, "stale_compose_id": str|None}.
+        A `composing` lead is taken over once its generation is older than
+        COMPOSING_STALE_SECONDS, or when it has no start time at all."""
+        def refuse(code: str) -> Dict[str, Any]:
+            return {"started": False, "code": code, "previous_status": None, "stale_compose_id": None}
+
+        if lead is None:
+            return refuse("lead_not_found")
+        if lead.get("user_id") != user_id:
+            return refuse("forbidden")
+        current = lead.get("status") or "new"
+        if current == "composing":
+            started_at = _as_utc(lead.get("composing_started_at"))
+            if started_at is not None and now - started_at < timedelta(seconds=COMPOSING_STALE_SECONDS):
+                return refuse("compose_in_progress")
+            previous = lead.get("composing_previous_status")
+            if previous not in COMPOSE_STARTABLE_STATUSES:
+                previous = "contacts_found"
+            return {
+                "started": True, "code": None, "previous_status": previous,
+                "stale_compose_id": lead.get("composing_id"),
+            }
+        if current not in COMPOSE_STARTABLE_STATUSES:
+            return refuse("lead_not_composable")
+        return {"started": True, "code": None, "previous_status": current, "stale_compose_id": None}
+
+    @staticmethod
+    def compose_start_fields(compose_id: str, now: datetime, previous_status: str) -> Dict[str, Any]:
+        return {
+            "status": "composing",
+            "composing_id": compose_id,
+            "composing_started_at": now,
+            "composing_previous_status": previous_status,
+            "updatedAt": now,
+        }
+
+    @staticmethod
+    def can_finish_composing(lead: Optional[Dict[str, Any]], compose_id: str) -> bool:
+        """True while `compose_id` is still the lead's running generation."""
+        return bool(lead) and lead.get("status") == "composing" and lead.get("composing_id") == compose_id
+
+    async def start_composing(self, lead_id: str, user_id: str, compose_id: str, now: datetime) -> Dict[str, Any]:
+        """Atomically mark the lead `composing`, or refuse (see plan_compose_start)."""
+        ref = self._doc(lead_id)
+        transaction = self.db.transaction()
+
+        @firestore.async_transactional
+        async def _txn(txn):
+            snap = await ref.get(transaction=txn)
+            lead = snap.to_dict() if snap.exists else None
+            plan = self.plan_compose_start(lead, user_id, now)
+            if plan["started"]:
+                txn.update(ref, self.compose_start_fields(compose_id, now, plan["previous_status"]))
+            return plan
+
+        return await _txn(transaction)
+
+    async def _close_composing(self, lead_id: str, compose_id: str, now: datetime, target_of) -> Optional[str]:
+        ref = self._doc(lead_id)
+        transaction = self.db.transaction()
+
+        @firestore.async_transactional
+        async def _txn(txn):
+            snap = await ref.get(transaction=txn)
+            lead = snap.to_dict() if snap.exists else None
+            if not self.can_finish_composing(lead, compose_id):
+                return (lead or {}).get("status")
+            target = target_of(lead)
+            txn.update(ref, {
+                "status": target,
+                **{field: firestore.DELETE_FIELD for field in self.COMPOSING_FIELDS},
+                "updatedAt": now,
+            })
+            return target
+
+        return await _txn(transaction)
+
+    async def finish_composing(
+        self, lead_id: str, compose_id: str, email_statuses: List[Optional[str]], has_active_contact: bool,
+        now: datetime,
+    ) -> Optional[str]:
+        """After a successful generation: write the summarized status and clear
+        the composing fields, only if `compose_id` still owns the lead.
+        Returns the lead's status afterwards."""
+        return await self._close_composing(
+            lead_id, compose_id, now,
+            lambda _lead: self.lead_status_from_emails(email_statuses, has_active_contact),
+        )
+
+    async def restore_after_compose(self, lead_id: str, compose_id: str, now: datetime) -> Optional[str]:
+        """After a failed generation: put back the status the lead had before
+        and clear the composing fields, only if `compose_id` still owns it."""
+        return await self._close_composing(
+            lead_id, compose_id, now,
+            lambda lead: lead.get("composing_previous_status") or "contacts_found",
+        )
+
 
 class ContactsRepo(FirestoreRepo):
     collection = "contacts"
@@ -755,7 +924,92 @@ class ContactsRepo(FirestoreRepo):
 
 
 class OutreachEmailsRepo(FirestoreRepo):
+    """Prospecting emails (Agente 3, RF-VTA-16). Scoped by `user_id`
+    (snake_case, like leads and contacts). Queries use equality filters only
+    and sort in memory, so no composite index is needed."""
+
     collection = "outreach_emails"
+
+    async def list_by_user(
+        self, user_id: str, status: Optional[str] = None, lead_id: Optional[str] = None, limit: int = 500,
+    ) -> List[Dict[str, Any]]:
+        """The user's emails, newest first; optionally one lead's and/or one
+        status (the status is filtered in memory)."""
+        filters = [("user_id", "==", user_id)]
+        if lead_id:
+            filters.append(("lead_id", "==", lead_id))
+        items = await self.list(filters=filters, order_by="createdAt", order_direction="DESCENDING", limit=limit)
+        items = [item for item in items if item.get("user_id") == user_id]
+        if status:
+            items = [item for item in items if item.get("status") == status]
+        return items
+
+    async def list_by_lead(self, lead_id: str, user_id: str) -> List[Dict[str, Any]]:
+        return await self.list_by_user(user_id, lead_id=lead_id, limit=OUTREACH_EMAILS_PER_LEAD_LIMIT)
+
+    async def find_active_for_contact(self, lead_id: str, contact_id: str, user_id: str) -> Optional[Dict[str, Any]]:
+        """The contact's active email (pending_review / approved), if any."""
+        for email in await self.list_by_lead(lead_id, user_id):
+            if email.get("contact_id") == contact_id and email.get("status") in ACTIVE_EMAIL_STATUSES:
+                return email
+        return None
+
+    @staticmethod
+    def transition_fields(
+        action: str, from_status: Optional[str], to_status: str, user_id: str, user_name: Optional[str],
+        now: datetime, extra: Optional[Dict[str, Any]] = None, history_extra: Optional[Dict[str, Any]] = None,
+    ) -> tuple:
+        """(fields to write, history entry) for one decision. Pure."""
+        fields: Dict[str, Any] = {
+            **(extra or {}),
+            "status": to_status,
+            "last_decision_by": user_id,
+            "last_decision_at": now,
+        }
+        prefix = {"approve": "approved", "reject": "rejected", "mark_sent": "sent_marked"}.get(action)
+        if prefix:
+            fields[f"{prefix}_by"] = user_id
+            fields[f"{prefix}_by_name"] = user_name
+            fields["sent_at" if action == "mark_sent" else f"{prefix}_at"] = now
+        entry = {
+            "action": action,
+            "at": now,
+            "by": user_id,
+            "by_name": user_name,
+            "from_status": from_status,
+            "to_status": to_status,
+            **(history_extra or {}),
+        }
+        return fields, entry
+
+    async def transition(
+        self, email_id: str, user_id: str, user_name: Optional[str], action: str, now: datetime,
+        extra: Optional[Dict[str, Any]] = None, history_extra: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Apply `action` inside a transaction that re-reads the email, so two
+        decisions at once never both apply. Appends the decision to `history`.
+        Returns {"ok", "code", "from_status", "to_status", "email"}: `email`
+        is the document after the write (or as read, when refused)."""
+        ref = self._doc(email_id)
+        transaction = self.db.transaction()
+
+        @firestore.async_transactional
+        async def _txn(txn):
+            snap = await ref.get(transaction=txn)
+            email = snap.to_dict() if snap.exists else None
+            plan = plan_email_transition(email, user_id, action)
+            if not plan["ok"]:
+                return {**plan, "email": email}
+            fields, entry = self.transition_fields(
+                action, plan["from_status"], plan["to_status"], user_id, user_name, now, extra, history_extra,
+            )
+            txn.update(ref, {**fields, "history": firestore.ArrayUnion([entry]), "updatedAt": now})
+            updated = {
+                **email, **fields, "history": [*(email.get("history") or []), entry], "updatedAt": now,
+            }
+            return {**plan, "email": updated}
+
+        return await _txn(transaction)
 
 
 class PipelineRunsRepo(FirestoreRepo):

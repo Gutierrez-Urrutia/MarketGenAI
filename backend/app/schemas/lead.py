@@ -15,7 +15,6 @@ class LeadStatus(str, Enum):
     COMPOSING = "composing"
     READY_FOR_REVIEW = "ready_for_review"
     APPROVED = "approved"
-    AUTO_APPROVED = "auto_approved"
     SENT = "sent"
     REPLIED = "replied"
     REJECTED = "rejected"

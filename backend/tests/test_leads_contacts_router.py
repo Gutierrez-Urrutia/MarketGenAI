@@ -255,7 +255,7 @@ async def test_approving_a_pending_contact_of_a_new_lead_sets_contacts_found(cli
 
 
 @pytest.mark.parametrize("lead_status", [
-    "researching", "composing", "ready_for_review", "approved", "auto_approved", "sent", "replied",
+    "researching", "composing", "ready_for_review", "approved", "sent", "replied",
     "rejected", "error",
 ])
 async def test_other_statuses_are_never_changed_by_a_review(client, world, lead_status):
