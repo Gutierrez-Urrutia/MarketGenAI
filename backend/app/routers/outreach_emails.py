@@ -11,7 +11,7 @@ checks that the email / lead is the caller's: 404 when it does not exist,
 # model through the wrapper — same as routers/leads.py.
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, status
 
 from app.core.rate_limit import limiter
 from app.dependencies.auth import CurrentUser, get_current_user
@@ -19,6 +19,7 @@ from app.schemas.outreach_email import (
     EmailStatus,
     OutreachEmailCreate,
     OutreachEmailListResponse,
+    OutreachEmailRegenerate,
     OutreachEmailResponse,
 )
 from app.services import outreach_email_service
@@ -44,15 +45,15 @@ async def generate_outreach_email(
     body: OutreachEmailCreate,
     user: CurrentUser = Depends(get_current_user),
 ):
-    """Write an email for a non-rejected contact with an email address.
-    Refusals: 404 lead_not_found / contact_not_found, 403 forbidden,
+    """Write an email for a non-rejected contact with an email address, in
+    `language` (en / es / pt; default en). Refusals: 422 invalid_language, 404 lead_not_found / contact_not_found, 403 forbidden,
     422 contact_rejected / contact_without_email / lead_not_composable,
     409 email_already_active / compose_in_progress,
     502 generation_failed / invalid_model_output (nothing stored, the lead
     goes back to its previous status)."""
     try:
         return await outreach_email_service.get_service().generate(
-            body.lead_id, body.contact_id, user.sub, _user_name(user),
+            body.lead_id, body.contact_id, user.sub, _user_name(user), body.language,
         )
     except OutreachEmailError as exc:
         raise _http(exc)
@@ -107,10 +108,18 @@ async def mark_outreach_email_sent(email_id: str, user: CurrentUser = Depends(ge
 
 @router.patch("/{email_id}/regenerate", response_model=OutreachEmailResponse)
 @limiter.limit(GENERATION_RATE_LIMIT)
-async def regenerate_outreach_email(request: Request, email_id: str, user: CurrentUser = Depends(get_current_user)):
-    """Write the email again while pending_review; the previous version stays
-    in the history."""
+async def regenerate_outreach_email(
+    request: Request,
+    email_id: str,
+    body: Optional[OutreachEmailRegenerate] = Body(None),
+    user: CurrentUser = Depends(get_current_user),
+):
+    """Write the email again while pending_review, in `language` or, without
+    one, in the email's current language; the previous version stays in the
+    history. 422 invalid_language for a language outside en / es / pt."""
     try:
-        return await outreach_email_service.get_service().regenerate(email_id, user.sub, _user_name(user))
+        return await outreach_email_service.get_service().regenerate(
+            email_id, user.sub, _user_name(user), body.language if body else None,
+        )
     except OutreachEmailError as exc:
         raise _http(exc)

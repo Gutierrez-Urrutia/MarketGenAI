@@ -102,7 +102,8 @@ def test_contact_review_blocks(action, review, blocked):
 
 def test_create_body_ignores_user_id():
     body = OutreachEmailCreate(lead_id="lead-1", contact_id="c-1", user_id="otro")
-    assert body.model_dump() == {"lead_id": "lead-1", "contact_id": "c-1"}
+    assert body.model_dump() == {"lead_id": "lead-1", "contact_id": "c-1", "language": None}
+    assert OutreachEmailCreate(lead_id="lead-1", contact_id="c-1", language="pt").language == "pt"
     with pytest.raises(ValidationError):
         OutreachEmailCreate(lead_id="", contact_id="c-1")
 

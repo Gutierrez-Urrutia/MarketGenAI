@@ -33,6 +33,7 @@ from pydantic import ValidationError
 
 from app.core import url_safety
 from app.core.pipeline_constants import (
+    NOONDALTON_SERVICES,
     JSEARCH_API_HOST,
     JSEARCH_DEFAULT_COUNTRY,
     JSEARCH_DEFAULT_LANGUAGE,
@@ -79,19 +80,9 @@ _SCORE_SYSTEM_PROMPT = (
     "Respondes ÚNICAMENTE con un array JSON válido, sin texto adicional antes ni después."
 )
 
-# What NoonDalton sells, for the relevance prompt (RF14-D-005). Fixed here on
-# purpose: the pipeline keywords are search queries for the sources, not a
-# description of the services.
-_NOONDALTON_SERVICES = (
-    "atención al cliente y call center; "
-    "sales support (calificación de leads, seguimiento, CRM); "
-    "reclutamiento y RR. HH.; "
-    "desarrollo de software, infraestructura y soporte técnico; "
-    "procesamiento de datos y back office; "
-    "underwriting de préstamos; "
-    "operaciones de e-commerce (pedidos, inventario, envíos); "
-    "procesamiento de seguros (reclamos, renovaciones)"
-)
+# What NoonDalton sells, for the relevance prompt (RF14-D-005). One source
+# with the prospecting email (pipeline_constants.NOONDALTON_SERVICES).
+_NOONDALTON_SERVICES = "; ".join(NOONDALTON_SERVICES)
 
 # A trailing " via <site>" only steers the search to a job board; it is not
 # part of what the posting matched.

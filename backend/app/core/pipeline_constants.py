@@ -203,6 +203,26 @@ COMPOSE_STARTABLE_STATUSES = ("contacts_found", "ready_for_review", "approved", 
 EMAIL_RECOMPUTABLE_STATUSES = ("new", "contacts_found", "ready_for_review", "approved", "sent")
 # Most emails of one lead read when summarizing its status.
 OUTREACH_EMAILS_PER_LEAD_LIMIT = 200
+# Language of the email's subject and body: a parameter of each generation,
+# not tied to the interface language. Default English.
+OUTREACH_EMAIL_LANGUAGE = "en"
+OUTREACH_EMAIL_LANGUAGES = ("en", "es", "pt")
+
+# ── What NoonDalton sells ───────────────────────────────────────────────────
+# One source for the relevance prompt of Agente 1 (RF14-D-005) and the
+# prospecting email of Agente 3 (RF-VTA-16). Fixed here on purpose: the
+# pipeline keywords are search queries for the sources, not a description of
+# the services.
+NOONDALTON_SERVICES = (
+    "atención al cliente y call center",
+    "sales support (calificación de leads, seguimiento, CRM)",
+    "reclutamiento y RR. HH.",
+    "desarrollo de software, infraestructura y soporte técnico",
+    "procesamiento de datos y back office",
+    "underwriting de préstamos",
+    "operaciones de e-commerce (pedidos, inventario, envíos)",
+    "procesamiento de seguros (reclamos, renovaciones)",
+)
 
 # ── Agente 2 — contact role, ranking and confidence ─────────────────────────
 # app/services/contact_ranking_service.py. Titles and vacancy titles are

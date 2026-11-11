@@ -91,7 +91,8 @@ def contact_blocks(action: str, contact_review_status: Optional[str]) -> bool:
 
 class EmailHistoryEntry(BaseModel):
     """One decision on an email. `from_status` is None for `generate`;
-    previous_subject / previous_body are only set by `regenerate`."""
+    previous_subject / previous_body / previous_language are only set by
+    `regenerate`."""
 
     action: EmailAction
     at: datetime
@@ -101,6 +102,7 @@ class EmailHistoryEntry(BaseModel):
     to_status: EmailStatus
     previous_subject: Optional[str] = None
     previous_body: Optional[str] = None
+    previous_language: Optional[str] = None
 
 
 class OutreachEmail(BaseModel):
@@ -133,6 +135,8 @@ class OutreachEmail(BaseModel):
     history: List[EmailHistoryEntry] = Field(default_factory=list)
     model: Optional[str] = None
     prompt_version: Optional[str] = None
+    # Language of subject and body (en / es / pt); None on emails saved before it.
+    language: Optional[str] = None
     # Firestore stores createdAt/updatedAt (FirestoreRepo.create). Accept both
     # spellings on input only: the JSON key stays created_at/updated_at.
     created_at: Optional[datetime] = Field(None, validation_alias=AliasChoices("created_at", "createdAt"))
@@ -147,6 +151,17 @@ class OutreachEmailCreate(BaseModel):
 
     lead_id: str = Field(..., min_length=1)
     contact_id: str = Field(..., min_length=1)
+    # en / es / pt; checked by the service (422 invalid_language). None → "en".
+    language: Optional[str] = None
+
+
+class OutreachEmailRegenerate(BaseModel):
+    """PATCH /outreach-emails/{id}/regenerate (optional body). Without
+    `language` the email keeps its current one."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    language: Optional[str] = None
 
 
 class OutreachEmailResponse(OutreachEmail):
