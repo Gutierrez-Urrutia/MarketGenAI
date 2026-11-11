@@ -985,11 +985,15 @@ class OutreachEmailsRepo(FirestoreRepo):
     async def transition(
         self, email_id: str, user_id: str, user_name: Optional[str], action: str, now: datetime,
         extra: Optional[Dict[str, Any]] = None, history_extra: Optional[Dict[str, Any]] = None,
+        expected_from: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Apply `action` inside a transaction that re-reads the email, so two
-        decisions at once never both apply. Appends the decision to `history`.
-        Returns {"ok", "code", "from_status", "to_status", "email"}: `email`
-        is the document after the write (or as read, when refused)."""
+        decisions at once never both apply. With `expected_from` (the status
+        the caller read), a status that changed meanwhile is refused as
+        invalid_email_transition and nothing is written. Appends the decision
+        to `history`. Returns {"ok", "code", "from_status", "to_status",
+        "email"}: `email` is the document after the write (or as read, when
+        refused)."""
         ref = self._doc(email_id)
         transaction = self.db.transaction()
 
@@ -998,6 +1002,8 @@ class OutreachEmailsRepo(FirestoreRepo):
             snap = await ref.get(transaction=txn)
             email = snap.to_dict() if snap.exists else None
             plan = plan_email_transition(email, user_id, action)
+            if plan["ok"] and expected_from is not None and plan["from_status"] != expected_from:
+                plan = {**plan, "ok": False, "code": "invalid_email_transition", "to_status": None}
             if not plan["ok"]:
                 return {**plan, "email": email}
             fields, entry = self.transition_fields(

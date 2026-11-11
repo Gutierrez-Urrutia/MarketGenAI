@@ -23,6 +23,7 @@ from app.routers import (
     leads,
     oauth,
     outreach,
+    outreach_emails,
     opportunities,
     pipeline,
     platform,
@@ -72,6 +73,7 @@ app.include_router(content_types.router, prefix="/api/v1/content", tags=["conten
 app.include_router(opportunities.router, prefix="/api/v1")
 app.include_router(pipeline.router, prefix="/api/v1")
 app.include_router(leads.router, prefix="/api/v1")
+app.include_router(outreach_emails.router, prefix="/api/v1")
 app.include_router(customers.router, prefix="/api/v1")
 app.include_router(knowledge.router, prefix="/api/v1")
 app.include_router(sales_enablement.router, prefix="/api/v1")

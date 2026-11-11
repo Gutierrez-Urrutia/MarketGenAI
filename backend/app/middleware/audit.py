@@ -14,6 +14,11 @@ SKIP_METHODS = ["OPTIONS"]
 
 def _infer_action(method: str, path: str) -> str:
     rules = [
+        ("POST",  "/outreach-emails",       "",          "generated_prospecting_email"),
+        ("PATCH", "/outreach-emails",       "approve",   "approved_prospecting_email"),
+        ("PATCH", "/outreach-emails",       "reject",    "rejected_prospecting_email"),
+        ("PATCH", "/outreach-emails",       "regenerate","regenerated_prospecting_email"),
+        ("PATCH", "/outreach-emails",       "mark-sent", "sent_marked_prospecting_email"),
         ("PATCH", "/outreach/review-queue", "approve",  "approved_outreach_message"),
         ("PATCH", "/outreach/review-queue", "reject",   "rejected_outreach_message"),
         ("PATCH", "/outreach/review-queue", "regenerate","regenerated_outreach_message"),
