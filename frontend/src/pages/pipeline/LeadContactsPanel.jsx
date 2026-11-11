@@ -10,6 +10,13 @@
  *
  * Contacts are personal data: nothing here logs them (the API calls are
  * marked logBody: false).
+ *
+ * RF-VTA-16: a non-rejected contact with an address can get a prospecting
+ * email («Redactar correo», in the language picked next to it; English by
+ * default). One draft at a time in the panel, never during a search. A
+ * contact that already has an active email (in review / approved) shows its
+ * status and «Ver en Alcance» instead — after a timeout the lead's emails are
+ * reloaded, because the email may have been created anyway.
  */
 import { useEffect, useRef, useState } from "react";
 import toast from "react-hot-toast";
@@ -17,14 +24,18 @@ import {
   Loader2, Users, CheckCircle2, AlertTriangle, HelpCircle, Copy, Check, X, RotateCcw, Settings, RefreshCw,
 } from "lucide-react";
 
-import { leadsApi } from "@/api/axios";
+import { leadsApi, outreachEmailsApi } from "@/api/axios";
 import { useI18n } from "@/hooks/useI18n";
 import { formatDateTime } from "@/utils/dates";
 import {
   canSearchLead, confidenceOf, describeSearchError, describeSearchResult, lastSearchOf, roleKey, verificationOf,
 } from "./contactLabels";
+import {
+  DEFAULT_EMAIL_LANGUAGE, EMAIL_LANGUAGES, describeEmailError, isActive,
+} from "@/features/outreach/prospectingEmails";
 
 const K = "leads.contacts";
+const KC = "leads.contacts.compose";
 
 const TONE_CLASSES = {
   success: "border-emerald-200 bg-emerald-50 text-emerald-800",
@@ -83,7 +94,7 @@ function Verification({ contact, t }) {
   );
 }
 
-function ContactCard({ contact, t, busy, onReview }) {
+function ContactCard({ contact, t, busy, onReview, compose }) {
   const confidence = confidenceOf(contact.confidence_score);
   const status = contact.review_status || "not_required";
   const name = contact.full_name;
@@ -139,7 +150,54 @@ function ContactCard({ contact, t, busy, onReview }) {
           </SmallBtn>
         )}
       </div>
+      {compose && status !== "rejected" && contact.email && <ComposeBlock contact={contact} status={status} t={t} {...compose} />}
     </li>
+  );
+}
+
+function ComposeBlock({
+  contact, status, t, email, composing, disabled, language, onLanguage, onCompose, onView, message,
+}) {
+  const name = contact.full_name;
+  return (
+    <div className="space-y-1.5 border-t border-gray-100 pt-2" data-testid={`compose-${contact.id}`}>
+      {email ? (
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="inline-block px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 font-medium">
+            {t(`${KC}.active.${email.status}`)}
+          </span>
+          <SmallBtn onClick={onView}>{t(`${KC}.viewInOutreach`)}</SmallBtn>
+        </div>
+      ) : (
+        <div className="flex flex-wrap items-center gap-1.5">
+          <select
+            aria-label={`${t(`${KC}.language`)}: ${name}`}
+            value={language}
+            disabled={composing || disabled}
+            onChange={(event) => onLanguage(event.target.value)}
+            className="rounded-lg border border-gray-300 bg-white px-2 py-1 text-xs"
+          >
+            {EMAIL_LANGUAGES.map((item) => <option key={item.code} value={item.code}>{item.label}</option>)}
+          </select>
+          <SmallBtn
+            variant="primary"
+            disabled={composing || disabled}
+            aria-busy={composing || undefined}
+            aria-label={`${composing ? t(`${KC}.generating`) : t(`${KC}.draft`)}: ${name}`}
+            onClick={onCompose}
+          >
+            {composing && <Loader2 size={12} className="animate-spin" aria-hidden="true" />}
+            {composing ? t(`${KC}.generating`) : t(`${KC}.draft`)}
+          </SmallBtn>
+        </div>
+      )}
+      {status === "pending" && !email && <p className="text-amber-700">{t(`${KC}.pendingHint`)}</p>}
+      {message && (
+        <p role={message.tone === "error" ? "alert" : "status"} className={message.tone === "error" ? "text-red-700" : "text-emerald-700"}>
+          {t(message.key)}
+        </p>
+      )}
+    </div>
   );
 }
 
@@ -155,6 +213,12 @@ export default function LeadContactsPanel({ lead, searchLock, onLeadChanged, onN
   const reviewingRef = useRef(new Set());
   const mountedRef = useRef(true);
   const loadSeqRef = useRef(0);
+  const [emailsByContact, setEmailsByContact] = useState({});
+  const [emailsLoadError, setEmailsLoadError] = useState(false);
+  const [composingId, setComposingId] = useState(null);
+  const composingRef = useRef(null);
+  const [languages, setLanguages] = useState({});
+  const [composeMessages, setComposeMessages] = useState({});
   const statusId = `lead-contacts-status-${leadId}`;
   const reasonId = `lead-contacts-reason-${leadId}`;
 
@@ -183,6 +247,59 @@ export default function LeadContactsPanel({ lead, searchLock, onLeadChanged, onN
     loadContacts(showRejected);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [leadId, showRejected]);
+
+  // The lead's active prospecting emails, by contact (RF-VTA-16).
+  const loadEmails = async () => {
+    try {
+      const { data } = await outreachEmailsApi.list({ lead_id: leadId });
+      if (!mountedRef.current) return;
+      const active = {};
+      for (const email of data?.items || []) {
+        if (isActive(email) && !active[email.contact_id]) active[email.contact_id] = email;
+      }
+      setEmailsByContact(active);
+      setEmailsLoadError(false);
+    } catch {
+      if (mountedRef.current) setEmailsLoadError(true);
+    }
+  };
+
+  useEffect(() => {
+    loadEmails();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [leadId]);
+
+  const goToOutreach = () => onNavigate?.("outreach", { tab: "review", kind: "prospecting" });
+
+  const compose = async (contact) => {
+    if (composingRef.current || searchLock.activeLeadId === leadId || emailsByContact[contact.id]) return;
+    composingRef.current = contact.id;
+    setComposingId(contact.id);
+    setComposeMessages((current) => ({ ...current, [contact.id]: null }));
+    const language = languages[contact.id] || DEFAULT_EMAIL_LANGUAGE;
+    try {
+      const { data } = await outreachEmailsApi.generate(leadId, contact.id, language);
+      if (!mountedRef.current) return;
+      const { lead_status: leadStatus, warnings = [], ...email } = data || {};
+      setEmailsByContact((current) => ({ ...current, [contact.id]: email }));
+      const key = warnings.includes("contact_pending_review") ? `${KC}.createdPending` : `${KC}.created`;
+      setComposeMessages((current) => ({ ...current, [contact.id]: { key, tone: "success" } }));
+      toast.success(t(key));
+      onLeadChanged?.(leadId, leadStatus ? { status: leadStatus } : null);
+    } catch (error) {
+      if (!mountedRef.current) return;
+      const described = describeEmailError(error);
+      setComposeMessages((current) => ({ ...current, [contact.id]: { key: described.key, tone: "error" } }));
+      // After a timeout the email may exist anyway: show the real state.
+      if (described.timedOut || ["email_already_active", "compose_in_progress"].includes(described.code)) {
+        loadEmails();
+        onLeadChanged?.(leadId, null);
+      }
+    } finally {
+      composingRef.current = null;
+      if (mountedRef.current) setComposingId(null);
+    }
+  };
 
   const searchable = canSearchLead(lead);
   const searchingHere = searchLock.activeLeadId === leadId;
@@ -356,6 +473,7 @@ export default function LeadContactsPanel({ lead, searchLock, onLeadChanged, onN
         )}
       </div>
 
+      {emailsLoadError && <p className="text-xs text-red-600">{t(`${KC}.loadError`)}</p>}
       {loading ? (
         <p className="text-xs text-gray-400">{t(`${K}.list.loading`)}</p>
       ) : loadError ? (
@@ -368,7 +486,23 @@ export default function LeadContactsPanel({ lead, searchLock, onLeadChanged, onN
       ) : (
         <ul className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-2">
           {contacts.map((contact) => (
-            <ContactCard key={contact.id} contact={contact} t={t} busy={reviewing.has(contact.id)} onReview={review} />
+            <ContactCard
+              key={contact.id}
+              contact={contact}
+              t={t}
+              busy={reviewing.has(contact.id)}
+              onReview={review}
+              compose={{
+                email: emailsByContact[contact.id] || null,
+                composing: composingId === contact.id,
+                disabled: Boolean(composingId && composingId !== contact.id) || searchingHere,
+                language: languages[contact.id] || DEFAULT_EMAIL_LANGUAGE,
+                onLanguage: (code) => setLanguages((current) => ({ ...current, [contact.id]: code })),
+                onCompose: () => compose(contact),
+                onView: goToOutreach,
+                message: composeMessages[contact.id] || null,
+              }}
+            />
           ))}
         </ul>
       )}

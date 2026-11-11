@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 
-import { authApi, authTokenStore } from "./api/axios";
+import { authApi, authTokenStore, outreachEmailsApi } from "./api/axios";
+import { isActive } from "./features/outreach/prospectingEmails";
 import { useI18n } from "./hooks/useI18n";
 
 import { useTheme } from "./context/ThemeContext";
@@ -99,8 +100,13 @@ export default function App() {
   }, [theme]);
 
   useEffect(() => {
-    fetchOptional("/outreach/review-queue", null).then((items) => {
-      if (Array.isArray(items)) setOutreachBadge(items.length);
+    // Pending replies plus active prospecting emails (RF-VTA-16).
+    Promise.all([
+      fetchOptional("/outreach/review-queue", null),
+      outreachEmailsApi.list().then(({ data }) => data?.items || []).catch(() => []),
+    ]).then(([replies, emails]) => {
+      const active = emails.filter(isActive).length;
+      setOutreachBadge((Array.isArray(replies) ? replies.length : 0) + active);
     });
   }, []);
 

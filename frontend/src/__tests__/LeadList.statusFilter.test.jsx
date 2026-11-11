@@ -52,12 +52,13 @@ beforeEach(() => {
 });
 
 describe("LeadList status filter", () => {
-  it("offers exactly All, new and contacts_found", async () => {
+  it("offers All and the statuses a lead rests in (RF-VTA-16 adds the email ones)", async () => {
     await renderList([makeLead("lead-1")]);
     const options = within(statusSelect()).getAllByRole("option");
-    expect(options.map((option) => option.value)).toEqual(["", "new", "contacts_found"]);
+    expect(options.map((option) => option.value)).toEqual(["", "new", "contacts_found", "ready_for_review", "approved", "sent"]);
     expect(options.map((option) => option.textContent)).toEqual([
       "leads.allStatuses", "leads.status.new", "leads.status.contacts_found",
+      "leads.status.ready_for_review", "leads.status.approved", "leads.status.sent",
     ]);
   });
 

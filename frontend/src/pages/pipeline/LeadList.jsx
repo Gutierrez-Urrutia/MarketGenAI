@@ -15,11 +15,11 @@ import { leadsApi, pipelineApi } from "@/api/axios";
 import { useI18n } from "@/hooks/useI18n";
 import LeadContactsPanel from "./LeadContactsPanel";
 
-// Status filter: only the statuses the system assigns today. researching,
-// composing, ready_for_review, approved, auto_approved, sent, replied,
-// rejected and error come back when RF-VTA-16 assigns them. The Status
-// column still shows any status.
-const STATUS_OPTIONS = ["new", "contacts_found"];
+// Status filter: the statuses a lead rests in today. RF-VTA-16 adds
+// ready_for_review, approved and sent (its prospecting emails); researching and
+// composing are transient, and replied, rejected and error are not assigned yet.
+// The Status column still shows any status.
+const STATUS_OPTIONS = ["new", "contacts_found", "ready_for_review", "approved", "sent"];
 
 const POLL_INTERVAL_MS = 2000;
 const POLL_MAX_ATTEMPTS = 150; // ~5 minutes

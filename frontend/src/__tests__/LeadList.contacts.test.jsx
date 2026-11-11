@@ -109,7 +109,7 @@ describe("panel and button", () => {
     expect(leadsApi.listContacts).toHaveBeenCalledWith("lead-1", { includeRejected: false });
   });
 
-  it.each(["composing", "ready_for_review", "approved", "auto_approved", "sent", "replied", "rejected"])(
+  it.each(["composing", "ready_for_review", "approved", "sent", "replied", "rejected"])(
     "is disabled with a visible reason at the %s stage", async (status) => {
       await renderList([makeLead("lead-1", { status })]);
       await expand();

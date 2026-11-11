@@ -30,6 +30,13 @@ export const SCAN_REQUEST_TIMEOUT_MS = 360_000
 // CONTACT_SEARCH_TIME_BUDGET_SECONDS = 45 s). 90 s leaves margin for the network
 // and the backend's own close-out; only that call uses it.
 export const CONTACT_SEARCH_TIMEOUT_MS = 90_000
+// POST /outreach-emails and PATCH .../regenerate wait for the LLM inside the
+// request; the backend sets no LLM timeout, so this is the only bound. A
+// generation cut here may still finish on the server (the UI says so).
+export const GENERATION_TIMEOUT_MS = 120_000
+// Per-call flag: keep this call's own timeout even when its URL matches a
+// generative keyword below (e.g. /outreach-emails contains "outreach").
+const EXPLICIT_TIMEOUT = { explicitTimeout: true }
 
 // Requests marked `logBody: false` are logged without their request or
 // response body (method, URL, status and duration only): passwords and tokens
@@ -222,7 +229,7 @@ api.interceptors.request.use(async (config) => {
     'outreach',
     'jobs'
   ]
-  if (config.url && generativeKeywords.some((kw) => config.url.toLowerCase().includes(kw))) {
+  if (!config.explicitTimeout && config.url && generativeKeywords.some((kw) => config.url.toLowerCase().includes(kw))) {
     config.timeout = 0
   }
 
@@ -578,6 +585,28 @@ export const leadsApi = {
     `/leads/${id}/contacts/${contactId}/review`,
     { decision },
     { ...NO_BODY_LOG, timeout: READ_TIMEOUT_MS, suppressPermissionToast: true, suppressServerErrorToast: true },
+  ),
+}
+
+// RF-VTA-16 — prospecting emails (Agente 3). Bodies carry names and addresses:
+// never logged. Every call keeps its own timeout (EXPLICIT_TIMEOUT). `language`
+// (en / es / pt) is sent only when given; the backend defaults to en and, on
+// regenerate, keeps the email's own.
+const OUTREACH_EMAIL_OPTIONS = { ...NO_BODY_LOG, ...EXPLICIT_TIMEOUT, suppressPermissionToast: true, suppressServerErrorToast: true }
+export const outreachEmailsApi = {
+  generate: (leadId, contactId, language) => api.post(
+    '/outreach-emails',
+    { lead_id: leadId, contact_id: contactId, ...(language ? { language } : {}) },
+    { ...OUTREACH_EMAIL_OPTIONS, timeout: GENERATION_TIMEOUT_MS },
+  ),
+  list: (params) => api.get('/outreach-emails', { ...OUTREACH_EMAIL_OPTIONS, params, timeout: READ_TIMEOUT_MS }),
+  approve: (id) => api.patch(`/outreach-emails/${id}/approve`, undefined, { ...OUTREACH_EMAIL_OPTIONS, timeout: READ_TIMEOUT_MS }),
+  reject: (id) => api.patch(`/outreach-emails/${id}/reject`, undefined, { ...OUTREACH_EMAIL_OPTIONS, timeout: READ_TIMEOUT_MS }),
+  markSent: (id) => api.patch(`/outreach-emails/${id}/mark-sent`, undefined, { ...OUTREACH_EMAIL_OPTIONS, timeout: READ_TIMEOUT_MS }),
+  regenerate: (id, language) => api.patch(
+    `/outreach-emails/${id}/regenerate`,
+    language ? { language } : undefined,
+    { ...OUTREACH_EMAIL_OPTIONS, timeout: GENERATION_TIMEOUT_MS },
   ),
 }
 
