@@ -23,7 +23,7 @@ export function OutreachPage({ navigationState = {}, onNavigate = () => {}, onOu
   const [generatingCampaignMessages, setGeneratingCampaignMessages] = useState(false);
   const [simulateOpen, setSimulateOpen] = useState(false);
   const [simulateForm, setSimulateForm] = useState({
-    contact_message: "Thanks for reaching out. Can you send more detail about pricing and what an AI marketing automation rollout would look like for us?",
+    contact_message: t("outreachPage.simulate.defaultMessage"),
     name: "Jordan Lee",
     company: "Acme Growth",
     role: "VP Marketing",
@@ -69,12 +69,13 @@ export function OutreachPage({ navigationState = {}, onNavigate = () => {}, onOu
     Replied: t("outreachPage.filters.replied"),
     Bounced: t("outreachPage.filters.bounced"),
     sent: t("outreachPage.filters.sent"),
-    rejected: t("outreachPage.reject"),
+    rejected: t("outreachPage.history.statusRejected"),
   }[status] || status);
   const historyStatusColor = (item) => item.stc || (item.status === "rejected" ? "bg-red-100 text-red-700" : "bg-gray-100 text-gray-600");
   const reviewName = (item = {}) => item.name || item.to || "";
   const reviewContent = (item = {}) => item.content || item.preview || "";
-  const reviewContentRef = (item = {}) => item.contentRef || item.response_type || "AI response";
+  const responseTypeLabel = (type) => (type ? t(`outreachPage.responseTypes.${type}`) : "");
+  const reviewContentRef = (item = {}) => item.contentRef || responseTypeLabel(item.response_type) || t("outreachPage.queue.fallbackContentRef");
   const reviewScore = (item = {}) => Number.parseInt(item.score, 10) || 0;
   const syncBadge = (items) => onOutreachBadgeChange(items.length);
   const campaignApprovedMessages = campaignFlow?.currentStep === 5 && history.some((item) => (
@@ -262,14 +263,14 @@ export function OutreachPage({ navigationState = {}, onNavigate = () => {}, onOu
     <div className="space-y-2 relative">
       {campaignFlow?.currentStep === 5 && (
         <div className="flow-step-banner">
-          <span>✏️ Step 5: Review and approve AI-generated outreach messages</span>
+          <span>✏️ {t("outreachPage.campaign.step5")}</span>
           <div style={{ display: "flex", gap: 8 }}>
             <button
               type="button"
               onClick={() => setCampaignFlow((prev) => completeCampaignFlowSteps(prev, [5], 6))}
               style={{ background: "transparent", color: "rgb(var(--brand-600))", border: "1px solid rgb(var(--brand-600))", padding: "6px 14px", borderRadius: 6, cursor: "pointer", fontSize: "0.85em" }}
             >
-              Skip to Activate
+              {t("outreachPage.campaign.skipToActivate")}
             </button>
             {campaignApprovedMessages && (
               <button
@@ -283,7 +284,7 @@ export function OutreachPage({ navigationState = {}, onNavigate = () => {}, onOu
                   onNavigate("reports");
                 }}
               >
-                Activate Campaign →
+                {t("outreachPage.campaign.activateCampaign")} →
               </button>
             )}
           </div>
@@ -291,9 +292,9 @@ export function OutreachPage({ navigationState = {}, onNavigate = () => {}, onOu
       )}
       {campaignFlow?.currentStep === 6 && (
         <div className="flow-step-banner">
-          <span>🚀 Step 6: Activate the campaign</span>
+          <span>🚀 {t("outreachPage.campaign.step6")}</span>
           <button type="button" onClick={activateCampaignFlow} disabled={outreachBusy || !campaignFlow.campaignId}>
-            Activate Campaign
+            {t("outreachPage.campaign.activateCampaign")}
           </button>
         </div>
       )}
@@ -305,10 +306,10 @@ export function OutreachPage({ navigationState = {}, onNavigate = () => {}, onOu
         }}>
           <div className="spinner" style={{ width: 32, height: 32, borderWidth: 3 }} />
           <p style={{ color: "rgb(var(--brand-600))", fontWeight: 600 }}>
-            Generating personalized messages for {campaignFlow?.selectedOpportunities?.length} prospects...
+            {t("outreachPage.campaign.generatingMessages").replace("{count}", String(campaignFlow?.selectedOpportunities?.length ?? 0))}
           </p>
           <p style={{ color: "#94A3B8", fontSize: "0.85em" }}>
-            AI is crafting messages based on your campaign brief and selected assets
+            {t("outreachPage.campaign.generatingHint")}
           </p>
         </div>
       )}
@@ -319,7 +320,7 @@ export function OutreachPage({ navigationState = {}, onNavigate = () => {}, onOu
         </div>
         {tab === "review" && (
           <div className="flex gap-1">
-            <Btn variant="secondary" small icon={<SparkIcon size={12} />} onClick={() => setSimulateOpen(true)}>Simulate Contact Response</Btn>
+            <Btn variant="secondary" small icon={<SparkIcon size={12} />} onClick={() => setSimulateOpen(true)}>{t("outreachPage.queue.simulate")}</Btn>
             <Btn variant="destructive" small icon={<XIcon size={12} />} onClick={handleRejectAll} disabled={outreachBusy || reviewEmails.length === 0}>{t("outreachPage.rejectAll")}</Btn>
             <Btn variant="teal" small icon={<CheckIcon size={12} />} onClick={handleApproveAll} disabled={outreachBusy || reviewEmails.length === 0}>{t("outreachPage.approveAll")}</Btn>
           </div>
@@ -328,7 +329,7 @@ export function OutreachPage({ navigationState = {}, onNavigate = () => {}, onOu
 
       {loadingOutreach && (
         <div style={{ background: "#fff", borderRadius: 14, border: "1px solid #eaecf3", padding: "48px 24px", textAlign: "center" }}>
-          <p style={{ fontSize: 14, color: "#94a3b8", fontWeight: 500, margin: 0 }}>Loading outreach queue...</p>
+          <p style={{ fontSize: 14, color: "#94a3b8", fontWeight: 500, margin: 0 }}>{t("outreachPage.queue.loading")}</p>
         </div>
       )}
 
@@ -347,9 +348,9 @@ export function OutreachPage({ navigationState = {}, onNavigate = () => {}, onOu
           <div className="space-y-1">
             {!loadingOutreach && reviewEmails.length === 0 && (
               <Card className="p-3 text-center">
-                <p className="text-sm font-semibold text-gray-900">No responses pending review</p>
-                <p className="mb-1.5 text-xs text-gray-500">Simulate a contact reply to generate an AI response.</p>
-                <Btn variant="secondary" small icon={<SparkIcon size={12} />} onClick={() => setSimulateOpen(true)}>Simulate Contact Response</Btn>
+                <p className="text-sm font-semibold text-gray-900">{t("outreachPage.queue.emptyTitle")}</p>
+                <p className="mb-1.5 text-xs text-gray-500">{t("outreachPage.queue.emptyHint")}</p>
+                <Btn variant="secondary" small icon={<SparkIcon size={12} />} onClick={() => setSimulateOpen(true)}>{t("outreachPage.queue.simulate")}</Btn>
               </Card>
             )}
             {reviewEmails.map((em, i) => (
@@ -372,8 +373,8 @@ export function OutreachPage({ navigationState = {}, onNavigate = () => {}, onOu
           <Card className="p-3">
             {!e ? (
               <div className="py-10 text-center">
-                <p className="text-sm font-semibold text-gray-900">Select or generate a response</p>
-                <p className="text-xs text-gray-500">The AI response preview will appear here.</p>
+                <p className="text-sm font-semibold text-gray-900">{t("outreachPage.queue.selectTitle")}</p>
+                <p className="text-xs text-gray-500">{t("outreachPage.queue.selectHint")}</p>
               </div>
             ) : (
               <>
@@ -390,7 +391,7 @@ export function OutreachPage({ navigationState = {}, onNavigate = () => {}, onOu
                 <div className="flex gap-1.5 mb-1.5">
                   <div className={`flex-1 p-2 rounded-lg ${isDark ? "bg-slate-900 border border-white/10" : "bg-gray-50"}`}>
                     <p className="text-xs text-gray-500">{t("outreachPage.opportunity")}</p>
-                    <p className="text-xs font-medium text-gray-800">{e.vacancy || e.contact_message || "Contact response"} @ {e.company}</p>
+                    <p className="text-xs font-medium text-gray-800">{e.vacancy || e.contact_message || t("outreachPage.queue.fallbackOpportunity")} @ {e.company}</p>
                   </div>
                   <div className={`flex-1 p-2 rounded-lg ${isDark ? "bg-slate-900 border border-white/10" : "bg-indigo-50"}`}>
                     <p className="text-xs text-indigo-400">{t("outreachPage.contentReferenced")}</p>
@@ -418,7 +419,7 @@ export function OutreachPage({ navigationState = {}, onNavigate = () => {}, onOu
 
       {tab === "history" && (
         <>
-          <div className="flex gap-1">{["all","sent","opened","replied","bounced"].map((filterKey)=>(
+          <div className="flex gap-1">{["all","sent","opened","replied","bounced","rejected"].map((filterKey)=>(
             <button
               key={filterKey}
               onClick={() => setHistoryFilter(filterKey)}
@@ -438,7 +439,7 @@ export function OutreachPage({ navigationState = {}, onNavigate = () => {}, onOu
                 <th className="px-4 py-2.5 text-left font-medium">{t("outreachPage.columns.approvedBy")}</th>
                 <th className="px-4 py-2.5 text-left font-medium">{t("outreachPage.columns.sent")}</th>
                 <th className="px-4 py-2.5 text-left font-medium">{t("outreachPage.columns.score")}</th>
-                <th className="px-4 py-2.5 text-right font-medium">Actions</th>
+                <th className="px-4 py-2.5 text-right font-medium">{t("outreachPage.history.actions")}</th>
               </tr></thead>
               <tbody className="divide-y divide-slate-100">
                 {filteredHistory.map((o) => (
@@ -446,7 +447,7 @@ export function OutreachPage({ navigationState = {}, onNavigate = () => {}, onOu
                     <td className="px-4 py-4 font-medium text-gray-900">{o.name || o.to}</td>
                     <td className="px-4 py-4 text-gray-600">{o.co || o.company}</td>
                     <td className="px-4 py-4 text-gray-500 truncate max-w-[180px]">{o.subj || o.subject}</td>
-                    <td className="px-4 py-4"><span className="text-xs text-indigo-600 flex items-center gap-1"><LinkIcon size={10} />{o.contentRef || o.response_type || o.content}</span></td>
+                    <td className="px-4 py-4"><span className="text-xs text-indigo-600 flex items-center gap-1"><LinkIcon size={10} />{o.contentRef || responseTypeLabel(o.response_type) || o.content}</span></td>
                     <td className="px-4 py-4"><Badge label={historyStatusLabel(o.st || o.status)} color={historyStatusColor(o)} /></td>
                     <td className="px-4 py-4">
                       {o.approvedByName ? (
@@ -468,7 +469,7 @@ export function OutreachPage({ navigationState = {}, onNavigate = () => {}, onOu
                             disabled={outreachBusy}
                             className="rounded-md border border-indigo-300 bg-transparent px-2.5 py-1 text-xs font-medium text-indigo-600 transition hover:border-indigo-400 hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-50"
                           >
-                            ↩ Restore
+                            ↩ {t("outreachPage.history.restore")}
                           </button>
                         )}
                         <button
@@ -476,7 +477,7 @@ export function OutreachPage({ navigationState = {}, onNavigate = () => {}, onOu
                           onClick={() => handleDeleteOutreach(o)}
                           disabled={outreachBusy}
                           className="rounded-md border border-red-200 bg-transparent px-2.5 py-1 text-xs font-medium text-red-600 transition hover:border-red-300 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
-                          aria-label="Delete outreach history item"
+                          aria-label={t("outreachPage.history.deleteAria")}
                         >
                           🗑
                         </button>
@@ -511,15 +512,15 @@ export function OutreachPage({ navigationState = {}, onNavigate = () => {}, onOu
           <div className={`relative w-full max-w-lg rounded-2xl shadow-2xl ${isDark ? "bg-slate-800 border border-white/10" : "bg-white"}`}>
             <div className={`flex items-center justify-between p-3 border-b ${isDark ? "border-white/10" : "border-gray-100"}`}>
               <div>
-                <p className={`text-sm font-semibold ${isDark ? "text-white" : "text-gray-900"}`}>Simulate Contact Response</p>
-                <p className="text-xs text-gray-500">Generate an AI response into the review queue.</p>
+                <p className={`text-sm font-semibold ${isDark ? "text-white" : "text-gray-900"}`}>{t("outreachPage.queue.simulate")}</p>
+                <p className="text-xs text-gray-500">{t("outreachPage.simulate.subtitle")}</p>
               </div>
               <button onClick={() => setSimulateOpen(false)} className={`p-1.5 rounded-lg transition-colors ${isDark ? "hover:bg-slate-700" : "hover:bg-gray-100"}`}>
                 <XIcon size={16} className="text-gray-400" />
               </button>
             </div>
             <div className="space-y-1.5 p-3">
-              <Field label="Contact message">
+              <Field label={t("outreachPage.simulate.contactMessage")}>
                 <textarea
                   className="min-h-28 w-full rounded-lg border border-gray-200 px-3 py-4 text-sm outline-none focus:border-indigo-400"
                   value={simulateForm.contact_message}
@@ -527,17 +528,17 @@ export function OutreachPage({ navigationState = {}, onNavigate = () => {}, onOu
                 />
               </Field>
               <div className="grid grid-cols-3 gap-1.5">
-                <Field label="Name"><Input value={simulateForm.name} onChange={(event) => setSimulateForm((current) => ({ ...current, name: event.target.value }))} /></Field>
-                <Field label="Company"><Input value={simulateForm.company} onChange={(event) => setSimulateForm((current) => ({ ...current, company: event.target.value }))} /></Field>
-                <Field label="Role"><Input value={simulateForm.role} onChange={(event) => setSimulateForm((current) => ({ ...current, role: event.target.value }))} /></Field>
+                <Field label={t("outreachPage.simulate.name")}><Input value={simulateForm.name} onChange={(event) => setSimulateForm((current) => ({ ...current, name: event.target.value }))} /></Field>
+                <Field label={t("outreachPage.simulate.company")}><Input value={simulateForm.company} onChange={(event) => setSimulateForm((current) => ({ ...current, company: event.target.value }))} /></Field>
+                <Field label={t("outreachPage.simulate.role")}><Input value={simulateForm.role} onChange={(event) => setSimulateForm((current) => ({ ...current, role: event.target.value }))} /></Field>
               </div>
             </div>
             <div className={`flex justify-end gap-1 p-3 border-t ${isDark ? "border-white/10 bg-slate-900" : "border-gray-100 bg-gray-50"}`}>
               <Btn variant="ghost" onClick={() => setSimulateOpen(false)} disabled={outreachBusy}>{t("common.cancel")}</Btn>
               <Btn onClick={generateSimulatedResponse} disabled={generatingResponse || outreachBusy || !simulateForm.contact_message.trim() || !simulateForm.name.trim() || !simulateForm.company.trim()}>
                 {generatingResponse
-                  ? <><span className="spinner" /> Generating...</>
-                  : <><span>✦</span> Generate AI Response</>}
+                  ? <><span className="spinner" /> {t("outreachPage.simulate.generating")}</>
+                  : <><span>✦</span> {t("outreachPage.simulate.generate")}</>}
               </Btn>
             </div>
           </div>
