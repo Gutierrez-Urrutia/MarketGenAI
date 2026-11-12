@@ -132,3 +132,15 @@ def test_audit_labels_for_signed_document_routes_are_specific():
     assert _infer_action("DELETE", "/api/v1/proposals/p1/signed-document") == "removed_signed_document"
     assert _infer_action("DELETE", "/api/v1/proposals/p1") == "deleted_proposal"
     assert _infer_action("POST", "/api/v1/proposals") == "created_proposal"
+
+
+async def test_content_library_hides_the_document_location_too(client):
+    with (
+        patch("app.routers.platform.proposals_repo.list", new_callable=AsyncMock, return_value=[fake_proposal(LINKED)]),
+        patch("app.routers.platform.templates_repo.list", new_callable=AsyncMock, return_value=[]),
+        patch("app.routers.platform.assets_repo.list", new_callable=AsyncMock, return_value=[]),
+        patch("app.routers.platform.content_items_repo.list", new_callable=AsyncMock, return_value=[]),
+    ):
+        item = (await client.get("/api/v1/content-library")).json()["proposals"][0]
+    assert item["hasSignedDocument"] is True and item["signedDocumentName"] == "contrato.pdf"
+    assert "signedDocumentUrl" not in item and "signedDocumentPath" not in item
