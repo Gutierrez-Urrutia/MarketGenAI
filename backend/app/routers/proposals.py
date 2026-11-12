@@ -50,6 +50,7 @@ from app.schemas.proposal import (
     ProposalUpdate,
     ProposalVersionCreate,
     ProposalVersionOut,
+    VERSION_INTERNAL_FIELDS,
     SendToCrmRequest,
     SIGNED_DOCUMENT_EXTENSIONS,
     SIGNED_DOCUMENT_MAGIC,
@@ -987,6 +988,8 @@ async def create_proposal(
     user: CurrentUser = Depends(get_current_user),
 ):
     data = body.model_dump(exclude_none=True)
+    for internal in VERSION_INTERNAL_FIELDS:   # RF-VTA-11: las marcas del historial las escribe solo el servidor
+        data.pop(internal, None)
 
     client_name = (
         data.get("clientName")
@@ -1076,6 +1079,7 @@ async def generate_proposal_draft(
     if extra:
         options.update(extra)
     options["userId"] = user.sub  # tras extra: el cliente no puede suplantarlo; el worker lo usa para recuperar el contexto RAG del usuario
+    options["versionAuthor"] = _version_author(user)  # RF-VTA-11: autor de las versiones que deja la generación (tampoco suplantable)
     await _apply_proposal_template(proposal, options, user)
 
     job = await jobs_repo.create_job(
@@ -1141,6 +1145,7 @@ async def generate_proposal_by_id(
     if body.model_extra:
         options.update(body.model_extra)
     options["userId"] = user.sub  # tras extra: el cliente no puede suplantarlo; el worker lo usa para recuperar el contexto RAG del usuario
+    options["versionAuthor"] = _version_author(user)  # RF-VTA-11: la regeneración deja el contenido anterior en el historial, a nombre de quien la pidió
     await _apply_proposal_template(proposal, options, user)
 
     job = await jobs_repo.create_job(
@@ -1219,6 +1224,8 @@ async def update_proposal(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="No fields to update."
         )
+    for internal in VERSION_INTERNAL_FIELDS:   # RF-VTA-11: las marcas del historial las escribe solo el servidor
+        update_data.pop(internal, None)
     # El estado comercial solo cambia por PATCH /status (transiciones + auditoría).
     # `status` (ciclo de generación con IA) sí pasa: el frontend lo usa.
     update_data.pop("proposal_status", None)
@@ -1400,6 +1407,11 @@ async def delete_proposal(proposal_id: str, user: CurrentUser = Depends(get_curr
     if proposal.get("signedDocumentPath"):
         await storage_service.delete_file(proposal["signedDocumentPath"])
     await proposals_repo.delete(proposal_id)
+    # RF-VTA-11: Firestore no borra la subcolección con el documento; que no queden versiones de una propuesta eliminada.
+    try:
+        await proposals_repo.delete_versions(proposal_id)
+    except Exception:
+        logger.warning("No se pudieron borrar las versiones de la propuesta %s", proposal_id, exc_info=True)
     return None
 
 
@@ -1444,7 +1456,9 @@ async def get_proposal_version(
 
 
 @router.post("/{proposal_id}/versions", response_model=ProposalVersionOut)
+@limiter.limit("20/minute")
 async def create_proposal_version(
+    request: Request,
     proposal_id: str,
     body: ProposalVersionCreate,
     user: CurrentUser = Depends(get_current_user),
@@ -1466,7 +1480,9 @@ async def create_proposal_version(
 
 
 @router.post("/{proposal_id}/versions/{version_id}/restore", response_model=ProposalOut)
+@limiter.limit("20/minute")
 async def restore_proposal_version(
+    request: Request,
     proposal_id: str,
     version_id: str,
     user: CurrentUser = Depends(get_current_user),
@@ -1489,9 +1505,7 @@ async def restore_proposal_version(
         proposal_id, proposals_repo.version_snapshot(proposal),
         source="auto", label="Before restore", skip_if_unchanged=True, **author,
     )
-    restored = {
-        f: version[f] for f in proposals_repo.VERSION_FIELDS if version.get(f) is not None
-    }
+    restored = proposals_repo.version_restore_fields(version)
     updated = await proposals_repo.update(proposal_id, restored)
     await proposals_repo.create_version(
         proposal_id, proposals_repo.version_snapshot(updated),

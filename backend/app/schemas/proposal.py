@@ -32,6 +32,12 @@ SIGNED_DOCUMENT_MAGIC: bytes = b"%PDF-"
 SIGNED_DOCUMENT_LINK_SECONDS: int = 300   # vigencia del enlace temporal para ver el documento firmado
 
 
+# RF-VTA-11: marcas internas del historial. Las escribe el servidor al guardar una versión; el cliente no
+# puede mandarlas (PUT/POST de propuestas aceptan campos extra) porque falsificarían o romperían la numeración.
+VERSION_INTERNAL_FIELDS = ("versions", "versionCounter", "versionHash")
+VERSION_LABEL_MAX = 200
+
+
 def public_proposal(doc: Dict[str, Any]) -> Dict[str, Any]:
     """Una propuesta como la ve el cliente: sin la ruta ni la URL permanente del documento firmado
     (abren el archivo sin sesión); en su lugar `hasSignedDocument`. El enlace se pide aparte, con
@@ -201,9 +207,9 @@ class ProposalVersionCreate(BaseModel):
     """Save a new version/snapshot of the proposal content."""
     model_config = ConfigDict(extra="allow")
 
-    title:   Optional[str] = None
+    title:   Optional[str] = Field(None, max_length=200)
     content: Optional[str] = None
-    label:   Optional[str] = None
+    label:   Optional[str] = Field(None, max_length=VERSION_LABEL_MAX)
 
 
 class ProposalVersionOut(BaseModel):
