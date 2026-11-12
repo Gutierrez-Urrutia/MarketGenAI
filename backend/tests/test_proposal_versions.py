@@ -543,3 +543,51 @@ async def test_a_version_that_does_not_fit_in_firestore_is_rejected_with_413(cli
     assert "demasiado grande" in resp.json()["detail"]
     assert ok.status_code == 200
     assert create.await_count == 1   # la de 1,2 MB ni siquiera llegó a Firestore
+
+
+# ── Campos que solo escribe el servidor (RF11-D-013) ──
+
+_SERVER_ONLY = {
+    "userId": "otro-usuario", "id": "otro-id", "createdAt": "2000-01-01T00:00:00Z", "crmSync": {"status": "synced"},
+    "filePath": "../../etc/passwd", "downloadUrl": "http://x.example/malo.pdf",
+    "signedDocumentPath": "proposals/ajena/signed/x.pdf", "signedDocumentName": "falso.pdf", "signedDocumentUploadedAt": "2000-01-01T00:00:00Z",
+    "signedDocumentUrl": "http://x.example/falso.pdf", "hasSignedDocument": True,
+}
+
+
+async def test_put_ignores_the_fields_only_the_server_writes(client):
+    """RF11-D-013: antes un PUT podía ceder la propuesta a otro usuario o inventar la ruta del documento firmado."""
+    before = fake_proposal()
+    with (
+        patch(f"{REPO}.get", new_callable=AsyncMock, return_value=before),
+        patch(f"{REPO}.update", new_callable=AsyncMock, return_value=before) as update,
+        patch(f"{REPO}.create_version", new_callable=AsyncMock),
+    ):
+        resp = await client.put(f"{API}/proposal-001", json={"clientName": "Otra persona", "tags": ["a"], "structured_content": {"x": 1}, **_SERVER_ONLY})
+    assert resp.status_code == 200
+    assert update.await_args.args[1] == {"clientName": "Otra persona", "tags": ["a"], "structured_content": {"x": 1}}
+
+
+async def test_put_with_only_server_fields_changes_nothing(client):
+    before = fake_proposal()
+    with (
+        patch(f"{REPO}.get", new_callable=AsyncMock, return_value=before),
+        patch(f"{REPO}.update", new_callable=AsyncMock) as update,
+    ):
+        resp = await client.put(f"{API}/proposal-001", json={"userId": "otro-usuario", "signedDocumentPath": "x"})
+    assert resp.status_code == 200
+    update.assert_not_called()
+
+
+async def test_create_proposal_ignores_the_fields_only_the_server_writes(client):
+    async def _create(data, doc_id=None):
+        return {**data, "id": doc_id}
+
+    with patch(f"{REPO}.create", new_callable=AsyncMock, side_effect=_create) as create:
+        resp = await client.post(API, json={"title": "T", **_SERVER_ONLY})
+    assert resp.status_code == 201
+    data = create.await_args.args[0]
+    assert data["userId"] == FAKE_USER_SUB   # el dueño es quien crea, no lo que mande el cliente
+    assert data["downloadUrl"] is None and data["filePath"] is None
+    for name in ("id", "createdAt", "crmSync", "signedDocumentPath", "signedDocumentName", "signedDocumentUploadedAt", "signedDocumentUrl", "hasSignedDocument"):
+        assert name not in data, name

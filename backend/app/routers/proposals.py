@@ -51,7 +51,7 @@ from app.schemas.proposal import (
     ProposalUpdate,
     ProposalVersionCreate,
     ProposalVersionOut,
-    VERSION_INTERNAL_FIELDS,
+    strip_server_only_fields,
     VERSION_MAX_BYTES,
     SendToCrmRequest,
     SIGNED_DOCUMENT_EXTENSIONS,
@@ -990,8 +990,7 @@ async def create_proposal(
     user: CurrentUser = Depends(get_current_user),
 ):
     data = body.model_dump(exclude_none=True)
-    for internal in VERSION_INTERNAL_FIELDS:   # RF-VTA-11: las marcas del historial las escribe solo el servidor
-        data.pop(internal, None)
+    strip_server_only_fields(data)   # RF-VTA-11: dueño, documento firmado, CRM, archivo e historial los escribe solo el servidor
 
     client_name = (
         data.get("clientName")
@@ -1226,8 +1225,7 @@ async def update_proposal(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="No fields to update."
         )
-    for internal in VERSION_INTERNAL_FIELDS:   # RF-VTA-11: las marcas del historial las escribe solo el servidor
-        update_data.pop(internal, None)
+    strip_server_only_fields(update_data)   # RF-VTA-11: dueño, documento firmado, CRM, archivo e historial los escribe solo el servidor
     # El estado comercial solo cambia por PATCH /status (transiciones + auditoría).
     # `status` (ciclo de generación con IA) sí pasa: el frontend lo usa.
     update_data.pop("proposal_status", None)

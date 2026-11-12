@@ -32,9 +32,22 @@ SIGNED_DOCUMENT_MAGIC: bytes = b"%PDF-"
 SIGNED_DOCUMENT_LINK_SECONDS: int = 300   # vigencia del enlace temporal para ver el documento firmado
 
 
-# RF-VTA-11: marcas internas del historial. Las escribe el servidor al guardar una versión; el cliente no
-# puede mandarlas (PUT/POST de propuestas aceptan campos extra) porque falsificarían o romperían la numeración.
+# RF-VTA-11: campos que escribe solo el servidor. PUT y POST de propuestas aceptan campos extra (el frontend manda
+# estructura, etiquetas, filas de precios…), así que sin esta lista un cliente podía ceder la propuesta a otro usuario
+# (userId), inventar la ruta del documento firmado o el estado del CRM, apuntar filePath a otro archivo o falsificar
+# el historial (versions, versionCounter, versionHash) (RF11-D-009 y RF11-D-013).
 VERSION_INTERNAL_FIELDS = ("versions", "versionCounter", "versionHash")
+SERVER_ONLY_FIELDS = VERSION_INTERNAL_FIELDS + (
+    "id", "userId", "createdAt", "updatedAt", "crmSync", "filePath", "downloadUrl",
+    "signedDocumentPath", "signedDocumentUrl", "signedDocumentName", "signedDocumentUploadedAt", "hasSignedDocument",
+)
+
+
+def strip_server_only_fields(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Quita de lo que manda el cliente los campos que solo escribe el servidor (en el mismo diccionario)."""
+    for name in SERVER_ONLY_FIELDS:
+        data.pop(name, None)
+    return data
 VERSION_LABEL_MAX = 200
 # Una versión es un documento de Firestore (límite 1 MiB con sus metadatos): por encima de esto se rechaza con un error claro.
 VERSION_MAX_BYTES = 1_000_000
