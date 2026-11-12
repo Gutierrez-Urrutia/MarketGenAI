@@ -8,6 +8,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
 
 from app.dependencies.auth import CurrentUser, get_current_user
 from app.routers.content_types import ContentItemsRepo
+from app.schemas.proposal import public_proposal
 from app.services.firestore_service import (
     assets_repo,
     books_repo,
@@ -164,7 +165,8 @@ async def content_library(
         for item in content_items
     ]
     return {
-        "proposals": proposals,
+        # Sin la ruta ni la URL del documento firmado (RF-VTA-06): el enlace se pide con sesión, aparte.
+        "proposals": [public_proposal(item) for item in proposals],
         "templates": [*templates, *mapped_content_items],
         "assets": assets,
         "total": len(proposals) + len(templates) + len(mapped_content_items) + len(assets),

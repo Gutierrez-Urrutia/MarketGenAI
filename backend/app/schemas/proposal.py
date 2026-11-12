@@ -7,7 +7,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, FrozenSet, List, Literal, Optional, Union
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, EmailStr, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, EmailStr, Field, model_validator
 
 
 class ProposalStatus(str, Enum):
@@ -28,6 +28,17 @@ PROPOSAL_STATUS_VALUES: FrozenSet[str] = frozenset(s.value for s in ProposalStat
 # RF-VTA-06 (etapa diferida): documento firmado adjunto a la propuesta.
 SIGNED_DOCUMENT_EXTENSIONS: FrozenSet[str] = frozenset({".pdf"})
 MAX_SIGNED_DOCUMENT_BYTES: int = 10 * 1024 * 1024
+SIGNED_DOCUMENT_MAGIC: bytes = b"%PDF-"
+SIGNED_DOCUMENT_LINK_SECONDS: int = 300   # vigencia del enlace temporal para ver el documento firmado
+
+
+def public_proposal(doc: Dict[str, Any]) -> Dict[str, Any]:
+    """Una propuesta como la ve el cliente: sin la ruta ni la URL permanente del documento firmado
+    (abren el archivo sin sesión); en su lugar `hasSignedDocument`. El enlace se pide aparte, con
+    sesión, a GET /proposals/{id}/signed-document/link y dura SIGNED_DOCUMENT_LINK_SECONDS."""
+    out = {k: v for k, v in doc.items() if k not in ("signedDocumentUrl", "signedDocumentPath")}
+    out["hasSignedDocument"] = bool(doc.get("signedDocumentPath") or doc.get("signedDocumentUrl"))
+    return out
 
 # Transiciones permitidas. Todo lo que no está aquí es inválido, incluido
 # misma→misma. rechazada→en_negociacion (reapertura) además exige ser admin.
@@ -227,6 +238,11 @@ class ProposalOut(BaseModel):
     proposal documents."""
     model_config = ConfigDict(extra="allow", from_attributes=True)
 
+    @model_validator(mode="before")
+    @classmethod
+    def _hide_signed_document_location(cls, data: Any) -> Any:
+        return public_proposal(data) if isinstance(data, dict) else data
+
     id:          str
     title:       Optional[str] = None
     clientName:  Optional[str] = None
@@ -239,7 +255,7 @@ class ProposalOut(BaseModel):
     userId:      Optional[str] = None
     bookId:      Optional[str] = None
     downloadUrl: Optional[str] = None
-    signedDocumentUrl:        Optional[str] = None
+    hasSignedDocument:        bool = False
     signedDocumentName:       Optional[str] = None
     signedDocumentUploadedAt: Optional[datetime] = None
     createdAt:   Optional[datetime] = None

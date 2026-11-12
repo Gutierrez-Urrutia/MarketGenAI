@@ -17,6 +17,7 @@ from docx.oxml.ns import qn
 from docx.shared import Pt, RGBColor
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import FileResponse, JSONResponse
+from jose import JWTError, jwt
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import LETTER
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
@@ -42,6 +43,7 @@ from app.schemas.proposal import (
     ProposalExportRequest,
     ProposalCreate,
     MAX_SIGNED_DOCUMENT_BYTES,
+    SIGNED_DOCUMENT_LINK_SECONDS,
     PROPOSAL_STATUS_VALUES,
     ProposalOut,
     ProposalStatus,
@@ -50,8 +52,11 @@ from app.schemas.proposal import (
     ProposalVersionOut,
     SendToCrmRequest,
     SIGNED_DOCUMENT_EXTENSIONS,
+    SIGNED_DOCUMENT_MAGIC,
     invalid_status_detail,
+    public_proposal,
 )
+from app.services.auth_service import JWT_ALGORITHM
 from app.services.firestore_service import proposals_repo, jobs_repo, settings_repo
 from app.services import crm_service, deepseek_service
 from app.services.storage_service import storage_service
@@ -1263,11 +1268,13 @@ async def update_proposal_status(
     if outcome.get("error"):
         error = outcome["error"]
         raise HTTPException(status_code=error.status_code, detail=error.detail)
-    return outcome["proposal"]
+    return public_proposal(outcome["proposal"])
 
 
 @router.post("/{proposal_id}/signed-document", response_model=ProposalOut)
+@limiter.limit("20/minute")
 async def upload_signed_document(
+    request: Request,
     proposal_id: str,
     file: UploadFile = File(...),
     user: CurrentUser = Depends(get_current_user),
@@ -1290,24 +1297,32 @@ async def upload_signed_document(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"El archivo supera el tamaño máximo permitido ({MAX_SIGNED_DOCUMENT_BYTES // (1024 * 1024)} MB).",
         )
+    # La extensión la elige quien sube el archivo: se comprueba también que el contenido sea un PDF.
+    if not data.lstrip(b"\x00\t\n\r\x0c ").startswith(SIGNED_DOCUMENT_MAGIC):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="El archivo no es un PDF válido. Adjunta el documento firmado en formato PDF.",
+        )
 
     old_path = proposal.get("signedDocumentPath")
     if old_path:
         await storage_service.delete_file(old_path)
 
     storage_path = storage_service.proposal_path(proposal_id, f"signed/{uuid.uuid4().hex}.pdf")
-    url = await storage_service.upload_bytes(data, storage_path, "application/pdf")
+    await storage_service.upload_bytes(data, storage_path, "application/pdf")
 
+    # No se guarda la URL del archivo: abriría el documento sin sesión. Se pide un enlace temporal aparte.
     return await proposals_repo.update(proposal_id, {
         "signedDocumentPath": storage_path,
-        "signedDocumentUrl": url,
+        "signedDocumentUrl": None,
         "signedDocumentName": filename,
         "signedDocumentUploadedAt": datetime.now(timezone.utc).isoformat(),
     })
 
 
 @router.delete("/{proposal_id}/signed-document", response_model=ProposalOut)
-async def delete_signed_document(proposal_id: str, user: CurrentUser = Depends(get_current_user)):
+@limiter.limit("20/minute")
+async def delete_signed_document(request: Request, proposal_id: str, user: CurrentUser = Depends(get_current_user)):
     """Quita el documento firmado adjunto, para corregir un archivo subido por
     error antes de reemplazarlo. No se permite en una propuesta ya `firmada`:
     eso la dejaría firmada sin el adjunto que sustenta ese estado — para
@@ -1330,9 +1345,60 @@ async def delete_signed_document(proposal_id: str, user: CurrentUser = Depends(g
     })
 
 
+@router.get("/{proposal_id}/signed-document/link")
+@limiter.limit("60/minute")
+async def get_signed_document_link(
+    request: Request,
+    proposal_id: str,
+    user: CurrentUser = Depends(get_current_user),
+):
+    """Enlace temporal (SIGNED_DOCUMENT_LINK_SECONDS) para ver el documento firmado. Solo el dueño lo pide;
+    el enlace no sirve para otra propuesta ni después de reemplazar el documento."""
+    proposal = await _get_proposal_for_user(proposal_id, user.sub)
+    storage_path = proposal.get("signedDocumentPath")
+    if not storage_path:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Esta propuesta no tiene documento firmado.")
+    if (Path("generated_files") / storage_path).is_file():
+        # Respaldo local (Supabase no disponible al subir): enlace propio con token firmado.
+        token = jwt.encode(
+            {"typ": "signed-document", "pid": proposal_id, "path": storage_path,
+             "exp": datetime.now(timezone.utc) + timedelta(seconds=SIGNED_DOCUMENT_LINK_SECONDS)},
+            settings.app_secret_key, algorithm=JWT_ALGORITHM,
+        )
+        url = f"/api/v1/proposals/{proposal_id}/signed-document/file?token={token}"
+    else:
+        url = await storage_service.get_signed_url(storage_path, SIGNED_DOCUMENT_LINK_SECONDS)
+        if url.startswith("/api/v1/assets/local/"):   # no pudo firmar: ese respaldo abre sin sesión
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="No se pudo generar el enlace al documento firmado.")
+    return {"url": url, "expiresIn": SIGNED_DOCUMENT_LINK_SECONDS, "name": proposal.get("signedDocumentName")}
+
+
+@router.get("/{proposal_id}/signed-document/file")
+async def download_signed_document(proposal_id: str, token: str = Query(...)):
+    """Sirve el documento firmado guardado en el respaldo local a quien traiga un enlace temporal válido."""
+    invalid = HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Enlace inválido o vencido.")
+    try:
+        claims = jwt.decode(token, settings.app_secret_key, algorithms=[JWT_ALGORITHM])
+    except JWTError:
+        raise invalid
+    if claims.get("typ") != "signed-document" or claims.get("pid") != proposal_id:
+        raise invalid
+    proposal = await proposals_repo.get(proposal_id)
+    if not proposal or proposal.get("signedDocumentPath") != claims.get("path"):
+        raise invalid   # el documento se reemplazó o se quitó: el enlace viejo ya no sirve
+    base = Path("generated_files").resolve()
+    target = (base / claims["path"]).resolve()
+    if not str(target).startswith(str(base)) or not target.is_file():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found.")
+    return FileResponse(str(target), media_type="application/pdf", content_disposition_type="inline")
+
+
 @router.delete("/{proposal_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_proposal(proposal_id: str, user: CurrentUser = Depends(get_current_user)):
-    await _get_proposal_for_user(proposal_id, user.sub)
+    proposal = await _get_proposal_for_user(proposal_id, user.sub)
+    # Que no quede en el almacenamiento un contrato firmado sin propuesta.
+    if proposal.get("signedDocumentPath"):
+        await storage_service.delete_file(proposal["signedDocumentPath"])
     await proposals_repo.delete(proposal_id)
     return None
 
@@ -1561,7 +1627,7 @@ async def send_proposal_to_crm(
         await _record_crm_failure(proposal_id, existing_sync, provider, detail, partial)
         raise HTTPException(status_code=502, detail=detail) from exc
 
-    return await proposals_repo.update(proposal_id, {"crmSync": crm_sync})
+    return public_proposal(await proposals_repo.update(proposal_id, {"crmSync": crm_sync}))
 
 
 @router.post("/{proposal_id}/export")
