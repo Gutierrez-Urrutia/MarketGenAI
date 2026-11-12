@@ -1796,7 +1796,7 @@ const filtered = allItems.filter((item) => {
   };
   const handleSignedDocumentChange = (proposalId, updatedProposal) => {
     applyProposalFields(proposalId, {
-      signedDocumentUrl: updatedProposal?.signedDocumentUrl ?? null,
+      hasSignedDocument: Boolean(updatedProposal?.hasSignedDocument),
       signedDocumentName: updatedProposal?.signedDocumentName ?? null,
       signedDocumentUploadedAt: updatedProposal?.signedDocumentUploadedAt ?? null,
     });
@@ -2972,7 +2972,7 @@ const filtered = allItems.filter((item) => {
                 status={viewingProposal.proposal_status}
                 proposalTitle={viewingProposal.title}
                 isAdmin={canReopenProposals}
-                hasSignedDocument={Boolean(viewingProposal.signedDocumentUrl)}
+                hasSignedDocument={Boolean(viewingProposal.hasSignedDocument)}
                 pending={statusChangePendingId === viewingProposal.id}
                 colorClassName={proposalStatusColor(viewingProposal.proposal_status)}
                 onChange={(proposalStatus) => handleProposalStatusChange(viewingProposal, proposalStatus)}

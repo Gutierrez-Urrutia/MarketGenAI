@@ -122,6 +122,9 @@ export const uploadSignedDocument = (id, file) => {
 export const removeSignedDocument = (id) =>
   withProposalUpdated(api.delete(`/proposals/${id}/signed-document`));
 
+// Enlace temporal (5 min) para ver el documento firmado: la URL del archivo no viaja con la propuesta.
+export const getSignedDocumentLink = (id) => api.get(`/proposals/${id}/signed-document/link`);
+
 // RF-VTA-11: historial de versiones (fecha, autor y contenido de cada una).
 // El listado no trae el contenido; getProposalVersion sí.
 export const listProposalVersions = (id) => api.get(`/proposals/${id}/versions`);

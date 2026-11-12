@@ -37,7 +37,7 @@ async def test_upload_valid_pdf_stores_it_and_fills_the_document_fields(client):
     assert upload.await_args.args[0] == PDF
     fields = update.await_args.args[1]
     assert fields["signedDocumentName"] == "Contrato Acme.pdf"
-    assert fields["signedDocumentUrl"] == "/api/v1/assets/local/x.pdf"
+    assert fields["signedDocumentUrl"] is None   # la URL del archivo no se guarda (abriría el documento sin sesión)
     assert fields["signedDocumentPath"].startswith("proposals/proposal-001/signed/")
     assert fields["signedDocumentUploadedAt"]
     delete.assert_not_called()
