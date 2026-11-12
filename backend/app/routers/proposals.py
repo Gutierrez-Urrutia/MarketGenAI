@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import re
@@ -51,6 +52,7 @@ from app.schemas.proposal import (
     ProposalVersionCreate,
     ProposalVersionOut,
     VERSION_INTERNAL_FIELDS,
+    VERSION_MAX_BYTES,
     SendToCrmRequest,
     SIGNED_DOCUMENT_EXTENSIONS,
     SIGNED_DOCUMENT_MAGIC,
@@ -1427,6 +1429,22 @@ def _version_author(user: CurrentUser) -> dict:
 _VERSION_HEAVY_FIELDS = ("content", "structured_content")
 
 
+async def _save_version(proposal_id: str, snapshot: dict, **kwargs):
+    """Guarda una versión; si Firestore sigue abortando la transacción tras los reintentos (muchos guardados
+    simultáneos de la misma propuesta) responde 503 con instrucción de reintentar, no un 500 genérico."""
+    try:
+        return await proposals_repo.create_version(proposal_id, snapshot, **kwargs)
+    except ValueError as exc:
+        if "Failed to commit transaction" not in str(exc):
+            raise
+        logger.warning("Versión de %s no guardada por contención de transacciones", proposal_id)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="No se pudo guardar la versión en este momento (se estaban guardando otras). Inténtalo de nuevo.",
+            headers={"Retry-After": "1"},
+        )
+
+
 @router.get("/{proposal_id}/versions")
 async def list_proposal_versions(proposal_id: str, user: CurrentUser = Depends(get_current_user)):
     """Historial de versiones (más recientes primero), sin el contenido: usar
@@ -1471,7 +1489,12 @@ async def create_proposal_version(
         snapshot["title"] = body.title
     if body.content is not None:
         snapshot["content"] = body.content
-    version = await proposals_repo.create_version(
+    if len(json.dumps(snapshot, default=str, ensure_ascii=False).encode("utf-8")) > VERSION_MAX_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="El contenido es demasiado grande para guardarlo como versión (máximo 1 MB).",
+        )
+    version = await _save_version(
         proposal_id, snapshot, source="manual", label=body.label, **_version_author(user)
     )
     if version is None:
@@ -1501,16 +1524,20 @@ async def restore_proposal_version(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Version not found.")
 
     author = _version_author(user)
-    await proposals_repo.create_version(
+    # Sin el estado actual guardado no se pisa nada: si falla, el 503 llega antes de tocar la propuesta.
+    await _save_version(
         proposal_id, proposals_repo.version_snapshot(proposal),
         source="auto", label="Before restore", skip_if_unchanged=True, **author,
     )
     restored = proposals_repo.version_restore_fields(version)
     updated = await proposals_repo.update(proposal_id, restored)
-    await proposals_repo.create_version(
-        proposal_id, proposals_repo.version_snapshot(updated),
-        source="restore", label=f"Restored from v{version.get('version')}", **author,
-    )
+    try:
+        await proposals_repo.create_version(
+            proposal_id, proposals_repo.version_snapshot(updated),
+            source="restore", label=f"Restored from v{version.get('version')}", **author,
+        )
+    except Exception:
+        logger.warning("No se pudo registrar la restauración de %s", proposal_id, exc_info=True)
     return updated
 
 

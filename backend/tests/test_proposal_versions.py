@@ -7,6 +7,7 @@ legacy) directamente.
 """
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, patch
 
@@ -442,3 +443,103 @@ async def test_generation_succeeds_even_if_saving_the_version_fails():
     with p1, p2, p3, p4, p5, p6:
         result = await pt.generate_proposal_now("job-1", "proposal-001", "T", "C", "D", {"userId": FAKE_USER_SUB})
     assert result["content"] == "<p>GENERADO</p>"
+
+
+# ── Guardados simultáneos y contenido que no cabe (RF11-D-011 y RF11-D-012) ──
+
+async def test_create_version_retries_when_firestore_aborts_the_transaction():
+    """RF11-D-011: con Firestore real, 10 guardados a la vez daban «Failed to commit transaction in 5 attempts»."""
+    repo = ProposalsRepo()
+    llamadas = []
+
+    async def _una_vez(proposal_id, snapshot, **kwargs):
+        llamadas.append(1)
+        if len(llamadas) < 3:
+            raise ValueError("Failed to commit transaction in 5 attempts.")
+        return {"id": "v1", "version": 1}
+
+    with patch.object(ProposalsRepo, "_create_version_once", side_effect=_una_vez), patch("asyncio.sleep", new_callable=AsyncMock):
+        version = await repo.create_version("proposal-001", {"content": "x"}, author_id="u", author_name=None, author_email=None)
+    assert version["version"] == 1 and len(llamadas) == 3
+
+
+async def test_create_version_gives_up_after_the_attempts_and_other_errors_are_not_retried():
+    repo = ProposalsRepo()
+    with patch.object(ProposalsRepo, "_create_version_once", new_callable=AsyncMock, side_effect=ValueError("Failed to commit transaction in 5 attempts.")) as una, patch("asyncio.sleep", new_callable=AsyncMock):
+        try:
+            await repo.create_version("proposal-001", {}, author_id="u", author_name=None, author_email=None)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("debía propagar el error")
+    assert una.await_count == ProposalsRepo.VERSION_TXN_ATTEMPTS
+    with patch.object(ProposalsRepo, "_create_version_once", new_callable=AsyncMock, side_effect=ValueError("otro error")) as una:
+        try:
+            await repo.create_version("proposal-001", {}, author_id="u", author_name=None, author_email=None)
+        except ValueError:
+            pass
+    assert una.await_count == 1
+
+
+async def test_create_version_serializes_concurrent_saves_of_the_same_proposal():
+    repo = ProposalsRepo()
+    activas, maximo = [0], [0]
+
+    async def _una_vez(proposal_id, snapshot, **kwargs):
+        activas[0] += 1
+        maximo[0] = max(maximo[0], activas[0])
+        await asyncio.sleep(0.01)
+        activas[0] -= 1
+        return {"id": "v", "version": 1}
+
+    with patch.object(ProposalsRepo, "_create_version_once", side_effect=_una_vez):
+        await asyncio.gather(*[repo.create_version("proposal-001", {}, author_id="u", author_name=None, author_email=None) for _ in range(8)])
+    assert maximo[0] == 1
+
+
+async def test_saving_a_version_answers_503_when_the_transaction_keeps_aborting(client):
+    with (
+        patch(f"{REPO}.get", new_callable=AsyncMock, return_value=fake_proposal()),
+        patch(f"{REPO}.create_version", new_callable=AsyncMock, side_effect=ValueError("Failed to commit transaction in 5 attempts.")),
+    ):
+        resp = await client.post(f"{API}/proposal-001/versions", json={})
+    assert resp.status_code == 503
+    assert resp.headers.get("retry-after") == "1"
+    assert "Inténtalo de nuevo" in resp.json()["detail"]
+
+
+async def test_restore_does_not_touch_the_proposal_if_the_current_state_could_not_be_saved(client):
+    with (
+        patch(f"{REPO}.get", new_callable=AsyncMock, return_value=fake_proposal()),
+        patch(f"{REPO}.get_version", new_callable=AsyncMock, return_value=fake_version(1)),
+        patch(f"{REPO}.update", new_callable=AsyncMock) as update,
+        patch(f"{REPO}.create_version", new_callable=AsyncMock, side_effect=ValueError("Failed to commit transaction in 5 attempts.")),
+    ):
+        resp = await client.post(f"{API}/proposal-001/versions/v1/restore")
+    assert resp.status_code == 503
+    update.assert_not_called()
+
+
+async def test_restore_succeeds_even_if_recording_the_restoration_fails(client):
+    current = fake_proposal()
+    with (
+        patch(f"{REPO}.get", new_callable=AsyncMock, return_value=current),
+        patch(f"{REPO}.get_version", new_callable=AsyncMock, return_value=fake_version(1)),
+        patch(f"{REPO}.update", new_callable=AsyncMock, return_value={**current, "content": "<p>contenido 1</p>"}),
+        patch(f"{REPO}.create_version", new_callable=AsyncMock, side_effect=[None, RuntimeError("firestore down")]),
+    ):
+        resp = await client.post(f"{API}/proposal-001/versions/v1/restore")
+    assert resp.status_code == 200
+
+
+async def test_a_version_that_does_not_fit_in_firestore_is_rejected_with_413(client):
+    with (
+        patch(f"{REPO}.get", new_callable=AsyncMock, return_value=fake_proposal()),
+        patch(f"{REPO}.create_version", new_callable=AsyncMock, return_value=fake_version(1)) as create,
+    ):
+        resp = await client.post(f"{API}/proposal-001/versions", json={"content": "X" * 1_200_000})
+        ok = await client.post(f"{API}/proposal-001/versions", json={"content": "X" * 900_000})
+    assert resp.status_code == 413
+    assert "demasiado grande" in resp.json()["detail"]
+    assert ok.status_code == 200
+    assert create.await_count == 1   # la de 1,2 MB ni siquiera llegó a Firestore

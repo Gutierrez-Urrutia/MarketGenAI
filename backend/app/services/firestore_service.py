@@ -25,10 +25,13 @@ Collections used by this project:
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
+import random
 import uuid
+import weakref
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
@@ -590,7 +593,26 @@ class ProposalsRepo(FirestoreRepo):
         snap = await self._versions_col(proposal_id).document(version_id).get()
         return snap.to_dict() if snap.exists else None
 
-    async def create_version(
+    # Guardados simultáneos de la misma propuesta (doble clic, edición + guardado manual): todos leen y
+    # actualizan el mismo contador, así que Firestore aborta las transacciones que chocan y, tras 5 intentos,
+    # lanza ValueError (RF11-D-011). Se serializan los de este proceso y se reintenta con espera para los
+    # de otros procesos.
+    VERSION_TXN_ATTEMPTS = 6
+    _version_locks: "weakref.WeakValueDictionary[str, asyncio.Lock]" = weakref.WeakValueDictionary()
+
+    async def create_version(self, proposal_id: str, snapshot: Dict[str, Any], **kwargs) -> Optional[Dict[str, Any]]:
+        """Guarda un snapshot con el siguiente número de versión (ver `_create_version_once`)."""
+        lock = self._version_locks.setdefault(proposal_id, asyncio.Lock())
+        async with lock:
+            for attempt in range(1, self.VERSION_TXN_ATTEMPTS + 1):
+                try:
+                    return await self._create_version_once(proposal_id, snapshot, **kwargs)
+                except ValueError as exc:
+                    if "Failed to commit transaction" not in str(exc) or attempt == self.VERSION_TXN_ATTEMPTS:
+                        raise
+                    await asyncio.sleep(random.uniform(0.05, 0.25) * attempt)
+
+    async def _create_version_once(
         self,
         proposal_id: str,
         snapshot: Dict[str, Any],
@@ -602,7 +624,7 @@ class ProposalsRepo(FirestoreRepo):
         label: Optional[str] = None,
         skip_if_unchanged: bool = False,
     ) -> Optional[Dict[str, Any]]:
-        """Guarda un snapshot con el siguiente número de versión. Devuelve la versión,
+        """Una transacción: guarda un snapshot con el siguiente número de versión. Devuelve la versión,
         o None si la propuesta no existe o (con skip_if_unchanged) el contenido es
         idéntico al de la última versión."""
         ref = self._doc(proposal_id)

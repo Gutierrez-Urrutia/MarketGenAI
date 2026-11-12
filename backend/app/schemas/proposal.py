@@ -36,6 +36,8 @@ SIGNED_DOCUMENT_LINK_SECONDS: int = 300   # vigencia del enlace temporal para ve
 # puede mandarlas (PUT/POST de propuestas aceptan campos extra) porque falsificarían o romperían la numeración.
 VERSION_INTERNAL_FIELDS = ("versions", "versionCounter", "versionHash")
 VERSION_LABEL_MAX = 200
+# Una versión es un documento de Firestore (límite 1 MiB con sus metadatos): por encima de esto se rechaza con un error claro.
+VERSION_MAX_BYTES = 1_000_000
 
 
 def public_proposal(doc: Dict[str, Any]) -> Dict[str, Any]:
