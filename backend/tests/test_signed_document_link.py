@@ -144,3 +144,26 @@ async def test_content_library_hides_the_document_location_too(client):
         item = (await client.get("/api/v1/content-library")).json()["proposals"][0]
     assert item["hasSignedDocument"] is True and item["signedDocumentName"] == "contrato.pdf"
     assert "signedDocumentUrl" not in item and "signedDocumentPath" not in item
+
+
+async def test_a_signed_proposal_can_be_sent_to_the_crm_and_the_response_hides_the_document(client):
+    """RF-VTA-06: estar Firmada (con documento) no cambia el envío al CRM; la respuesta no trae la ruta del archivo."""
+    proposal = fake_proposal({**LINKED, "proposal_status": "firmada", "clientEmail": "client@example.com", "totalAmount": 1500})
+    updated = {**proposal, "crmSync": {"provider": "hubspot", "status": "synced", "hubspotContactId": "c1", "hubspotDealId": "d1"}}
+    with (
+        patch(f"{REPO}.get", new_callable=AsyncMock, return_value=proposal),
+        patch("app.routers.proposals.settings_repo.get_by_user", new_callable=AsyncMock,
+              return_value={"crm": {"activeProvider": "hubspot", "connections": {"hubspot": {"apiKeyEncrypted": "enc"}}}}),
+        patch("app.routers.proposals.crm_service.build_client_from_stored") as build_client,
+        patch(f"{REPO}.update", new_callable=AsyncMock, return_value=updated),
+    ):
+        hubspot = build_client.return_value
+        hubspot.upsert_contact = AsyncMock(return_value="c1")
+        hubspot.upsert_deal = AsyncMock(return_value="d1")
+        resp = await client.post(f"{API}/proposal-001/send-to-crm", json={})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["crmSync"]["status"] == "synced"
+    assert body["hasSignedDocument"] is True
+    assert "signedDocumentUrl" not in body and "signedDocumentPath" not in body
+    hubspot.upsert_deal.assert_awaited_once()
