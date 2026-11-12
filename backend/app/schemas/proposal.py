@@ -32,6 +32,27 @@ SIGNED_DOCUMENT_MAGIC: bytes = b"%PDF-"
 SIGNED_DOCUMENT_LINK_SECONDS: int = 300   # vigencia del enlace temporal para ver el documento firmado
 
 
+# RF-VTA-11: campos que escribe solo el servidor. PUT y POST de propuestas aceptan campos extra (el frontend manda
+# estructura, etiquetas, filas de precios…), así que sin esta lista un cliente podía ceder la propuesta a otro usuario
+# (userId), inventar la ruta del documento firmado o el estado del CRM, apuntar filePath a otro archivo o falsificar
+# el historial (versions, versionCounter, versionHash) (RF11-D-009 y RF11-D-013).
+VERSION_INTERNAL_FIELDS = ("versions", "versionCounter", "versionHash")
+SERVER_ONLY_FIELDS = VERSION_INTERNAL_FIELDS + (
+    "id", "userId", "createdAt", "updatedAt", "crmSync", "filePath", "downloadUrl",
+    "signedDocumentPath", "signedDocumentUrl", "signedDocumentName", "signedDocumentUploadedAt", "hasSignedDocument",
+)
+
+
+def strip_server_only_fields(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Quita de lo que manda el cliente los campos que solo escribe el servidor (en el mismo diccionario)."""
+    for name in SERVER_ONLY_FIELDS:
+        data.pop(name, None)
+    return data
+VERSION_LABEL_MAX = 200
+# Una versión es un documento de Firestore (límite 1 MiB con sus metadatos): por encima de esto se rechaza con un error claro.
+VERSION_MAX_BYTES = 1_000_000
+
+
 def public_proposal(doc: Dict[str, Any]) -> Dict[str, Any]:
     """Una propuesta como la ve el cliente: sin la ruta ni la URL permanente del documento firmado
     (abren el archivo sin sesión); en su lugar `hasSignedDocument`. El enlace se pide aparte, con
@@ -201,9 +222,9 @@ class ProposalVersionCreate(BaseModel):
     """Save a new version/snapshot of the proposal content."""
     model_config = ConfigDict(extra="allow")
 
-    title:   Optional[str] = None
+    title:   Optional[str] = Field(None, max_length=200)
     content: Optional[str] = None
-    label:   Optional[str] = None
+    label:   Optional[str] = Field(None, max_length=VERSION_LABEL_MAX)
 
 
 class ProposalVersionOut(BaseModel):

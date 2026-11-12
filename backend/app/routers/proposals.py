@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import re
@@ -50,6 +51,8 @@ from app.schemas.proposal import (
     ProposalUpdate,
     ProposalVersionCreate,
     ProposalVersionOut,
+    strip_server_only_fields,
+    VERSION_MAX_BYTES,
     SendToCrmRequest,
     SIGNED_DOCUMENT_EXTENSIONS,
     SIGNED_DOCUMENT_MAGIC,
@@ -987,6 +990,7 @@ async def create_proposal(
     user: CurrentUser = Depends(get_current_user),
 ):
     data = body.model_dump(exclude_none=True)
+    strip_server_only_fields(data)   # RF-VTA-11: dueño, documento firmado, CRM, archivo e historial los escribe solo el servidor
 
     client_name = (
         data.get("clientName")
@@ -1076,6 +1080,7 @@ async def generate_proposal_draft(
     if extra:
         options.update(extra)
     options["userId"] = user.sub  # tras extra: el cliente no puede suplantarlo; el worker lo usa para recuperar el contexto RAG del usuario
+    options["versionAuthor"] = _version_author(user)  # RF-VTA-11: autor de las versiones que deja la generación (tampoco suplantable)
     await _apply_proposal_template(proposal, options, user)
 
     job = await jobs_repo.create_job(
@@ -1141,6 +1146,7 @@ async def generate_proposal_by_id(
     if body.model_extra:
         options.update(body.model_extra)
     options["userId"] = user.sub  # tras extra: el cliente no puede suplantarlo; el worker lo usa para recuperar el contexto RAG del usuario
+    options["versionAuthor"] = _version_author(user)  # RF-VTA-11: la regeneración deja el contenido anterior en el historial, a nombre de quien la pidió
     await _apply_proposal_template(proposal, options, user)
 
     job = await jobs_repo.create_job(
@@ -1219,6 +1225,7 @@ async def update_proposal(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="No fields to update."
         )
+    strip_server_only_fields(update_data)   # RF-VTA-11: dueño, documento firmado, CRM, archivo e historial los escribe solo el servidor
     # El estado comercial solo cambia por PATCH /status (transiciones + auditoría).
     # `status` (ciclo de generación con IA) sí pasa: el frontend lo usa.
     update_data.pop("proposal_status", None)
@@ -1400,6 +1407,11 @@ async def delete_proposal(proposal_id: str, user: CurrentUser = Depends(get_curr
     if proposal.get("signedDocumentPath"):
         await storage_service.delete_file(proposal["signedDocumentPath"])
     await proposals_repo.delete(proposal_id)
+    # RF-VTA-11: Firestore no borra la subcolección con el documento; que no queden versiones de una propuesta eliminada.
+    try:
+        await proposals_repo.delete_versions(proposal_id)
+    except Exception:
+        logger.warning("No se pudieron borrar las versiones de la propuesta %s", proposal_id, exc_info=True)
     return None
 
 
@@ -1413,6 +1425,22 @@ def _version_author(user: CurrentUser) -> dict:
 
 # RF-VTA-11: campos pesados que solo viajan en el detalle de una versión.
 _VERSION_HEAVY_FIELDS = ("content", "structured_content")
+
+
+async def _save_version(proposal_id: str, snapshot: dict, **kwargs):
+    """Guarda una versión; si Firestore sigue abortando la transacción tras los reintentos (muchos guardados
+    simultáneos de la misma propuesta) responde 503 con instrucción de reintentar, no un 500 genérico."""
+    try:
+        return await proposals_repo.create_version(proposal_id, snapshot, **kwargs)
+    except ValueError as exc:
+        if "Failed to commit transaction" not in str(exc):
+            raise
+        logger.warning("Versión de %s no guardada por contención de transacciones", proposal_id)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="No se pudo guardar la versión en este momento (se estaban guardando otras). Inténtalo de nuevo.",
+            headers={"Retry-After": "1"},
+        )
 
 
 @router.get("/{proposal_id}/versions")
@@ -1444,7 +1472,9 @@ async def get_proposal_version(
 
 
 @router.post("/{proposal_id}/versions", response_model=ProposalVersionOut)
+@limiter.limit("20/minute")
 async def create_proposal_version(
+    request: Request,
     proposal_id: str,
     body: ProposalVersionCreate,
     user: CurrentUser = Depends(get_current_user),
@@ -1457,7 +1487,12 @@ async def create_proposal_version(
         snapshot["title"] = body.title
     if body.content is not None:
         snapshot["content"] = body.content
-    version = await proposals_repo.create_version(
+    if len(json.dumps(snapshot, default=str, ensure_ascii=False).encode("utf-8")) > VERSION_MAX_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="El contenido es demasiado grande para guardarlo como versión (máximo 1 MB).",
+        )
+    version = await _save_version(
         proposal_id, snapshot, source="manual", label=body.label, **_version_author(user)
     )
     if version is None:
@@ -1466,7 +1501,9 @@ async def create_proposal_version(
 
 
 @router.post("/{proposal_id}/versions/{version_id}/restore", response_model=ProposalOut)
+@limiter.limit("20/minute")
 async def restore_proposal_version(
+    request: Request,
     proposal_id: str,
     version_id: str,
     user: CurrentUser = Depends(get_current_user),
@@ -1485,18 +1522,20 @@ async def restore_proposal_version(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Version not found.")
 
     author = _version_author(user)
-    await proposals_repo.create_version(
+    # Sin el estado actual guardado no se pisa nada: si falla, el 503 llega antes de tocar la propuesta.
+    await _save_version(
         proposal_id, proposals_repo.version_snapshot(proposal),
         source="auto", label="Before restore", skip_if_unchanged=True, **author,
     )
-    restored = {
-        f: version[f] for f in proposals_repo.VERSION_FIELDS if version.get(f) is not None
-    }
+    restored = proposals_repo.version_restore_fields(version)
     updated = await proposals_repo.update(proposal_id, restored)
-    await proposals_repo.create_version(
-        proposal_id, proposals_repo.version_snapshot(updated),
-        source="restore", label=f"Restored from v{version.get('version')}", **author,
-    )
+    try:
+        await proposals_repo.create_version(
+            proposal_id, proposals_repo.version_snapshot(updated),
+            source="restore", label=f"Restored from v{version.get('version')}", **author,
+        )
+    except Exception:
+        logger.warning("No se pudo registrar la restauración de %s", proposal_id, exc_info=True)
     return updated
 
 

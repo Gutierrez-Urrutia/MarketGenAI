@@ -25,10 +25,13 @@ Collections used by this project:
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
+import random
 import uuid
+import weakref
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
@@ -527,7 +530,9 @@ class ProposalsRepo(FirestoreRepo):
     # y el hash `versionHash` viven en la propuesta y se actualizan en la misma
     # transacción que escribe la versión (sin números duplicados ni lecturas extra).
 
-    VERSION_FIELDS = ("title", "content", "structured_content", "total_amount")
+    # `total_amount` y `totalAmount` son dos grafías del mismo monto que el producto lee por igual
+    # (_resolve_total_amount): las dos forman parte de la versión.
+    VERSION_FIELDS = ("title", "content", "structured_content", "total_amount", "totalAmount")
 
     @classmethod
     def version_snapshot(cls, proposal: Dict[str, Any]) -> Dict[str, Any]:
@@ -538,29 +543,47 @@ class ProposalsRepo(FirestoreRepo):
         raw = json.dumps(snapshot, sort_keys=True, default=str, ensure_ascii=False)
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
+    @classmethod
+    def version_restore_fields(cls, version: Dict[str, Any]) -> Dict[str, Any]:
+        """Campos que restaura una versión. Si la versión guardó el campo vacío (None), restaurar
+        también lo vacía: no deja la estructura o el monto nuevos mezclados con el texto viejo. Un
+        campo que la versión ni siquiera tiene (versiones del formato anterior) no se toca."""
+        return {f: version[f] for f in cls.VERSION_FIELDS if f in version}
+
     def _versions_col(self, proposal_id: str):
         return self._doc(proposal_id).collection("versions")
+
+    async def delete_versions(self, proposal_id: str) -> int:
+        """Borra la subcolección de versiones (Firestore no la borra con el documento). Devuelve cuántas."""
+        docs = await self._versions_col(proposal_id).get()
+        for start in range(0, len(docs), 400):
+            batch = self.db.batch()
+            for d in docs[start:start + 400]:
+                batch.delete(d.reference)
+            await batch.commit()
+        return len(docs)
 
     @staticmethod
     def _legacy_versions(legacy: Optional[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
         """Versiones viejas embebidas en el documento (sin id ni autor)."""
         return [
             {**v, "id": f"legacy-{v.get('version', i + 1)}", "source": v.get("source") or "manual"}
-            for i, v in enumerate(legacy or [])
+            for i, v in enumerate(legacy if isinstance(legacy, list) else [])
+            if isinstance(v, dict)
         ]
 
     async def list_versions(
         self, proposal_id: str, legacy: Optional[List[Dict[str, Any]]] = None
     ) -> List[Dict[str, Any]]:
-        """Más recientes primero. Si la subcolección está vacía, devuelve las versiones
-        embebidas anteriores a RF-VTA-11 (compatibilidad, sin migración obligatoria)."""
+        """Más recientes primero. Incluye siempre las versiones embebidas anteriores a RF-VTA-11
+        (compatibilidad, sin migración obligatoria): al guardar la primera versión nueva las antiguas
+        no desaparecen. Sus números son menores porque la numeración nueva continúa tras ellas."""
         docs = await self._versions_col(proposal_id).order_by(
             "version", direction=firestore.Query.DESCENDING
         ).get()
         items = [d.to_dict() for d in docs if d.exists]
-        if not items:
-            items = sorted(self._legacy_versions(legacy), key=lambda v: v.get("version", 0), reverse=True)
-        return items
+        items += self._legacy_versions(legacy)
+        return sorted(items, key=lambda v: v.get("version", 0), reverse=True)
 
     async def get_version(
         self, proposal_id: str, version_id: str, legacy: Optional[List[Dict[str, Any]]] = None
@@ -570,7 +593,26 @@ class ProposalsRepo(FirestoreRepo):
         snap = await self._versions_col(proposal_id).document(version_id).get()
         return snap.to_dict() if snap.exists else None
 
-    async def create_version(
+    # Guardados simultáneos de la misma propuesta (doble clic, edición + guardado manual): todos leen y
+    # actualizan el mismo contador, así que Firestore aborta las transacciones que chocan y, tras 5 intentos,
+    # lanza ValueError (RF11-D-011). Se serializan los de este proceso y se reintenta con espera para los
+    # de otros procesos.
+    VERSION_TXN_ATTEMPTS = 6
+    _version_locks: "weakref.WeakValueDictionary[str, asyncio.Lock]" = weakref.WeakValueDictionary()
+
+    async def create_version(self, proposal_id: str, snapshot: Dict[str, Any], **kwargs) -> Optional[Dict[str, Any]]:
+        """Guarda un snapshot con el siguiente número de versión (ver `_create_version_once`)."""
+        lock = self._version_locks.setdefault(proposal_id, asyncio.Lock())
+        async with lock:
+            for attempt in range(1, self.VERSION_TXN_ATTEMPTS + 1):
+                try:
+                    return await self._create_version_once(proposal_id, snapshot, **kwargs)
+                except ValueError as exc:
+                    if "Failed to commit transaction" not in str(exc) or attempt == self.VERSION_TXN_ATTEMPTS:
+                        raise
+                    await asyncio.sleep(random.uniform(0.05, 0.25) * attempt)
+
+    async def _create_version_once(
         self,
         proposal_id: str,
         snapshot: Dict[str, Any],
@@ -582,7 +624,7 @@ class ProposalsRepo(FirestoreRepo):
         label: Optional[str] = None,
         skip_if_unchanged: bool = False,
     ) -> Optional[Dict[str, Any]]:
-        """Guarda un snapshot con el siguiente número de versión. Devuelve la versión,
+        """Una transacción: guarda un snapshot con el siguiente número de versión. Devuelve la versión,
         o None si la propuesta no existe o (con skip_if_unchanged) el contenido es
         idéntico al de la última versión."""
         ref = self._doc(proposal_id)
@@ -599,7 +641,9 @@ class ProposalsRepo(FirestoreRepo):
             proposal = snap.to_dict()
             if skip_if_unchanged and proposal.get("versionHash") == digest:
                 return None
-            number = max(proposal.get("versionCounter") or 0, len(proposal.get("versions") or [])) + 1
+            counter = proposal.get("versionCounter")
+            legacy_count = len(proposal.get("versions") or []) if isinstance(proposal.get("versions"), list) else 0
+            number = max(counter if isinstance(counter, int) else 0, legacy_count) + 1
             version = {
                 **snapshot,
                 "id": version_id,

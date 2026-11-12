@@ -1072,10 +1072,13 @@ export const translations = {
       by: "by",
       unknownAuthor: "unknown author",
       source: { manual: "Manual", auto: "Automatic", restore: "Restore" },
+      labels: { initial: "Initial version", version: "Version {n}", beforeRestore: "Before restoring", restoredFrom: "Restored from v{n}", beforeRegeneration: "Before regenerating", generated: "Generated" },
       errors: {
         load: "Could not load the version history.",
         save: "Could not save the version.",
         restore: "Could not restore the version.",
+        notFound: "The proposal no longer exists.",
+        rateLimited: "Too many requests. Try again in a minute.",
       },
     },
     auditLogs: {
@@ -2150,10 +2153,13 @@ export const translations = {
       by: "por",
       unknownAuthor: "autor desconocido",
       source: { manual: "Manual", auto: "Automática", restore: "Restauración" },
+      labels: { initial: "Versión inicial", version: "Versión {n}", beforeRestore: "Antes de restaurar", restoredFrom: "Restaurada desde v{n}", beforeRegeneration: "Antes de regenerar", generated: "Generada" },
       errors: {
         load: "No se pudo cargar el historial de versiones.",
         save: "No se pudo guardar la versión.",
         restore: "No se pudo restaurar la versión.",
+        notFound: "La propuesta ya no existe.",
+        rateLimited: "Demasiadas solicitudes. Inténtalo de nuevo en un minuto.",
       },
     },
     auditLogs: {
@@ -3264,10 +3270,13 @@ export const translations = {
       by: "por",
       unknownAuthor: "autor desconhecido",
       source: { manual: "Manual", auto: "Automática", restore: "Restauração" },
+      labels: { initial: "Versão inicial", version: "Versão {n}", beforeRestore: "Antes de restaurar", restoredFrom: "Restaurada a partir da v{n}", beforeRegeneration: "Antes de regenerar", generated: "Gerada" },
       errors: {
         load: "Não foi possível carregar o histórico de versões.",
         save: "Não foi possível salvar a versão.",
         restore: "Não foi possível restaurar a versão.",
+        notFound: "A proposta não existe mais.",
+        rateLimited: "Muitas solicitações. Tente novamente em um minuto.",
       },
     },
     auditLogs: {

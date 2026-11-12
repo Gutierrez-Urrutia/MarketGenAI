@@ -7,6 +7,7 @@ legacy) directamente.
 """
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, patch
 
@@ -47,7 +48,7 @@ def test_version_snapshot_only_keeps_content_fields():
     snap = ProposalsRepo.version_snapshot(
         fake_proposal({"structured_content": {"a": 1}, "total_amount": 10, "clientName": "X"})
     )
-    assert set(snap) == {"title", "content", "structured_content", "total_amount"}
+    assert set(snap) == {"title", "content", "structured_content", "total_amount", "totalAmount"}   # totalAmount: RF11-D-008
     assert snap["total_amount"] == 10 and "clientName" not in snap
 
 
@@ -232,3 +233,361 @@ async def test_put_succeeds_even_if_auto_snapshot_fails(client):
         resp = await client.put(f"{API}/proposal-001", json={"content": "<p>nuevo</p>"})
     assert resp.status_code == 200
     assert resp.json()["content"] == "<p>nuevo</p>"
+
+
+# ── RF-VTA-11 (cierre): correcciones RF11-D-001 a RF11-D-009 ─────────────────
+
+def test_restore_fields_clear_what_the_version_had_empty_and_skip_what_it_does_not_have():
+    """RF11-D-003: una versión que guardó la estructura o el monto vacíos los vacía al restaurar;
+    una versión del formato anterior (sin esas claves) no las toca."""
+    nueva = {"title": "T", "content": "c", "structured_content": None, "total_amount": None, "totalAmount": None}
+    assert ProposalsRepo.version_restore_fields(nueva) == nueva
+    antigua = {"version": 1, "title": "T", "content": "c"}
+    assert ProposalsRepo.version_restore_fields(antigua) == {"title": "T", "content": "c"}
+
+
+def test_total_amount_in_both_spellings_is_part_of_the_snapshot():
+    """RF11-D-008: el producto lee el monto como total_amount o totalAmount; las dos viajan en la versión."""
+    snap = ProposalsRepo.version_snapshot(fake_proposal({"totalAmount": 3000}))
+    assert snap["totalAmount"] == 3000 and "total_amount" in snap
+
+
+async def test_restore_puts_none_fields_back_to_empty(client):
+    current = fake_proposal({"structured_content": {"a": 1}, "total_amount": 999})
+    version = fake_version(1, structured_content=None, total_amount=None, totalAmount=None)
+    with (
+        patch(f"{REPO}.get", new_callable=AsyncMock, return_value=current),
+        patch(f"{REPO}.get_version", new_callable=AsyncMock, return_value=version),
+        patch(f"{REPO}.update", new_callable=AsyncMock, return_value=current) as update,
+        patch(f"{REPO}.create_version", new_callable=AsyncMock),
+    ):
+        resp = await client.post(f"{API}/proposal-001/versions/v1/restore")
+    assert resp.status_code == 200
+    fields = update.await_args.args[1]
+    assert fields["structured_content"] is None and fields["total_amount"] is None
+
+
+async def test_list_versions_keeps_the_legacy_ones_after_new_versions_exist():
+    """RF11-D-001: al guardar la primera versión nueva las antiguas (embebidas) no desaparecen del listado."""
+    nueva = {"id": "n3", "version": 3, "label": "Nueva", "source": "manual"}
+
+    class _Doc:
+        exists = True
+
+        def to_dict(self):
+            return nueva
+
+    class _Col:
+        def order_by(self, *a, **k):
+            return self
+
+        async def get(self):
+            return [_Doc()]
+
+    repo = ProposalsRepo()
+    legacy = [{"version": 1, "content": "a"}, {"version": 2, "content": "b"}]
+    with patch.object(ProposalsRepo, "_versions_col", return_value=_Col()):
+        items = await repo.list_versions("proposal-001", legacy)
+    assert [i["version"] for i in items] == [3, 2, 1]
+    assert [i["id"] for i in items] == ["n3", "legacy-2", "legacy-1"]
+
+
+def test_legacy_versions_ignore_garbage():
+    assert ProposalsRepo._legacy_versions("texto") == []
+    assert ProposalsRepo._legacy_versions([None, 5, {"version": 2, "content": "x"}])[0]["id"] == "legacy-2"
+
+
+async def test_create_version_label_has_a_maximum_length(client):
+    with (
+        patch(f"{REPO}.get", new_callable=AsyncMock, return_value=fake_proposal()),
+        patch(f"{REPO}.create_version", new_callable=AsyncMock, return_value=fake_version(1)) as create,
+    ):
+        ok = await client.post(f"{API}/proposal-001/versions", json={"label": "L" * 200})
+        largo = await client.post(f"{API}/proposal-001/versions", json={"label": "L" * 201})
+    assert ok.status_code == 200
+    assert largo.status_code == 422
+    assert create.await_count == 1
+
+
+async def test_saving_versions_is_limited_to_20_per_minute(client):
+    codes = []
+    with (
+        patch(f"{REPO}.get", new_callable=AsyncMock, return_value=fake_proposal()),
+        patch(f"{REPO}.create_version", new_callable=AsyncMock, return_value=fake_version(1)),
+    ):
+        for _ in range(22):
+            codes.append((await client.post(f"{API}/proposal-001/versions", json={})).status_code)
+    assert codes[:20] == [200] * 20 and codes[20:] == [429, 429]
+
+
+async def test_restoring_is_limited_to_20_per_minute(client):
+    codes = []
+    with (
+        patch(f"{REPO}.get", new_callable=AsyncMock, return_value=fake_proposal()),
+        patch(f"{REPO}.get_version", new_callable=AsyncMock, return_value=fake_version(1)),
+        patch(f"{REPO}.update", new_callable=AsyncMock, return_value=fake_proposal()),
+        patch(f"{REPO}.create_version", new_callable=AsyncMock),
+    ):
+        for _ in range(22):
+            codes.append((await client.post(f"{API}/proposal-001/versions/v1/restore")).status_code)
+    assert codes[:20] == [200] * 20 and codes[20:] == [429, 429]
+
+
+async def test_put_ignores_the_internal_history_marks(client):
+    """RF11-D-009: el cliente no puede escribir versions, versionCounter ni versionHash."""
+    before = fake_proposal()
+    with (
+        patch(f"{REPO}.get", new_callable=AsyncMock, return_value=before),
+        patch(f"{REPO}.update", new_callable=AsyncMock, return_value=before) as update,
+        patch(f"{REPO}.create_version", new_callable=AsyncMock),
+    ):
+        resp = await client.put(
+            f"{API}/proposal-001",
+            json={"clientName": "X", "versions": [{"version": 7}], "versionCounter": 500, "versionHash": "x"},
+        )
+    assert resp.status_code == 200
+    assert update.await_args.args[1] == {"clientName": "X"}
+
+
+async def test_create_proposal_ignores_the_internal_history_marks(client):
+    async def _create(data, doc_id=None):
+        return {**data, "id": doc_id}
+
+    with patch(f"{REPO}.create", new_callable=AsyncMock, side_effect=_create) as create:
+        resp = await client.post(API, json={"title": "T", "versions": [{"version": 7}], "versionCounter": 999, "versionHash": "x"})
+    assert resp.status_code == 201
+    data = create.await_args.args[0]
+    assert "versions" not in data and "versionCounter" not in data and "versionHash" not in data
+
+
+async def test_deleting_a_proposal_deletes_its_versions(client):
+    with (
+        patch(f"{REPO}.get", new_callable=AsyncMock, return_value=fake_proposal()),
+        patch(f"{REPO}.delete", new_callable=AsyncMock) as delete,
+        patch(f"{REPO}.delete_versions", new_callable=AsyncMock, return_value=3) as delete_versions,
+    ):
+        resp = await client.delete(f"{API}/proposal-001")
+    assert resp.status_code == 204
+    delete.assert_awaited_once_with("proposal-001")
+    delete_versions.assert_awaited_once_with("proposal-001")
+
+
+async def test_deleting_a_proposal_succeeds_even_if_deleting_versions_fails(client):
+    with (
+        patch(f"{REPO}.get", new_callable=AsyncMock, return_value=fake_proposal()),
+        patch(f"{REPO}.delete", new_callable=AsyncMock),
+        patch(f"{REPO}.delete_versions", new_callable=AsyncMock, side_effect=RuntimeError("firestore down")),
+    ):
+        resp = await client.delete(f"{API}/proposal-001")
+    assert resp.status_code == 204
+
+
+def test_audit_labels_for_saving_and_restoring_versions():
+    """RF11-D-005: antes las dos caían en «created_proposal»."""
+    from app.middleware.audit import _infer_action
+
+    assert _infer_action("POST", "/api/v1/proposals/p1/versions") == "saved_proposal_version"
+    assert _infer_action("POST", "/api/v1/proposals/p1/versions/v1/restore") == "restored_proposal_version"
+    assert _infer_action("POST", "/api/v1/proposals") == "created_proposal"
+    assert _infer_action("DELETE", "/api/v1/proposals/p1") == "deleted_proposal"
+
+
+# ── Regenerar con IA deja el contenido anterior en el historial (RF11-D-002) ──
+
+def _generation_patches(pt, previo, nuevo, create_version_kwargs=None):
+    return (
+        patch.object(pt.jobs_repo, "update_progress", new_callable=AsyncMock),
+        patch.object(pt.jobs_repo, "complete_job", new_callable=AsyncMock),
+        patch.object(pt, "_generate_proposal_content", new_callable=AsyncMock,
+                     return_value={"content": "<p>GENERADO</p>", "downloadUrl": None, "filePath": None}),
+        patch.object(pt.proposals_repo, "get", new_callable=AsyncMock, side_effect=[previo, nuevo]),
+        patch.object(pt.proposals_repo, "update", new_callable=AsyncMock, return_value=nuevo),
+        patch.object(pt.proposals_repo, "create_version", new_callable=AsyncMock, **(create_version_kwargs or {})),
+    )
+
+
+async def test_regenerating_saves_the_previous_content_and_the_new_one():
+    from app.workers.tasks import proposal_tasks as pt
+
+    previo = fake_proposal({"content": "<p>ESCRITO A MANO</p>"})
+    nuevo = {**previo, "content": "<p>GENERADO</p>"}
+    author = {"author_id": FAKE_USER_SUB, "author_name": "Test User", "author_email": "t@noondalton.com"}
+    p1, p2, p3, p4, p5, p6 = _generation_patches(pt, previo, nuevo)
+    with p1, p2, p3, p4, p5, p6 as create:
+        await pt.generate_proposal_now("job-1", "proposal-001", "T", "C", "D", {"versionAuthor": author, "userId": FAKE_USER_SUB})
+    antes, despues = create.await_args_list
+    assert antes.args[1]["content"] == "<p>ESCRITO A MANO</p>" and antes.kwargs["label"] == "Before regeneration"
+    assert despues.args[1]["content"] == "<p>GENERADO</p>" and despues.kwargs["label"] == "Generated"
+    assert antes.kwargs["author_id"] == FAKE_USER_SUB and antes.kwargs["source"] == "auto"
+
+
+async def test_generating_a_new_empty_proposal_only_saves_the_generated_version():
+    from app.workers.tasks import proposal_tasks as pt
+
+    vacia = fake_proposal({"content": ""})
+    nueva = {**vacia, "content": "<p>GENERADO</p>"}
+    p1, p2, p3, p4, p5, p6 = _generation_patches(pt, vacia, nueva)
+    with p1, p2, p3, p4, p5, p6 as create:
+        await pt.generate_proposal_now("job-1", "proposal-001", "T", "C", "D", {"userId": FAKE_USER_SUB})
+    create.assert_awaited_once()
+    assert create.await_args.kwargs["label"] == "Generated"
+    assert create.await_args.kwargs["author_id"] == FAKE_USER_SUB
+
+
+async def test_generation_succeeds_even_if_saving_the_version_fails():
+    from app.workers.tasks import proposal_tasks as pt
+
+    previo = fake_proposal({"content": "<p>algo</p>"})
+    nuevo = {**previo, "content": "<p>GENERADO</p>"}
+    p1, p2, p3, p4, p5, p6 = _generation_patches(pt, previo, nuevo, {"side_effect": RuntimeError("firestore down")})
+    with p1, p2, p3, p4, p5, p6:
+        result = await pt.generate_proposal_now("job-1", "proposal-001", "T", "C", "D", {"userId": FAKE_USER_SUB})
+    assert result["content"] == "<p>GENERADO</p>"
+
+
+# ── Guardados simultáneos y contenido que no cabe (RF11-D-011 y RF11-D-012) ──
+
+async def test_create_version_retries_when_firestore_aborts_the_transaction():
+    """RF11-D-011: con Firestore real, 10 guardados a la vez daban «Failed to commit transaction in 5 attempts»."""
+    repo = ProposalsRepo()
+    llamadas = []
+
+    async def _una_vez(proposal_id, snapshot, **kwargs):
+        llamadas.append(1)
+        if len(llamadas) < 3:
+            raise ValueError("Failed to commit transaction in 5 attempts.")
+        return {"id": "v1", "version": 1}
+
+    with patch.object(ProposalsRepo, "_create_version_once", side_effect=_una_vez), patch("asyncio.sleep", new_callable=AsyncMock):
+        version = await repo.create_version("proposal-001", {"content": "x"}, author_id="u", author_name=None, author_email=None)
+    assert version["version"] == 1 and len(llamadas) == 3
+
+
+async def test_create_version_gives_up_after_the_attempts_and_other_errors_are_not_retried():
+    repo = ProposalsRepo()
+    with patch.object(ProposalsRepo, "_create_version_once", new_callable=AsyncMock, side_effect=ValueError("Failed to commit transaction in 5 attempts.")) as una, patch("asyncio.sleep", new_callable=AsyncMock):
+        try:
+            await repo.create_version("proposal-001", {}, author_id="u", author_name=None, author_email=None)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("debía propagar el error")
+    assert una.await_count == ProposalsRepo.VERSION_TXN_ATTEMPTS
+    with patch.object(ProposalsRepo, "_create_version_once", new_callable=AsyncMock, side_effect=ValueError("otro error")) as una:
+        try:
+            await repo.create_version("proposal-001", {}, author_id="u", author_name=None, author_email=None)
+        except ValueError:
+            pass
+    assert una.await_count == 1
+
+
+async def test_create_version_serializes_concurrent_saves_of_the_same_proposal():
+    repo = ProposalsRepo()
+    activas, maximo = [0], [0]
+
+    async def _una_vez(proposal_id, snapshot, **kwargs):
+        activas[0] += 1
+        maximo[0] = max(maximo[0], activas[0])
+        await asyncio.sleep(0.01)
+        activas[0] -= 1
+        return {"id": "v", "version": 1}
+
+    with patch.object(ProposalsRepo, "_create_version_once", side_effect=_una_vez):
+        await asyncio.gather(*[repo.create_version("proposal-001", {}, author_id="u", author_name=None, author_email=None) for _ in range(8)])
+    assert maximo[0] == 1
+
+
+async def test_saving_a_version_answers_503_when_the_transaction_keeps_aborting(client):
+    with (
+        patch(f"{REPO}.get", new_callable=AsyncMock, return_value=fake_proposal()),
+        patch(f"{REPO}.create_version", new_callable=AsyncMock, side_effect=ValueError("Failed to commit transaction in 5 attempts.")),
+    ):
+        resp = await client.post(f"{API}/proposal-001/versions", json={})
+    assert resp.status_code == 503
+    assert resp.headers.get("retry-after") == "1"
+    assert "Inténtalo de nuevo" in resp.json()["detail"]
+
+
+async def test_restore_does_not_touch_the_proposal_if_the_current_state_could_not_be_saved(client):
+    with (
+        patch(f"{REPO}.get", new_callable=AsyncMock, return_value=fake_proposal()),
+        patch(f"{REPO}.get_version", new_callable=AsyncMock, return_value=fake_version(1)),
+        patch(f"{REPO}.update", new_callable=AsyncMock) as update,
+        patch(f"{REPO}.create_version", new_callable=AsyncMock, side_effect=ValueError("Failed to commit transaction in 5 attempts.")),
+    ):
+        resp = await client.post(f"{API}/proposal-001/versions/v1/restore")
+    assert resp.status_code == 503
+    update.assert_not_called()
+
+
+async def test_restore_succeeds_even_if_recording_the_restoration_fails(client):
+    current = fake_proposal()
+    with (
+        patch(f"{REPO}.get", new_callable=AsyncMock, return_value=current),
+        patch(f"{REPO}.get_version", new_callable=AsyncMock, return_value=fake_version(1)),
+        patch(f"{REPO}.update", new_callable=AsyncMock, return_value={**current, "content": "<p>contenido 1</p>"}),
+        patch(f"{REPO}.create_version", new_callable=AsyncMock, side_effect=[None, RuntimeError("firestore down")]),
+    ):
+        resp = await client.post(f"{API}/proposal-001/versions/v1/restore")
+    assert resp.status_code == 200
+
+
+async def test_a_version_that_does_not_fit_in_firestore_is_rejected_with_413(client):
+    with (
+        patch(f"{REPO}.get", new_callable=AsyncMock, return_value=fake_proposal()),
+        patch(f"{REPO}.create_version", new_callable=AsyncMock, return_value=fake_version(1)) as create,
+    ):
+        resp = await client.post(f"{API}/proposal-001/versions", json={"content": "X" * 1_200_000})
+        ok = await client.post(f"{API}/proposal-001/versions", json={"content": "X" * 900_000})
+    assert resp.status_code == 413
+    assert "demasiado grande" in resp.json()["detail"]
+    assert ok.status_code == 200
+    assert create.await_count == 1   # la de 1,2 MB ni siquiera llegó a Firestore
+
+
+# ── Campos que solo escribe el servidor (RF11-D-013) ──
+
+_SERVER_ONLY = {
+    "userId": "otro-usuario", "id": "otro-id", "createdAt": "2000-01-01T00:00:00Z", "crmSync": {"status": "synced"},
+    "filePath": "../../etc/passwd", "downloadUrl": "http://x.example/malo.pdf",
+    "signedDocumentPath": "proposals/ajena/signed/x.pdf", "signedDocumentName": "falso.pdf", "signedDocumentUploadedAt": "2000-01-01T00:00:00Z",
+    "signedDocumentUrl": "http://x.example/falso.pdf", "hasSignedDocument": True,
+}
+
+
+async def test_put_ignores_the_fields_only_the_server_writes(client):
+    """RF11-D-013: antes un PUT podía ceder la propuesta a otro usuario o inventar la ruta del documento firmado."""
+    before = fake_proposal()
+    with (
+        patch(f"{REPO}.get", new_callable=AsyncMock, return_value=before),
+        patch(f"{REPO}.update", new_callable=AsyncMock, return_value=before) as update,
+        patch(f"{REPO}.create_version", new_callable=AsyncMock),
+    ):
+        resp = await client.put(f"{API}/proposal-001", json={"clientName": "Otra persona", "tags": ["a"], "structured_content": {"x": 1}, **_SERVER_ONLY})
+    assert resp.status_code == 200
+    assert update.await_args.args[1] == {"clientName": "Otra persona", "tags": ["a"], "structured_content": {"x": 1}}
+
+
+async def test_put_with_only_server_fields_changes_nothing(client):
+    before = fake_proposal()
+    with (
+        patch(f"{REPO}.get", new_callable=AsyncMock, return_value=before),
+        patch(f"{REPO}.update", new_callable=AsyncMock) as update,
+    ):
+        resp = await client.put(f"{API}/proposal-001", json={"userId": "otro-usuario", "signedDocumentPath": "x"})
+    assert resp.status_code == 200
+    update.assert_not_called()
+
+
+async def test_create_proposal_ignores_the_fields_only_the_server_writes(client):
+    async def _create(data, doc_id=None):
+        return {**data, "id": doc_id}
+
+    with patch(f"{REPO}.create", new_callable=AsyncMock, side_effect=_create) as create:
+        resp = await client.post(API, json={"title": "T", **_SERVER_ONLY})
+    assert resp.status_code == 201
+    data = create.await_args.args[0]
+    assert data["userId"] == FAKE_USER_SUB   # el dueño es quien crea, no lo que mande el cliente
+    assert data["downloadUrl"] is None and data["filePath"] is None
+    for name in ("id", "createdAt", "crmSync", "signedDocumentPath", "signedDocumentName", "signedDocumentUploadedAt", "signedDocumentUrl", "hasSignedDocument"):
+        assert name not in data, name

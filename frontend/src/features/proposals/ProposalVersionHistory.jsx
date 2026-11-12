@@ -21,6 +21,20 @@ export function formatVersionDate(value, language) {
   return date.toLocaleString(LOCALES[language] || LOCALES.en, { dateStyle: "medium", timeStyle: "short" });
 }
 
+// Etiquetas que pone el servidor (en inglés) y mensajes de error: se muestran en el idioma de la interfaz.
+// Una etiqueta escrita por el usuario se muestra tal cual.
+export function versionLabelText(version, t) {
+  const label = version?.label || "";
+  const source = version?.source || "manual";
+  const numbered = /^Version (\d+)$/.exec(label);
+  if (numbered) return t("proposalVersions.labels.version").replace("{n}", numbered[1]);
+  const restored = /^Restored from v(\d+)$/.exec(label);
+  if (restored && source === "restore") return t("proposalVersions.labels.restoredFrom").replace("{n}", restored[1]);
+  const byLabel = { Initial: "initial", "Before restore": "beforeRestore", "Before regeneration": "beforeRegeneration", Generated: "generated" };
+  if (byLabel[label] && source === "auto") return t(`proposalVersions.labels.${byLabel[label]}`);
+  return label;
+}
+
 export function ProposalVersionHistory({ proposal, onClose, onRestored }) {
   const { t, language } = useI18n();
   const [versions, setVersions] = useState([]);
@@ -50,9 +64,13 @@ export function ProposalVersionHistory({ proposal, onClose, onRestored }) {
     loadVersions();
   }, [loadVersions]);
 
+  // El servidor responde en un solo idioma: se traduce según el código, no se muestra su texto.
   const errorFrom = (err, fallbackKey) => {
-    const detail = err?.response?.data?.detail;
-    return typeof detail === "string" && detail ? detail : t(fallbackKey);
+    const code = err?.response?.status;
+    if (code === 404) return t("proposalVersions.errors.notFound");
+    if (code === 409) return t("proposalVersions.restoreBlockedSigned");
+    if (code === 429) return t("proposalVersions.errors.rateLimited");
+    return t(fallbackKey);
   };
 
   const selectVersion = async (version) => {
@@ -158,7 +176,7 @@ export function ProposalVersionHistory({ proposal, onClose, onRestored }) {
                   }`}
                 >
                   <span className="flex items-center justify-between gap-2">
-                    <span className="font-semibold text-gray-900 dark:text-white">v{version.version} · {version.label}</span>
+                    <span className="font-semibold text-gray-900 dark:text-white">v{version.version} · {versionLabelText(version, t)}</span>
                     <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-600 dark:bg-slate-700 dark:text-slate-300">{sourceLabel(version.source)}</span>
                   </span>
                   <span className="mt-1 block text-slate-500 dark:text-slate-400">{formatVersionDate(version.createdAt, language)}</span>
