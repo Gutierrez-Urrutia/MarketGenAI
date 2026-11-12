@@ -14,6 +14,12 @@ SKIP_METHODS = ["OPTIONS"]
 
 def _infer_action(method: str, path: str) -> str:
     rules = [
+        # RF-VTA-06: antes caían en «created_proposal» / «deleted_proposal» (el orden importa: va primero).
+        # RF-VTA-11: guardar y restaurar versiones también caían en «created_proposal».
+        ("POST",  "/versions",              "restore",  "restored_proposal_version"),
+        ("POST",  "/versions",              "",         "saved_proposal_version"),
+        ("POST",  "/signed-document",       "",         "uploaded_signed_document"),
+        ("DELETE","/signed-document",       "",         "removed_signed_document"),
         ("PATCH", "/outreach/review-queue", "approve",  "approved_outreach_message"),
         ("PATCH", "/outreach/review-queue", "reject",   "rejected_outreach_message"),
         ("PATCH", "/outreach/review-queue", "regenerate","regenerated_outreach_message"),

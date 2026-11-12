@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import re
@@ -17,6 +18,7 @@ from docx.oxml.ns import qn
 from docx.shared import Pt, RGBColor
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import FileResponse, JSONResponse
+from jose import JWTError, jwt
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import LETTER
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
@@ -42,16 +44,22 @@ from app.schemas.proposal import (
     ProposalExportRequest,
     ProposalCreate,
     MAX_SIGNED_DOCUMENT_BYTES,
+    SIGNED_DOCUMENT_LINK_SECONDS,
     PROPOSAL_STATUS_VALUES,
     ProposalOut,
     ProposalStatus,
     ProposalUpdate,
     ProposalVersionCreate,
     ProposalVersionOut,
+    strip_server_only_fields,
+    VERSION_MAX_BYTES,
     SendToCrmRequest,
     SIGNED_DOCUMENT_EXTENSIONS,
+    SIGNED_DOCUMENT_MAGIC,
     invalid_status_detail,
+    public_proposal,
 )
+from app.services.auth_service import JWT_ALGORITHM
 from app.services.firestore_service import proposals_repo, jobs_repo, settings_repo
 from app.services import crm_service, deepseek_service
 from app.services.storage_service import storage_service
@@ -134,10 +142,18 @@ async def _apply_proposal_template(proposal: dict, options: dict, user: CurrentU
     from app.routers.templates import render_template_for_user
     from app.schemas.template import ApplyTemplateRequest
 
+    # El título, el cliente y el total pueden venir en esta solicitud y aún no estar guardados
+    # en la propuesta: la plantilla debe usar los mismos valores que el worker (RF07-D-002).
+    overrides = {
+        key: options[key]
+        for key in ("title", "clientName", "totalAmount")
+        if options.get(key) not in (None, "")
+    }
     applied = await render_template_for_user(
         template_id,
         ApplyTemplateRequest(proposalId=proposal["id"], variables=variables, language=options.get("language")),
         user,
+        proposal_overrides=overrides,
     )
     options["templateContent"] = applied.rendered
     options["commercialTerms"] = applied.commercialTerms
@@ -974,6 +990,7 @@ async def create_proposal(
     user: CurrentUser = Depends(get_current_user),
 ):
     data = body.model_dump(exclude_none=True)
+    strip_server_only_fields(data)   # RF-VTA-11: dueño, documento firmado, CRM, archivo e historial los escribe solo el servidor
 
     client_name = (
         data.get("clientName")
@@ -1063,6 +1080,7 @@ async def generate_proposal_draft(
     if extra:
         options.update(extra)
     options["userId"] = user.sub  # tras extra: el cliente no puede suplantarlo; el worker lo usa para recuperar el contexto RAG del usuario
+    options["versionAuthor"] = _version_author(user)  # RF-VTA-11: autor de las versiones que deja la generación (tampoco suplantable)
     await _apply_proposal_template(proposal, options, user)
 
     job = await jobs_repo.create_job(
@@ -1128,6 +1146,7 @@ async def generate_proposal_by_id(
     if body.model_extra:
         options.update(body.model_extra)
     options["userId"] = user.sub  # tras extra: el cliente no puede suplantarlo; el worker lo usa para recuperar el contexto RAG del usuario
+    options["versionAuthor"] = _version_author(user)  # RF-VTA-11: la regeneración deja el contenido anterior en el historial, a nombre de quien la pidió
     await _apply_proposal_template(proposal, options, user)
 
     job = await jobs_repo.create_job(
@@ -1206,6 +1225,7 @@ async def update_proposal(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="No fields to update."
         )
+    strip_server_only_fields(update_data)   # RF-VTA-11: dueño, documento firmado, CRM, archivo e historial los escribe solo el servidor
     # El estado comercial solo cambia por PATCH /status (transiciones + auditoría).
     # `status` (ciclo de generación con IA) sí pasa: el frontend lo usa.
     update_data.pop("proposal_status", None)
@@ -1255,11 +1275,13 @@ async def update_proposal_status(
     if outcome.get("error"):
         error = outcome["error"]
         raise HTTPException(status_code=error.status_code, detail=error.detail)
-    return outcome["proposal"]
+    return public_proposal(outcome["proposal"])
 
 
 @router.post("/{proposal_id}/signed-document", response_model=ProposalOut)
+@limiter.limit("20/minute")
 async def upload_signed_document(
+    request: Request,
     proposal_id: str,
     file: UploadFile = File(...),
     user: CurrentUser = Depends(get_current_user),
@@ -1282,24 +1304,32 @@ async def upload_signed_document(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"El archivo supera el tamaño máximo permitido ({MAX_SIGNED_DOCUMENT_BYTES // (1024 * 1024)} MB).",
         )
+    # La extensión la elige quien sube el archivo: se comprueba también que el contenido sea un PDF.
+    if not data.lstrip(b"\x00\t\n\r\x0c ").startswith(SIGNED_DOCUMENT_MAGIC):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="El archivo no es un PDF válido. Adjunta el documento firmado en formato PDF.",
+        )
 
     old_path = proposal.get("signedDocumentPath")
     if old_path:
         await storage_service.delete_file(old_path)
 
     storage_path = storage_service.proposal_path(proposal_id, f"signed/{uuid.uuid4().hex}.pdf")
-    url = await storage_service.upload_bytes(data, storage_path, "application/pdf")
+    await storage_service.upload_bytes(data, storage_path, "application/pdf")
 
+    # No se guarda la URL del archivo: abriría el documento sin sesión. Se pide un enlace temporal aparte.
     return await proposals_repo.update(proposal_id, {
         "signedDocumentPath": storage_path,
-        "signedDocumentUrl": url,
+        "signedDocumentUrl": None,
         "signedDocumentName": filename,
         "signedDocumentUploadedAt": datetime.now(timezone.utc).isoformat(),
     })
 
 
 @router.delete("/{proposal_id}/signed-document", response_model=ProposalOut)
-async def delete_signed_document(proposal_id: str, user: CurrentUser = Depends(get_current_user)):
+@limiter.limit("20/minute")
+async def delete_signed_document(request: Request, proposal_id: str, user: CurrentUser = Depends(get_current_user)):
     """Quita el documento firmado adjunto, para corregir un archivo subido por
     error antes de reemplazarlo. No se permite en una propuesta ya `firmada`:
     eso la dejaría firmada sin el adjunto que sustenta ese estado — para
@@ -1322,10 +1352,66 @@ async def delete_signed_document(proposal_id: str, user: CurrentUser = Depends(g
     })
 
 
+@router.get("/{proposal_id}/signed-document/link")
+@limiter.limit("60/minute")
+async def get_signed_document_link(
+    request: Request,
+    proposal_id: str,
+    user: CurrentUser = Depends(get_current_user),
+):
+    """Enlace temporal (SIGNED_DOCUMENT_LINK_SECONDS) para ver el documento firmado. Solo el dueño lo pide;
+    el enlace no sirve para otra propuesta ni después de reemplazar el documento."""
+    proposal = await _get_proposal_for_user(proposal_id, user.sub)
+    storage_path = proposal.get("signedDocumentPath")
+    if not storage_path:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Esta propuesta no tiene documento firmado.")
+    if (Path("generated_files") / storage_path).is_file():
+        # Respaldo local (Supabase no disponible al subir): enlace propio con token firmado.
+        token = jwt.encode(
+            {"typ": "signed-document", "pid": proposal_id, "path": storage_path,
+             "exp": datetime.now(timezone.utc) + timedelta(seconds=SIGNED_DOCUMENT_LINK_SECONDS)},
+            settings.app_secret_key, algorithm=JWT_ALGORITHM,
+        )
+        url = f"/api/v1/proposals/{proposal_id}/signed-document/file?token={token}"
+    else:
+        url = await storage_service.get_signed_url(storage_path, SIGNED_DOCUMENT_LINK_SECONDS)
+        if url.startswith("/api/v1/assets/local/"):   # no pudo firmar: ese respaldo abre sin sesión
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="No se pudo generar el enlace al documento firmado.")
+    return {"url": url, "expiresIn": SIGNED_DOCUMENT_LINK_SECONDS, "name": proposal.get("signedDocumentName")}
+
+
+@router.get("/{proposal_id}/signed-document/file")
+async def download_signed_document(proposal_id: str, token: str = Query(...)):
+    """Sirve el documento firmado guardado en el respaldo local a quien traiga un enlace temporal válido."""
+    invalid = HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Enlace inválido o vencido.")
+    try:
+        claims = jwt.decode(token, settings.app_secret_key, algorithms=[JWT_ALGORITHM])
+    except JWTError:
+        raise invalid
+    if claims.get("typ") != "signed-document" or claims.get("pid") != proposal_id:
+        raise invalid
+    proposal = await proposals_repo.get(proposal_id)
+    if not proposal or proposal.get("signedDocumentPath") != claims.get("path"):
+        raise invalid   # el documento se reemplazó o se quitó: el enlace viejo ya no sirve
+    base = Path("generated_files").resolve()
+    target = (base / claims["path"]).resolve()
+    if not str(target).startswith(str(base)) or not target.is_file():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found.")
+    return FileResponse(str(target), media_type="application/pdf", content_disposition_type="inline")
+
+
 @router.delete("/{proposal_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_proposal(proposal_id: str, user: CurrentUser = Depends(get_current_user)):
-    await _get_proposal_for_user(proposal_id, user.sub)
+    proposal = await _get_proposal_for_user(proposal_id, user.sub)
+    # Que no quede en el almacenamiento un contrato firmado sin propuesta.
+    if proposal.get("signedDocumentPath"):
+        await storage_service.delete_file(proposal["signedDocumentPath"])
     await proposals_repo.delete(proposal_id)
+    # RF-VTA-11: Firestore no borra la subcolección con el documento; que no queden versiones de una propuesta eliminada.
+    try:
+        await proposals_repo.delete_versions(proposal_id)
+    except Exception:
+        logger.warning("No se pudieron borrar las versiones de la propuesta %s", proposal_id, exc_info=True)
     return None
 
 
@@ -1339,6 +1425,22 @@ def _version_author(user: CurrentUser) -> dict:
 
 # RF-VTA-11: campos pesados que solo viajan en el detalle de una versión.
 _VERSION_HEAVY_FIELDS = ("content", "structured_content")
+
+
+async def _save_version(proposal_id: str, snapshot: dict, **kwargs):
+    """Guarda una versión; si Firestore sigue abortando la transacción tras los reintentos (muchos guardados
+    simultáneos de la misma propuesta) responde 503 con instrucción de reintentar, no un 500 genérico."""
+    try:
+        return await proposals_repo.create_version(proposal_id, snapshot, **kwargs)
+    except ValueError as exc:
+        if "Failed to commit transaction" not in str(exc):
+            raise
+        logger.warning("Versión de %s no guardada por contención de transacciones", proposal_id)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="No se pudo guardar la versión en este momento (se estaban guardando otras). Inténtalo de nuevo.",
+            headers={"Retry-After": "1"},
+        )
 
 
 @router.get("/{proposal_id}/versions")
@@ -1370,7 +1472,9 @@ async def get_proposal_version(
 
 
 @router.post("/{proposal_id}/versions", response_model=ProposalVersionOut)
+@limiter.limit("20/minute")
 async def create_proposal_version(
+    request: Request,
     proposal_id: str,
     body: ProposalVersionCreate,
     user: CurrentUser = Depends(get_current_user),
@@ -1383,7 +1487,12 @@ async def create_proposal_version(
         snapshot["title"] = body.title
     if body.content is not None:
         snapshot["content"] = body.content
-    version = await proposals_repo.create_version(
+    if len(json.dumps(snapshot, default=str, ensure_ascii=False).encode("utf-8")) > VERSION_MAX_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="El contenido es demasiado grande para guardarlo como versión (máximo 1 MB).",
+        )
+    version = await _save_version(
         proposal_id, snapshot, source="manual", label=body.label, **_version_author(user)
     )
     if version is None:
@@ -1392,7 +1501,9 @@ async def create_proposal_version(
 
 
 @router.post("/{proposal_id}/versions/{version_id}/restore", response_model=ProposalOut)
+@limiter.limit("20/minute")
 async def restore_proposal_version(
+    request: Request,
     proposal_id: str,
     version_id: str,
     user: CurrentUser = Depends(get_current_user),
@@ -1411,18 +1522,20 @@ async def restore_proposal_version(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Version not found.")
 
     author = _version_author(user)
-    await proposals_repo.create_version(
+    # Sin el estado actual guardado no se pisa nada: si falla, el 503 llega antes de tocar la propuesta.
+    await _save_version(
         proposal_id, proposals_repo.version_snapshot(proposal),
         source="auto", label="Before restore", skip_if_unchanged=True, **author,
     )
-    restored = {
-        f: version[f] for f in proposals_repo.VERSION_FIELDS if version.get(f) is not None
-    }
+    restored = proposals_repo.version_restore_fields(version)
     updated = await proposals_repo.update(proposal_id, restored)
-    await proposals_repo.create_version(
-        proposal_id, proposals_repo.version_snapshot(updated),
-        source="restore", label=f"Restored from v{version.get('version')}", **author,
-    )
+    try:
+        await proposals_repo.create_version(
+            proposal_id, proposals_repo.version_snapshot(updated),
+            source="restore", label=f"Restored from v{version.get('version')}", **author,
+        )
+    except Exception:
+        logger.warning("No se pudo registrar la restauración de %s", proposal_id, exc_info=True)
     return updated
 
 
@@ -1553,7 +1666,7 @@ async def send_proposal_to_crm(
         await _record_crm_failure(proposal_id, existing_sync, provider, detail, partial)
         raise HTTPException(status_code=502, detail=detail) from exc
 
-    return await proposals_repo.update(proposal_id, {"crmSync": crm_sync})
+    return public_proposal(await proposals_repo.update(proposal_id, {"crmSync": crm_sync}))
 
 
 @router.post("/{proposal_id}/export")

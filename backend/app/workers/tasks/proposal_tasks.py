@@ -401,6 +401,23 @@ REQUIRED STRUCTURE:
     }
 
 
+async def _save_generation_version(
+    proposal_id: str, label: str, author: Dict[str, Any], *, require_content: bool = False
+) -> None:
+    """RF-VTA-11: deja constancia en el historial del contenido de la propuesta (antes o después de
+    generar). Un fallo aquí no debe impedir la generación."""
+    try:
+        current = await proposals_repo.get(proposal_id)
+        if not current or (require_content and not (current.get("content") or "").strip()):
+            return
+        await proposals_repo.create_version(
+            proposal_id, proposals_repo.version_snapshot(current),
+            source="auto", label=label, skip_if_unchanged=True, **author,
+        )
+    except Exception:
+        logger.warning("No se pudo guardar la versión «%s» de %s", label, proposal_id, exc_info=True)
+
+
 async def generate_proposal_now(
     job_id: str,
     proposal_id: str,
@@ -457,6 +474,12 @@ async def generate_proposal_now(
 
     await jobs_repo.update_progress(job_id, 80, "processing")
 
+    # RF-VTA-11: regenerar reemplaza el contenido; antes de pisarlo se deja en el historial.
+    author = options.get("versionAuthor") or {
+        "author_id": options.get("userId") or "system", "author_name": None, "author_email": None,
+    }
+    await _save_generation_version(proposal_id, "Before regeneration", author, require_content=True)
+
     updated = await proposals_repo.update(proposal_id, {
         "content": generated["content"],
         "downloadUrl": generated["downloadUrl"],
@@ -466,6 +489,8 @@ async def generate_proposal_now(
         "language": language,
         "customPrompt": custom_prompt,
     })
+
+    await _save_generation_version(proposal_id, "Generated", author)
 
     await jobs_repo.complete_job(job_id, {
         "proposalId": proposal_id,

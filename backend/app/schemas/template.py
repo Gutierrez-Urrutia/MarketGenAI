@@ -6,6 +6,9 @@ from enum import Enum
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, Field
 
+# Límite de texto de una plantilla y de sus condiciones comerciales (RF-VTA-07, CP-131).
+MAX_TEMPLATE_TEXT = 50_000
+
 
 class TemplateType(str, Enum):
     book_concept = "book_concept"
@@ -47,25 +50,25 @@ class TemplateCreate(BaseModel):
     name:        str = Field(..., min_length=2, max_length=200)
     type:        TemplateType
     description: Optional[str] = None
-    content:     str           # The template body (may contain {placeholders})
+    content:     str = Field(..., max_length=MAX_TEMPLATE_TEXT)  # The template body (may contain {placeholders})
     variables:   List[str] = []   # e.g. ["client_name", "product"]
     isPublic:    bool = False
     serviceType: ServiceType = ServiceType.other
     industry:    Industry = Industry.general
     # Bloque de condiciones comerciales; en plantillas de propuesta, si llega vacío
     # se guarda el texto base (RF-VTA-07). Admite {variables}.
-    commercialTerms: Optional[str] = None
+    commercialTerms: Optional[str] = Field(None, max_length=MAX_TEMPLATE_TEXT)
 
 
 class TemplateUpdate(BaseModel):
     name:        Optional[str] = Field(None, min_length=2, max_length=200)
     description: Optional[str] = None
-    content:     Optional[str] = None
+    content:     Optional[str] = Field(None, max_length=MAX_TEMPLATE_TEXT)
     variables:   Optional[List[str]] = None
     isPublic:    Optional[bool] = None
     serviceType: Optional[ServiceType] = None
     industry:    Optional[Industry] = None
-    commercialTerms: Optional[str] = None
+    commercialTerms: Optional[str] = Field(None, max_length=MAX_TEMPLATE_TEXT)
 
 
 class TemplateOut(BaseModel):

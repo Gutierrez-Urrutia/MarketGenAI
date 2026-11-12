@@ -3,13 +3,11 @@
 Plantillas de propuesta (RF-VTA-07): se clasifican por línea de servicio e industria,
 traen un bloque de condiciones comerciales y, al aplicarse, completan las variables
 estándar con datos de la propuesta y del cliente."""
-from __future__ import annotations
-
 from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Optional
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from docx import Document
 
 try:
@@ -17,6 +15,7 @@ try:
 except ImportError:  # pragma: no cover - dependency is declared in requirements.txt
     PdfReader = None
 
+from app.core.rate_limit import limiter
 from app.dependencies.auth import CurrentUser, get_current_user
 from app.routers.customers import _get_customer_for_user
 from app.routers.proposals import (
@@ -61,9 +60,13 @@ def _matches(template: dict, service_type: Optional[ServiceType], industry: Opti
     return True
 
 
-async def _variables_from_sources(body: ApplyTemplateRequest, template: dict, user: CurrentUser) -> dict[str, Any]:
+async def _variables_from_sources(
+    body: ApplyTemplateRequest, template: dict, user: CurrentUser, proposal_overrides: Optional[dict] = None,
+) -> dict[str, Any]:
     """Variables estándar desde la propuesta y el cliente. El cliente del CRM pisa la
-    copia que guarda la propuesta, y los valores manuales de `body.variables` pisan todo."""
+    copia que guarda la propuesta, y los valores manuales de `body.variables` pisan todo.
+    `proposal_overrides` son datos de la solicitud de generar que aún no están guardados en
+    la propuesta (título, cliente, total) y tienen prioridad sobre los guardados."""
     values: dict[str, Any] = {}
     language = body.language
     service_type = template["serviceType"]
@@ -71,6 +74,7 @@ async def _variables_from_sources(body: ApplyTemplateRequest, template: dict, us
 
     if body.proposalId:
         proposal = await _get_proposal_for_user(body.proposalId, user.sub)
+        proposal = {**proposal, **(proposal_overrides or {})}
         cover = _proposal_cover_fields(proposal)
         language = language or cover["language"]
         service_type = proposal.get("serviceType") or service_type
@@ -147,9 +151,17 @@ def _extract_template_content(filename: str, content: bytes) -> str:
     if extension in {".txt", ".md", ".html", ".htm"}:
         return _decode_text_file(content)
     if extension == ".docx":
-        return _extract_docx_text(content)
+        try:
+            return _extract_docx_text(content)
+        except Exception:
+            raise HTTPException(status_code=400, detail="Could not read this Word file. Make sure it is a valid .docx document.")
     if extension == ".pdf":
-        return _extract_pdf_text(content)
+        try:
+            return _extract_pdf_text(content)
+        except HTTPException:
+            raise
+        except Exception:
+            raise HTTPException(status_code=400, detail="Could not read this PDF file. Make sure it is a valid, unprotected PDF.")
     supported = ", ".join(sorted(SUPPORTED_UPLOAD_EXTENSIONS))
     raise HTTPException(status_code=400, detail=f"Unsupported template file type. Supported formats: {supported}.")
 
@@ -160,7 +172,9 @@ def _template_name_from_filename(filename: str) -> str:
 
 
 @router.post("/extract")
+@limiter.limit("20/minute")
 async def extract_template_file(
+    request: Request,
     file: UploadFile = File(...),
     user: CurrentUser = Depends(get_current_user),
 ):
@@ -224,7 +238,9 @@ async def list_templates(
 
 # ── Create ────────────────────────────────────────────────────────────────────
 @router.post("", response_model=TemplateOut, status_code=201)
+@limiter.limit("20/minute")
 async def create_template(
+    request: Request,
     body: TemplateCreate,
     user: CurrentUser = Depends(get_current_user),
 ):
@@ -247,7 +263,9 @@ async def get_template(
 
 # ── Update ────────────────────────────────────────────────────────────────────
 @router.put("/{template_id}", response_model=TemplateOut)
+@limiter.limit("20/minute")
 async def update_template(
+    request:     Request,
     template_id: str,
     body:        TemplateUpdate,
     user:        CurrentUser = Depends(get_current_user),
@@ -271,7 +289,9 @@ async def update_template(
 
 # ── Delete ────────────────────────────────────────────────────────────────────
 @router.delete("/{template_id}", status_code=204)
+@limiter.limit("20/minute")
 async def delete_template(
+    request:     Request,
     template_id: str,
     user:        CurrentUser = Depends(get_current_user),
 ):
@@ -285,7 +305,9 @@ async def delete_template(
 
 # ── Apply template (fill in variables) ───────────────────────────────────────
 @router.post("/{template_id}/apply", response_model=ApplyTemplateResponse)
+@limiter.limit("20/minute")
 async def apply_template(
+    request:     Request,
     template_id: str,
     body:        ApplyTemplateRequest,
     user:        CurrentUser = Depends(get_current_user),
@@ -298,11 +320,13 @@ async def apply_template(
     return await render_template_for_user(template_id, body, user)
 
 
-async def render_template_for_user(template_id: str, body: ApplyTemplateRequest, user: CurrentUser) -> ApplyTemplateResponse:
+async def render_template_for_user(
+    template_id: str, body: ApplyTemplateRequest, user: CurrentUser, proposal_overrides: Optional[dict] = None,
+) -> ApplyTemplateResponse:
     """Aplica la plantilla (con control de acceso) y suma un uso. También lo usa la
     generación de propuestas (routers/proposals.py) cuando recibe `templateId`."""
     template = await _get_template_for_user(template_id, user)
-    values = await _variables_from_sources(body, template, user)
+    values = await _variables_from_sources(body, template, user, proposal_overrides)
     rendered, missing = render_placeholders(template["content"], values)
     terms, missing_terms = render_placeholders(template.get("commercialTerms"), values)
     # Increment usage counter

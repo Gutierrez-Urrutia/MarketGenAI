@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import { FileCheck2, Loader2, UploadCloud } from "lucide-react";
-import { removeSignedDocument, uploadSignedDocument } from "@/api/proposalsApi";
+import { getSignedDocumentLink, removeSignedDocument, uploadSignedDocument } from "@/api/proposalsApi";
 import { useI18n } from "@/hooks/useI18n";
 
 // RF-VTA-06 (etapa diferida): adjuntar el documento firmado a la propuesta, sin
@@ -15,7 +15,8 @@ export function SignedDocumentAttachment({ proposal, onChange }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
-  const documentUrl = proposal?.signedDocumentUrl;
+  // La URL del archivo no viaja con la propuesta (abriría el documento sin sesión): solo la bandera.
+  const hasDocument = Boolean(proposal?.hasSignedDocument);
   const documentName = proposal?.signedDocumentName;
   const canRemove = proposal?.proposal_status !== "firmada";
 
@@ -36,6 +37,17 @@ export function SignedDocumentAttachment({ proposal, onChange }) {
     } finally {
       setBusy(false);
       if (inputRef.current) inputRef.current.value = "";
+    }
+  };
+
+  const handleView = async () => {
+    setError("");
+    try {
+      const { data } = await getSignedDocumentLink(proposal.id);
+      window.open(data.url, "_blank", "noopener,noreferrer");
+    } catch (err) {
+      console.error(err);
+      setError(t("signedDocument.errors.generic"));
     }
   };
 
@@ -64,11 +76,11 @@ export function SignedDocumentAttachment({ proposal, onChange }) {
         onChange={(event) => handleFile(event.target.files)}
       />
 
-      {documentUrl ? (
+      {hasDocument ? (
         <>
           <button
             type="button"
-            onClick={() => window.open(documentUrl, "_blank", "noopener,noreferrer")}
+            onClick={handleView}
             className="inline-flex items-center gap-1 text-emerald-700 hover:underline dark:text-emerald-400"
           >
             <FileCheck2 size={14} />
