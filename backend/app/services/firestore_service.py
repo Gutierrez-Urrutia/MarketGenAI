@@ -19,12 +19,15 @@ Collections used by this project:
   - leads/{leadId}
   - contacts/{contactId}
   - outreach_emails/{emailId}
+  - outreach_send_counters/{hash(userId, day)}   (SMTP sends per user and UTC day)
+  - do_not_contact/{hash(userId, kind, value)}   (addresses / domains never to email)
   - pipeline_runs/{runId}
   - knowledge_documents/{docId}   (RAG: propuestas históricas cargadas por el usuario)
   - knowledge_chunks/{chunkId}    (RAG: fragmentos de cada documento)
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import uuid
@@ -46,9 +49,10 @@ from app.core.pipeline_constants import (
     COMPOSING_STALE_SECONDS,
     EMAIL_RECOMPUTABLE_STATUSES,
     OUTREACH_EMAILS_PER_LEAD_LIMIT,
+    SEND_LOCK_STALE_FACTOR,
 )
 from app.schemas.contact import ContactCreate
-from app.schemas.outreach_email import ACTIVE_EMAIL_STATUSES, plan_email_transition
+from app.schemas.outreach_email import ACTIVE_EMAIL_STATUSES, plan_email_transition, plan_send_lock
 from app.schemas.proposal import (
     PROPOSAL_STATUS_VALUES,
     StatusChangeError,
@@ -966,11 +970,15 @@ class OutreachEmailsRepo(FirestoreRepo):
             "last_decision_by": user_id,
             "last_decision_at": now,
         }
-        prefix = {"approve": "approved", "reject": "rejected", "mark_sent": "sent_marked"}.get(action)
+        prefix = {"approve": "approved", "reject": "rejected", "mark_sent": "sent_marked", "send": "sent"}.get(action)
         if prefix:
             fields[f"{prefix}_by"] = user_id
             fields[f"{prefix}_by_name"] = user_name
-            fields["sent_at" if action == "mark_sent" else f"{prefix}_at"] = now
+            fields["sent_at" if action in ("mark_sent", "send") else f"{prefix}_at"] = now
+        if action == "mark_sent":
+            fields["send_method"] = "manual"
+        elif action == "send":
+            fields["send_method"] = "smtp"
         entry = {
             "action": action,
             "at": now,
@@ -982,10 +990,19 @@ class OutreachEmailsRepo(FirestoreRepo):
         }
         return fields, entry
 
+    @staticmethod
+    def send_lock_stale_after() -> timedelta:
+        """Age after which a (not uncertain) send lock is presumed dead."""
+        return timedelta(seconds=float(settings.smtp_timeout_seconds) * SEND_LOCK_STALE_FACTOR)
+
+    @staticmethod
+    def _without_deleted(doc: Dict[str, Any]) -> Dict[str, Any]:
+        return {k: v for k, v in doc.items() if v is not firestore.DELETE_FIELD}
+
     async def transition(
         self, email_id: str, user_id: str, user_name: Optional[str], action: str, now: datetime,
         extra: Optional[Dict[str, Any]] = None, history_extra: Optional[Dict[str, Any]] = None,
-        expected_from: Optional[str] = None,
+        expected_from: Optional[str] = None, lock_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Apply `action` inside a transaction that re-reads the email, so two
         decisions at once never both apply. With `expected_from` (the status
@@ -993,7 +1010,13 @@ class OutreachEmailsRepo(FirestoreRepo):
         invalid_email_transition and nothing is written. Appends the decision
         to `history`. Returns {"ok", "code", "from_status", "to_status",
         "email"}: `email` is the document after the write (or as read, when
-        refused)."""
+        refused).
+
+        The send lock (plan_send_lock) is checked in the same transaction: a
+        send running now refuses mark_sent / reject with send_in_progress; an
+        uncertain or stale lock is cleared by them (mark_sent records the last
+        send error in its history entry). `send` itself is only recorded by the
+        holder of the lock (`lock_id`); otherwise send_state_changed."""
         ref = self._doc(email_id)
         transaction = self.db.transaction()
 
@@ -1006,16 +1029,196 @@ class OutreachEmailsRepo(FirestoreRepo):
                 plan = {**plan, "ok": False, "code": "invalid_email_transition", "to_status": None}
             if not plan["ok"]:
                 return {**plan, "email": email}
+            lock_fields: Dict[str, Any] = {}
+            lock_history: Dict[str, Any] = {}
+            if action == "send":
+                if ((email.get("send_lock") or {}).get("id")) != lock_id or lock_id is None:
+                    return {**plan, "ok": False, "code": "send_state_changed", "to_status": None, "email": email}
+                lock_fields = {"send_lock": firestore.DELETE_FIELD, "last_send_error": firestore.DELETE_FIELD}
+            else:
+                lock_plan = plan_send_lock(email, now, action, self.send_lock_stale_after())
+                if not lock_plan["ok"]:
+                    return {**plan, "ok": False, "code": lock_plan["code"], "to_status": None, "email": email}
+                if lock_plan["clear_lock"]:
+                    lock_fields = {"send_lock": firestore.DELETE_FIELD}
+                last_error = (email.get("last_send_error") or {}).get("code")
+                if action in ("mark_sent", "reject") and last_error:
+                    lock_history = {"send_error": last_error}
             fields, entry = self.transition_fields(
-                action, plan["from_status"], plan["to_status"], user_id, user_name, now, extra, history_extra,
+                action, plan["from_status"], plan["to_status"], user_id, user_name, now,
+                {**(extra or {}), **lock_fields}, {**(history_extra or {}), **lock_history},
             )
             txn.update(ref, {**fields, "history": firestore.ArrayUnion([entry]), "updatedAt": now})
-            updated = {
+            updated = self._without_deleted({
                 **email, **fields, "history": [*(email.get("history") or []), entry], "updatedAt": now,
-            }
+            })
             return {**plan, "email": updated}
 
         return await _txn(transaction)
+
+    async def claim_send(
+        self, email_id: str, user_id: str, lock_id: str, message_id: str, now: datetime,
+        daily_limit: int, force_retry: bool = False,
+    ) -> Dict[str, Any]:
+        """Take the email's send lock and one slot of today's quota, in one
+        transaction that re-reads both (two clicks / two tabs: exactly one
+        wins). Refusals: email_not_found, forbidden, invalid_email_transition
+        (not approved), send_in_progress / send_uncertain (plan_send_lock),
+        daily_limit_reached. The email keeps a Message-ID from an earlier
+        attempt (a retry reuses it), else gets `message_id`. Returns {"ok",
+        "code", "email", "message_id", "day"}."""
+        ref = self._doc(email_id)
+        day = OutreachSendCountersRepo.day_of(now)
+        counter_ref = outreach_send_counters_repo._doc(OutreachSendCountersRepo.doc_id_for(user_id, day))
+        transaction = self.db.transaction()
+
+        @firestore.async_transactional
+        async def _txn(txn):
+            snap = await ref.get(transaction=txn)
+            email = snap.to_dict() if snap.exists else None
+            counter_snap = await counter_ref.get(transaction=txn)
+            counter = counter_snap.to_dict() if counter_snap.exists else None
+
+            def refuse(code: str) -> Dict[str, Any]:
+                return {"ok": False, "code": code, "email": email, "message_id": None, "day": day}
+
+            plan = plan_email_transition(email, user_id, "send")
+            if not plan["ok"]:
+                return refuse(plan["code"])
+            lock_plan = plan_send_lock(email, now, "send", self.send_lock_stale_after(), force_retry)
+            if not lock_plan["ok"]:
+                return refuse(lock_plan["code"])
+            count = int((counter or {}).get("count") or 0)
+            if count >= daily_limit:
+                return refuse("daily_limit_reached")
+            msg_id = email.get("smtp_message_id") or message_id
+            fields = {
+                "send_lock": {"id": lock_id, "at": now, "uncertain": False},
+                "smtp_message_id": msg_id,
+                "send_attempts": int(email.get("send_attempts") or 0) + 1,
+                "updatedAt": now,
+            }
+            txn.update(ref, fields)
+            txn.set(counter_ref, {
+                "id": counter_ref.id, "user_id": user_id, "day": day, "count": count + 1, "updatedAt": now,
+            })
+            return {"ok": True, "code": None, "email": {**email, **fields}, "message_id": msg_id, "day": day}
+
+        return await _txn(transaction)
+
+    async def release_send(
+        self, email_id: str, user_id: str, lock_id: str, now: datetime, error_code: str, uncertain: bool,
+        day: str,
+    ) -> Optional[Dict[str, Any]]:
+        """After a failed send, only if `lock_id` still holds the lock: record
+        `last_send_error`. A safe failure (nothing was sent) frees the lock and
+        gives the quota slot back; an uncertain one keeps the lock, marked
+        `uncertain`, and keeps the slot used. Returns the email afterwards."""
+        ref = self._doc(email_id)
+        counter_ref = outreach_send_counters_repo._doc(OutreachSendCountersRepo.doc_id_for(user_id, day))
+        transaction = self.db.transaction()
+
+        @firestore.async_transactional
+        async def _txn(txn):
+            snap = await ref.get(transaction=txn)
+            email = snap.to_dict() if snap.exists else None
+            counter_snap = await counter_ref.get(transaction=txn)
+            counter = counter_snap.to_dict() if counter_snap.exists else None
+            if email is None or (email.get("send_lock") or {}).get("id") != lock_id:
+                return email
+            fields: Dict[str, Any] = {"last_send_error": {"code": error_code, "at": now}, "updatedAt": now}
+            if uncertain:
+                fields["send_lock"] = {**email["send_lock"], "uncertain": True}
+            else:
+                fields["send_lock"] = firestore.DELETE_FIELD
+            txn.update(ref, fields)
+            if not uncertain and counter:
+                txn.update(counter_ref, {"count": max(0, int(counter.get("count") or 0) - 1), "updatedAt": now})
+            return self._without_deleted({**email, **fields})
+
+        return await _txn(transaction)
+
+
+def _hashed_id(*parts: str) -> str:
+    """A document id from parts that may hold any character (and personal
+    data): sha256 of the parts, never the parts themselves."""
+    return hashlib.sha256("\x1f".join(parts).encode("utf-8")).hexdigest()
+
+
+class OutreachSendCountersRepo(FirestoreRepo):
+    """SMTP sends per user and UTC day (RF-VTA-16): one document per pair, so
+    the daily quota is a single read inside the claim transaction (no range
+    query, no index)."""
+
+    collection = "outreach_send_counters"
+
+    @staticmethod
+    def day_of(now: datetime) -> str:
+        return (now if now.tzinfo else now.replace(tzinfo=timezone.utc)).astimezone(timezone.utc).strftime("%Y-%m-%d")
+
+    @staticmethod
+    def doc_id_for(user_id: str, day: str) -> str:
+        return _hashed_id("send-counter", user_id, day)
+
+    async def count_for(self, user_id: str, now: datetime) -> int:
+        doc = await self.get(self.doc_id_for(user_id, self.day_of(now)))
+        if not doc or doc.get("user_id") != user_id:
+            return 0
+        return int(doc.get("count") or 0)
+
+
+class DoNotContactRepo(FirestoreRepo):
+    """Addresses and domains a user must never email (RF-VTA-16). One
+    document per (user, kind, value) with a hashed id, so the check before a
+    send is one or two direct reads (no query, no index)."""
+
+    collection = "do_not_contact"
+
+    @staticmethod
+    def normalize_email(value: Any) -> str:
+        return str(value or "").strip().lower()
+
+    @staticmethod
+    def normalize_domain(value: Any) -> str:
+        return str(value or "").strip().lower().lstrip("@").rstrip(".")
+
+    @staticmethod
+    def doc_id_for(user_id: str, kind: str, value: str) -> str:
+        return _hashed_id("do-not-contact", user_id, kind, value)
+
+    async def find_block(self, user_id: str, email: Any) -> Optional[Dict[str, Any]]:
+        """The entry blocking `email` (the address itself, or its domain)."""
+        address = self.normalize_email(email)
+        if not address:
+            return None
+        candidates = [("email", address)]
+        if "@" in address:
+            candidates.append(("domain", self.normalize_domain(address.rsplit("@", 1)[1])))
+        for kind, value in candidates:
+            entry = await self.get(self.doc_id_for(user_id, kind, value))
+            if entry and entry.get("user_id") == user_id:
+                return entry
+        return None
+
+    async def add(
+        self, user_id: str, kind: str, value: str, created_by: str, reason: Optional[str] = None,
+        source_email_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Add an entry; adding one that exists returns it unchanged."""
+        doc_id = self.doc_id_for(user_id, kind, value)
+        existing = await self.get(doc_id)
+        if existing and existing.get("user_id") == user_id:
+            return existing
+        return await self.create({
+            "user_id": user_id, "kind": kind, "value": value, "reason": reason,
+            "source_email_id": source_email_id, "created_by": created_by,
+        }, doc_id=doc_id)
+
+    async def list_by_user(self, user_id: str, limit: int = 500) -> List[Dict[str, Any]]:
+        items = await self.list(
+            filters=[("user_id", "==", user_id)], order_by="createdAt", order_direction="DESCENDING", limit=limit,
+        )
+        return [item for item in items if item.get("user_id") == user_id]
 
 
 class PipelineRunsRepo(FirestoreRepo):
@@ -1130,6 +1333,8 @@ pipeline_configs_repo = PipelineConfigsRepo()
 leads_repo            = LeadsRepo()
 contacts_repo         = ContactsRepo()
 outreach_emails_repo  = OutreachEmailsRepo()
+outreach_send_counters_repo = OutreachSendCountersRepo()
+do_not_contact_repo   = DoNotContactRepo()
 pipeline_runs_repo    = PipelineRunsRepo()
 pipeline_run_locks_repo = PipelineRunLocksRepo()
 knowledge_documents_repo = KnowledgeDocumentsRepo()

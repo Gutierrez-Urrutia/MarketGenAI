@@ -14,6 +14,10 @@ app.services.encryption_service before being persisted as
 `smtp_password_configured` boolean so the frontend can show "configured"
 without ever getting the secret back. hunter_api_key (Agente 2) gets the same
 treatment: `hunter_api_key_encrypted` / `hunter_api_key_configured`.
+`smtp_configured` / `smtp_missing_fields` tell whether the whole SMTP account
+is complete (smtp_service.smtp_config_problems — the rule the real send of
+prospecting emails applies), and POST /config/smtp/test checks it by logging
+in, without sending anything.
 """
 
 import asyncio
@@ -24,6 +28,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, sta
 
 from app.core import url_safety
 from app.core.pipeline_constants import (
+    OUTREACH_DAILY_SEND_LIMIT_DEFAULT,
     JSEARCH_DATE_POSTED_OPTIONS,
     JSEARCH_MAX_NUM_PAGES,
     RUN_CONSIDERED_DEAD_AFTER_SECONDS,
@@ -45,7 +50,7 @@ from app.schemas.pipeline import (
     PipelineRunStatus,
     SourceType,
 )
-from app.services import encryption_service, job_scout_service
+from app.services import encryption_service, job_scout_service, smtp_service
 from app.services.firestore_service import (
     new_id,
     now_utc,
@@ -76,6 +81,10 @@ def _default_config() -> Dict[str, Any]:
         "smtp_user": "",
         "sender_email": "",
         "sender_name": "",
+        # Real sending of prospecting emails (RF-VTA-16): off until the user
+        # switches it on (and the server's master switch is on too).
+        "outreach_real_send_enabled": False,
+        "outreach_daily_send_limit": OUTREACH_DAILY_SEND_LIMIT_DEFAULT,
         # Kept for the scheduled scan of RF-VTA-17; not shown in the UI.
         "scan_frequency_hours": 24,
         # Kept for RF-VTA-17; not shown in the UI and read by nothing today.
@@ -213,6 +222,9 @@ def _to_public(doc: Dict[str, Any], user_id: str) -> Dict[str, Any]:
     public = {**base, **doc}
     public["userId"] = user_id
     public["smtp_password_configured"] = bool(public.get("smtp_password_encrypted"))
+    public["smtp_missing_fields"] = smtp_service.smtp_config_problems(public)
+    public["smtp_configured"] = not public["smtp_missing_fields"]
+    public["outreach_real_send_server_enabled"] = smtp_service.server_send_enabled()
     public.pop("smtp_password_encrypted", None)
     public.pop("smtp_password", None)
     public["hunter_api_key_configured"] = bool(public.get("hunter_api_key_encrypted"))
@@ -289,6 +301,25 @@ async def update_config(
     await _get_or_create_doc(user.sub)
     doc = await pipeline_configs_repo.upsert_for_user(user.sub, payload)
     return _to_public(doc, user.sub)
+
+
+@router.post("/config/smtp/test")
+@limiter.limit("5/minute")
+async def test_smtp_connection(request: Request, user: CurrentUser = Depends(get_current_user)):
+    """Connect to the saved SMTP account, log in and NOOP — nothing is sent.
+    200 {"ok": true}; refusals in detail.code: 422 smtp_not_configured (+
+    missing) / smtp_host_blocked / smtp_host_unresolvable, 409
+    smtp_credentials_unreadable, 503 encryption_not_configured, 502
+    smtp_auth_failed / smtp_unavailable."""
+    doc = await pipeline_configs_repo.get_by_user(user.sub)
+    config = {**_default_config(), **(doc or {})}
+    try:
+        account = smtp_service.require_account(config)
+        password = smtp_service.decrypt_password(config)
+        await smtp_service.check_connection(account, password)
+    except smtp_service.SmtpError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from None
+    return {"ok": True}
 
 
 @router.put("/config/keywords")

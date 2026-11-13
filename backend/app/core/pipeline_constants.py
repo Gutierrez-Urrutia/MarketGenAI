@@ -208,6 +208,27 @@ OUTREACH_EMAILS_PER_LEAD_LIMIT = 200
 OUTREACH_EMAIL_LANGUAGE = "en"
 OUTREACH_EMAIL_LANGUAGES = ("en", "es", "pt")
 
+# ── Real sending of prospecting emails by SMTP (RF-VTA-16) ──────────────────
+# Opt-out line the server appends to every email it sends, in the email's
+# language. Never written by the model. PROVISIONAL TEXT: NoonDalton must
+# approve the final wording. It promises nothing the system does not do (there
+# is no reply detection: a person reads the reply and adds the address to the
+# do-not-contact list).
+OUTREACH_UNSUBSCRIBE_LINE = {
+    "en": "If you would prefer not to receive further emails, reply to this message and we will make a note of it.",
+    "es": "Si prefiere no recibir más correos, responda a este mensaje y lo anotaremos.",
+    "pt": "Se preferir não receber mais e-mails, responda a esta mensagem e tomaremos nota.",
+}
+assert set(OUTREACH_UNSUBSCRIBE_LINE) == set(OUTREACH_EMAIL_LANGUAGES)
+# Emails one user may send by SMTP per UTC day: default and server cap.
+OUTREACH_DAILY_SEND_LIMIT_DEFAULT = 50
+OUTREACH_DAILY_SEND_LIMIT_MAX = 100
+# slowapi limit of POST /outreach-emails/{id}/send, per client address.
+OUTREACH_SEND_RATE_LIMIT = "10/minute"
+# A send lock older than this many SMTP timeouts is presumed dead (the process
+# died mid-send) and no longer blocks — unless it is `uncertain`.
+SEND_LOCK_STALE_FACTOR = 2
+
 # ── What NoonDalton sells ───────────────────────────────────────────────────
 # One source for the relevance prompt of Agente 1 (RF14-D-005) and the
 # prospecting email of Agente 3 (RF-VTA-16). Fixed here on purpose: the

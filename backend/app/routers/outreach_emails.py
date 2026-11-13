@@ -2,25 +2,35 @@
 
 POST /outreach-emails writes an email for one contact of one lead; the review
 actions approve, reject and mark it as sent (`mark-sent` is only a mark —
-nothing is sent from here) and regenerate it while pending. Every route
-checks that the email / lead is the caller's: 404 when it does not exist,
-403 when it is someone else's. Refusals carry a code in `detail.code`.
+nothing is sent by it) and regenerate it while pending. POST /{id}/send
+delivers an approved email by SMTP with the user's account, only with both
+real-send switches on (OUTREACH_REAL_SEND_ENABLED and the user's own); GET
+/send-status says whether that is possible, and /do-not-contact holds the
+addresses and domains never to email. Every route checks that the email /
+lead is the caller's: 404 when it does not exist, 403 when it is someone
+else's. Refusals carry a code in `detail.code`.
 """
 # No `from __future__ import annotations` here: @limiter.limit wraps the
 # endpoint, and FastAPI could not resolve a string annotation of the body
 # model through the wrapper — same as routers/leads.py.
 from typing import Optional
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, Response, status
 
+from app.core.pipeline_constants import OUTREACH_SEND_RATE_LIMIT
 from app.core.rate_limit import limiter
 from app.dependencies.auth import CurrentUser, get_current_user
 from app.schemas.outreach_email import (
+    DoNotContactCreate,
+    DoNotContactEntry,
+    DoNotContactListResponse,
     EmailStatus,
     OutreachEmailCreate,
     OutreachEmailListResponse,
     OutreachEmailRegenerate,
     OutreachEmailResponse,
+    OutreachEmailSend,
+    SendStatusResponse,
 )
 from app.services import outreach_email_service
 from app.services.outreach_email_service import OutreachEmailError
@@ -71,6 +81,43 @@ async def list_outreach_emails(
     return OutreachEmailListResponse(items=items, total=len(items))
 
 
+@router.get("/send-status", response_model=SendStatusResponse)
+async def get_send_status(user: CurrentUser = Depends(get_current_user)):
+    """Whether «Enviar» can be used: account complete (and what is missing),
+    the server's and the user's switches, today's quota. No secret in it."""
+    return await outreach_email_service.get_service().send_status(user.sub)
+
+
+@router.get("/do-not-contact", response_model=DoNotContactListResponse)
+async def list_do_not_contact(user: CurrentUser = Depends(get_current_user)):
+    items = await outreach_email_service.get_service().list_do_not_contact(user.sub)
+    return DoNotContactListResponse(items=items, total=len(items))
+
+
+@router.post("/do-not-contact", response_model=DoNotContactEntry, status_code=status.HTTP_201_CREATED)
+async def add_do_not_contact(body: DoNotContactCreate, user: CurrentUser = Depends(get_current_user)):
+    """Add exactly one of `email_id` (its recipient, read by the server),
+    `email` or `domain`. Adding an existing entry returns it. 422
+    invalid_do_not_contact / contact_without_email, 404 email_not_found, 403
+    forbidden."""
+    try:
+        return await outreach_email_service.get_service().add_do_not_contact(
+            user.sub, email_id=body.email_id, address=body.email, domain=body.domain, reason=body.reason,
+        )
+    except OutreachEmailError as exc:
+        raise _http(exc)
+
+
+@router.delete("/do-not-contact/{entry_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def remove_do_not_contact(entry_id: str, user: CurrentUser = Depends(get_current_user)):
+    """404 do_not_contact_not_found for a missing entry or someone else's."""
+    try:
+        await outreach_email_service.get_service().remove_do_not_contact(user.sub, entry_id)
+    except OutreachEmailError as exc:
+        raise _http(exc)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 @router.get("/{email_id}", response_model=OutreachEmailResponse)
 async def get_outreach_email(email_id: str, user: CurrentUser = Depends(get_current_user)):
     try:
@@ -95,15 +142,38 @@ async def approve_outreach_email(email_id: str, user: CurrentUser = Depends(get_
 
 @router.patch("/{email_id}/reject", response_model=OutreachEmailResponse)
 async def reject_outreach_email(email_id: str, user: CurrentUser = Depends(get_current_user)):
-    """pending_review | approved → rejected (final)."""
+    """pending_review | approved → rejected (final). 409 send_in_progress
+    while an SMTP send of it is running."""
     return await _decide(email_id, user, "reject")
 
 
 @router.patch("/{email_id}/mark-sent", response_model=OutreachEmailResponse)
 async def mark_outreach_email_sent(email_id: str, user: CurrentUser = Depends(get_current_user)):
-    """approved → sent. Only a mark: no email is sent. 422 contact_rejected
-    when the contact was rejected meanwhile."""
+    """approved → sent (send_method manual). Only a mark: no email is sent.
+    422 contact_rejected when the contact was rejected meanwhile; 409
+    send_in_progress while an SMTP send of it is running. Allowed after a send
+    of unknown outcome (smtp_timeout), and it frees that send's lock."""
     return await _decide(email_id, user, "mark_sent")
+
+
+@router.post("/{email_id}/send", response_model=OutreachEmailResponse)
+@limiter.limit(OUTREACH_SEND_RATE_LIMIT)
+async def send_outreach_email(
+    request: Request,
+    email_id: str,
+    body: OutreachEmailSend,
+    user: CurrentUser = Depends(get_current_user),
+):
+    """approved → sent by SMTP (send_method smtp), to the recipient the user
+    confirmed in `confirm_to_email`. See OutreachEmailService.send for every
+    refusal code; a 504 smtp_timeout means the email may have been sent: retry
+    only with `force_retry`, or mark it as sent."""
+    try:
+        return await outreach_email_service.get_service().send(
+            email_id, user.sub, _user_name(user), body.confirm_to_email, body.force_retry,
+        )
+    except OutreachEmailError as exc:
+        raise _http(exc)
 
 
 @router.patch("/{email_id}/regenerate", response_model=OutreachEmailResponse)

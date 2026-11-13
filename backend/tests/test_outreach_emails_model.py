@@ -215,3 +215,66 @@ def test_regenerate_keeps_the_previous_version_in_history():
     assert fields["subject"] == "Nuevo" and fields["body"] == "Cuerpo nuevo"
     assert "approved_by" not in fields
     assert entry["previous_subject"] == "Viejo" and entry["previous_body"] == "Cuerpo viejo"
+
+
+# ── Envío real: candado de envío (funciones puras) ───────────────────────────
+from app.schemas.outreach_email import plan_send_lock, send_lock_state  # noqa: E402
+
+STALE = timedelta(seconds=40)
+
+
+def locked(age_seconds=5, uncertain=False):
+    return {"status": "approved", "send_lock": {"id": "l-1", "at": NOW - timedelta(seconds=age_seconds), "uncertain": uncertain}}
+
+
+@pytest.mark.parametrize("doc, state", [
+    ({"status": "approved"}, "free"),
+    (locked(5), "held"),
+    (locked(39), "held"),
+    (locked(40), "stale"),
+    (locked(5, uncertain=True), "uncertain"),
+    (locked(5000, uncertain=True), "uncertain"),
+    ({"send_lock": {"id": "l", "at": None}}, "stale"),
+])
+def test_send_lock_state(doc, state):
+    assert send_lock_state(doc, NOW, STALE) == state
+
+
+def test_a_naive_lock_time_reads_as_utc():
+    doc = {"send_lock": {"id": "l", "at": (NOW - timedelta(seconds=5)).replace(tzinfo=None)}}
+    assert send_lock_state(doc, NOW, STALE) == "held"
+
+
+@pytest.mark.parametrize("doc, action, force, ok, code, clear", [
+    ({}, "send", False, True, None, False),
+    (locked(5), "send", False, False, "send_in_progress", False),
+    (locked(5), "send", True, False, "send_in_progress", False),
+    (locked(60), "send", False, True, None, False),
+    (locked(5, True), "send", False, False, "send_uncertain", False),
+    (locked(5, True), "send", True, True, None, False),
+    (locked(5), "mark_sent", False, False, "send_in_progress", False),
+    (locked(5), "reject", False, False, "send_in_progress", False),
+    (locked(5, True), "mark_sent", False, True, None, True),
+    (locked(5, True), "reject", False, True, None, True),
+    (locked(60), "mark_sent", False, True, None, True),
+    ({}, "mark_sent", False, True, None, False),
+    ({}, "approve", False, True, None, False),
+])
+def test_plan_send_lock(doc, action, force, ok, code, clear):
+    plan = plan_send_lock(doc, NOW, action, STALE, force_retry=force)
+    assert (plan["ok"], plan["code"], plan["clear_lock"]) == (ok, code, clear)
+
+
+def test_send_needs_a_reviewed_contact_and_an_approved_email():
+    assert contact_blocks("send", "pending") and contact_blocks("send", "rejected")
+    assert not contact_blocks("send", "approved") and not contact_blocks("send", None)
+    assert plan_email_transition(email("approved"), USER, "send")["to_status"] == "sent"
+    assert not plan_email_transition(email("pending_review"), USER, "send")["ok"]
+
+
+def test_transition_fields_of_send_and_mark_sent():
+    send_fields, _ = OutreachEmailsRepo.transition_fields("send", "approved", "sent", USER, "Ana", NOW)
+    assert send_fields["send_method"] == "smtp" and send_fields["sent_by"] == USER and send_fields["sent_at"] == NOW
+    mark_fields, _ = OutreachEmailsRepo.transition_fields("mark_sent", "approved", "sent", USER, "Ana", NOW)
+    assert mark_fields["send_method"] == "manual" and mark_fields["sent_marked_by"] == USER
+    assert "sent_by" not in mark_fields

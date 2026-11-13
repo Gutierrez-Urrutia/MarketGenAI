@@ -68,21 +68,31 @@ async def validate_url_target(url: str) -> None:
     the whole point is that DNS can change between calls.
     """
     validate_url_shape(url)
-    host = urlparse(url).hostname
+    await validate_host_target(urlparse(url).hostname, label="URL host")
 
+
+class UnresolvableHostError(UnsafeUrlError):
+    """Raised when a host does not resolve to any address."""
+
+
+async def validate_host_target(host: str, label: str = "Host") -> None:
+    """Resolve `host` and refuse it when any of its addresses is in a blocked
+    range (see _is_blocked_ip). Raises UnresolvableHostError when it does not
+    resolve, UnsafeUrlError when it is blocked. Used for URLs (above) and for
+    the SMTP host (smtp_service.py) — call it right before connecting."""
     try:
         infos = await asyncio.to_thread(socket.getaddrinfo, host, None)
     except socket.gaierror as exc:
-        raise UnsafeUrlError(f"Could not resolve host '{host}': {exc}") from exc
+        raise UnresolvableHostError(f"Could not resolve host '{host}': {exc}") from exc
 
     if not infos:
-        raise UnsafeUrlError(f"Could not resolve host '{host}'.")
+        raise UnresolvableHostError(f"Could not resolve host '{host}'.")
 
     for info in infos:
         raw_ip = info[4][0].split("%")[0]  # strip an IPv6 zone id, if present
         ip = ipaddress.ip_address(raw_ip)
         if _is_blocked_ip(ip):
-            raise UnsafeUrlError(f"URL host '{host}' resolves to a blocked address ({raw_ip}).")
+            raise UnsafeUrlError(f"{label} '{host}' resolves to a blocked address ({raw_ip}).")
 
 
 async def safe_get_bytes(

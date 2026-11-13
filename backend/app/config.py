@@ -94,6 +94,16 @@ class Settings(BaseSettings):
     # derived from app_secret_key: different blast radius and rotation needs.
     pipeline_encryption_key: str = ""
 
+    # Real sending of prospecting emails by SMTP (RF-VTA-16). Master switch for
+    # the whole deployment: off by default, and each user must also switch it
+    # on in their pipeline config. Both are required to send.
+    outreach_real_send_enabled: bool = False
+    # Total time budget of one SMTP conversation (connect, login, send).
+    smtp_timeout_seconds: float = 20.0
+    # Development/test only: lets smtp_host resolve to a loopback, private or
+    # link-local address (e.g. a local aiosmtpd). Ignored when APP_ENV=production.
+    smtp_allow_private_hosts: bool = False
+
     redis_url: str = "redis://localhost:6379/0"
     celery_broker_url: str = "redis://localhost:6379/0"
     celery_result_backend: str = "redis://localhost:6379/1"

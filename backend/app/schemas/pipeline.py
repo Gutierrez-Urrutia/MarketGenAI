@@ -14,6 +14,8 @@ from typing import Any, Dict, List, Optional
 from email_validator import EmailNotValidError, validate_email
 from pydantic import BaseModel, Field, field_validator
 
+from app.core.pipeline_constants import OUTREACH_DAILY_SEND_LIMIT_DEFAULT, OUTREACH_DAILY_SEND_LIMIT_MAX
+
 
 class SourceType(str, Enum):
     API = "api"
@@ -112,6 +114,17 @@ class PipelineConfig(BaseModel):
     sender_email: str = ""
     sender_name: str = ""
     smtp_password_configured: bool = False
+    # The whole SMTP account (host, port, user, password, sender): computed by
+    # smtp_service.smtp_config_problems, the same rule the send applies.
+    smtp_configured: bool = False
+    smtp_missing_fields: List[str] = Field(default_factory=list)
+
+    # Real sending of prospecting emails (RF-VTA-16): the user's switch (off by
+    # default) and daily cap. Sending also needs the server's master switch
+    # (OUTREACH_REAL_SEND_ENABLED), reported read-only here.
+    outreach_real_send_enabled: bool = False
+    outreach_real_send_server_enabled: bool = False
+    outreach_daily_send_limit: int = Field(OUTREACH_DAILY_SEND_LIMIT_DEFAULT, ge=1, le=OUTREACH_DAILY_SEND_LIMIT_MAX)
 
     # Hunter.io API key (Agente 2). Same treatment as smtp_password: stored
     # encrypted as hunter_api_key_encrypted, never returned by the API.
@@ -146,6 +159,9 @@ class PipelineConfigUpdate(BaseModel):
     sender_email: Optional[str] = None
     sender_name: Optional[str] = None
 
+    outreach_real_send_enabled: Optional[bool] = None
+    outreach_daily_send_limit: Optional[int] = Field(None, ge=1, le=OUTREACH_DAILY_SEND_LIMIT_MAX)
+
     # Not stripped here: routers/pipeline.py strips it, and tells a
     # whitespace-only value ("unchanged") from "" ("clear").
     hunter_api_key: Optional[str] = None
@@ -155,11 +171,11 @@ class PipelineConfigUpdate(BaseModel):
     # Kept for RF-VTA-17 too; no UI control sends it today (see PipelineConfig).
     is_active: Optional[bool] = None
 
-    # smtp_user/sender_name are free text: only strip incidental leading/
+    # smtp_host/smtp_user/sender_name: only strip incidental leading/
     # trailing whitespace. smtp_password is intentionally NOT stripped here —
     # a password's own spaces can be meaningful; see routers/pipeline.py for
     # how a whitespace-only password is treated as "unchanged".
-    @field_validator("smtp_user", "sender_name", mode="after")
+    @field_validator("smtp_host", "smtp_user", "sender_name", mode="after")
     @classmethod
     def _strip_free_text(cls, value: Optional[str]) -> Optional[str]:
         return value.strip() if value is not None else value
