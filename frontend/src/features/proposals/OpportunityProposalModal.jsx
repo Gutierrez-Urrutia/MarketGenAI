@@ -1,5 +1,6 @@
 import { ProposalDocumentPreview } from "@/features/proposals/ProposalDocumentPreview";
 import { CatalogServicePicker } from "@/features/proposals/CatalogServicePicker";
+import { CustomerPicker } from "@/features/proposals/CustomerPicker";
 import { calculateProposalTotal, formatMoney, normalizeLineItem, normalizeProposalDocument } from "@/features/proposals/proposalDocument";
 import { createProposal, generateProposalById, updateProposal } from "@/api/proposalsApi";
 import { ProposalTemplateFields, useProposalTemplatePicker } from "@/features/proposals/ProposalTemplatePicker";
@@ -28,10 +29,18 @@ export function OpportunityProposalModal({ opportunity, onClose }) {
   const [draftContent, setDraftContent] = useState("");
   const [editingPreview, setEditingPreview] = useState(false);
   const [customerEmail, setCustomerEmail] = useState("");
+  const [selectedCustomer, setSelectedCustomer] = useState(null); // RF-VTA-03: cliente propio al que se vincula la propuesta
   const [teamSizing, setTeamSizing] = useState("");
   const templatePicker = useProposalTemplatePicker(); // RF-VTA-07
   const mountedRef = useRef(true);
   const backgroundRef = useRef(false);
+  // Elegir un cliente completa el correo y propone su industria (misma lista que la de plantillas); ambos siguen editables.
+  const pickCustomer = (customer) => {
+    setSelectedCustomer(customer);
+    if (!customer) return;
+    if (customer.email) setCustomerEmail(customer.email);
+    if (customer.industry) templatePicker.setIndustry(customer.industry);
+  };
   useEffect(() => {
     mountedRef.current = true;
     return () => { mountedRef.current = false; };
@@ -224,6 +233,7 @@ export function OpportunityProposalModal({ opportunity, onClose }) {
     customer_name: proposalForm.customer,
     clientName: proposalForm.customer,
     clientEmail: proposalForm.customerEmail || undefined,
+    customerId: selectedCustomer?.id,
     clientCompany: proposalForm.customerCompany || undefined,
     template: proposalForm.template,
     ...templatePicker.persistenceFields(),
@@ -296,6 +306,7 @@ export function OpportunityProposalModal({ opportunity, onClose }) {
         length: proposalLength,
         clientName: proposalForm.customer,
         customer: proposalForm.customer,
+        customerId: selectedCustomer?.id,
         template: proposalForm.template,
         ...templatePicker.generationFields(),
         tags: opportunityTags,
@@ -457,6 +468,9 @@ export function OpportunityProposalModal({ opportunity, onClose }) {
 
           {step === 1 && (
             <div className="grid grid-cols-2 gap-3">
+              <div className="col-span-2">
+                <CustomerPicker selected={selectedCustomer} onSelect={pickCustomer} />
+              </div>
               <Field label={t("opportunitiesPage.proposalModal.customer")}><Input value={proposalForm.customer} readOnly /></Field>
               <Field label="Client email" hint="Used to send this proposal to your CRM">
                 <Input type="email" value={customerEmail} onChange={(event) => setCustomerEmail(event.target.value)} placeholder="client@company.com" />
