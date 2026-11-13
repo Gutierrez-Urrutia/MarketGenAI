@@ -520,6 +520,7 @@ async def test_send_status_of_a_complete_account(client, world):
     assert resp.json() == {
         "smtp_configured": True, "smtp_missing_fields": [], "server_send_enabled": True,
         "user_send_enabled": True, "real_send_enabled": True, "daily_limit": 50, "sent_today": 2,
+        "sender_email": "ventas@example.test", "sender_name": "Equipo Ventas",
     }
 
 
@@ -536,6 +537,7 @@ async def test_send_status_without_a_config(client, world):
     del world.db.data["pipeline_configs"][USER]
     body = (await client.get(f"{API}/send-status")).json()
     assert body["smtp_configured"] is False and body["user_send_enabled"] is False and body["daily_limit"] == 50
+    assert body["sender_email"] == "" and body["sender_name"] == ""
 
 
 # ── Unsubscribe line in every response ───────────────────────────────────────

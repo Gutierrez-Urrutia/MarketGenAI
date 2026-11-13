@@ -302,6 +302,9 @@ class SendStatusResponse(BaseModel):
     real_send_enabled: bool
     daily_limit: int
     sent_today: int
+    # Shown in the send confirmation (not secret: also in /pipeline/config).
+    sender_email: str = ""
+    sender_name: str = ""
 
 
 class DoNotContactCreate(BaseModel):

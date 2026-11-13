@@ -463,6 +463,8 @@ class OutreachEmailService:
             "real_send_enabled": smtp_service.real_send_enabled(config),
             "daily_limit": daily_send_limit(config),
             "sent_today": sent_today,
+            "sender_email": str(config.get("sender_email") or "").strip(),
+            "sender_name": str(config.get("sender_name") or "").strip(),
         }
 
     async def send(
