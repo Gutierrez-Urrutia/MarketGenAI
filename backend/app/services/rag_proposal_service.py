@@ -37,6 +37,9 @@ MIN_QUERY_COVERAGE = 0.30
 # Con pocos fragmentos el idf se distorsiona (un término ausente pesa casi lo mismo que uno presente): para la cobertura
 # se calcula como si hubiera al menos estos fragmentos.
 COVERAGE_MIN_CORPUS = 20
+# Con la regla activa, un fragmento solo entra si alcanza esta fracción de la cobertura del mejor: junto al fragmento que
+# sí trata el servicio no se cuelan otros que comparten solo un par de términos (CP-004, control de cobranza).
+RELATIVE_COVERAGE_FLOOR = 0.4
 TOP_K = 5
 MAX_CONTEXT_CHARS = 6000
 _MAX_CHUNKS_SCANNED = 5000
@@ -180,12 +183,14 @@ def rank_chunks(
             score *= 1.5
         if client_terms and client_terms & set(_tokens(doc.get("client", ""))):
             score *= 1.3
-        scored.append((score, c))
+        scored.append((score, c, coverage))
 
     if best_coverage < min_coverage:
         return []  # ningún fragmento trata realmente lo que se pide
+    if min_coverage > 0:
+        scored = [x for x in scored if x[2] >= RELATIVE_COVERAGE_FLOOR * best_coverage]
     scored.sort(key=lambda x: x[0], reverse=True)
-    return [c for _, c in scored[:top_k]]
+    return [c for _, c, _ in scored[:top_k]]
 
 
 async def retrieve_sources(

@@ -192,3 +192,26 @@ class TestCP004RelevanciaMinima:
 
     def test_CP_004_el_umbral_existe_y_es_moderado(self):
         assert 0.1 <= rag.MIN_QUERY_COVERAGE <= 0.5
+
+
+class TestCP004PisoRelativo:
+    """Junto al fragmento que sí trata el servicio no se cuelan otros que solo comparten un par de términos."""
+
+    CHUNKS = [
+        {"docId": "a", "text": "Cobranza telefónica temprana con gestores y gestión de mora", "tokens": rag._tokens("Cobranza telefónica temprana con gestores y gestión de mora")},
+        {"docId": "b", "text": "Back office de conciliación de pagos y seguimiento de mora", "tokens": rag._tokens("Back office de conciliación de pagos y seguimiento de mora")},
+    ]
+    DOCS = {"a": {"title": "Cobranza", "service": "cobranza"}, "b": {"title": "Back office", "service": "back office"}}
+    QUERY = "Cobranza telefónica temprana y mora"
+
+    def test_CP_004_con_la_regla_solo_queda_el_fragmento_relevante(self):
+        top = rag.rank_chunks(self.QUERY, self.CHUNKS, self.DOCS, min_coverage=rag.MIN_QUERY_COVERAGE)
+        assert [c["docId"] for c in top] == ["a"]
+
+    def test_CP_004_sin_la_regla_todo_se_comporta_como_antes(self):
+        """RF-08 no activa la regla: conserva su ranking."""
+        top = rag.rank_chunks(self.QUERY, self.CHUNKS, self.DOCS)
+        assert [c["docId"] for c in top] == ["a", "b"]
+
+    def test_CP_004_el_piso_relativo_es_moderado(self):
+        assert 0.2 <= rag.RELATIVE_COVERAGE_FLOOR <= 0.6
