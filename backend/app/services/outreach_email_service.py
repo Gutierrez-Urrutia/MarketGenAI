@@ -215,9 +215,11 @@ def _normalized_address(value: Any) -> str:
 
 def _valid_address(value: str) -> bool:
     """Syntax only (whether the domain receives mail is the SMTP server's
-    answer). test_environment=True only adds the reserved `.test` domains."""
+    answer). Outside production the reserved `.test` domains of synthetic
+    data are accepted too (test_environment); in production they are not."""
+    test_environment = settings.app_env.strip().lower() != "production"
     try:
-        validate_email(value, check_deliverability=False, test_environment=True)
+        validate_email(value, check_deliverability=False, test_environment=test_environment)
     except EmailNotValidError:
         return False
     return True

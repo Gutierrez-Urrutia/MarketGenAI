@@ -314,8 +314,11 @@ async def test_an_internal_host_is_allowed_with_the_switch_in_test(client, world
 async def test_the_switch_does_not_open_internal_hosts_in_production(client, world, monkeypatch):
     monkeypatch.setattr(smtp_service.settings, "smtp_allow_private_hosts", True)
     monkeypatch.setattr(smtp_service.settings, "app_env", "production")
+    # In production a .test recipient is refused first: use a regular domain.
+    world.db.data["contacts"]["c-1"]["email"] = "ana@example.com"
+    world.db.data["outreach_emails"]["e-1"]["to_email"] = "ana@example.com"
     with resolves_to("127.0.0.1"):
-        resp = await send(client)
+        resp = await send(client, confirm="ana@example.com")
     assert code_of(resp) == "smtp_host_blocked"
     assert_nothing_reserved(world)
 
@@ -594,3 +597,24 @@ async def test_generating_for_a_blocked_recipient_warns(client, world):
     await do_not_contact_repo.add(USER, "email", "bloqueado@example.test", created_by=USER)
     resp = await client.post(API, json={"lead_id": "lead-1", "contact_id": "c-2"})
     assert resp.status_code == 201 and "do_not_contact" in resp.json()["warnings"]
+
+
+# ── Reserved .test domains only outside production ──────────────────────────
+async def test_a_test_domain_recipient_is_refused_in_production(client, world, monkeypatch):
+    monkeypatch.setattr(smtp_service.settings, "app_env", "production")
+    resp = await send(client)
+    assert resp.status_code == 422 and code_of(resp) == "invalid_recipient"
+    assert_nothing_reserved(world)
+
+
+async def test_a_test_domain_recipient_is_accepted_outside_production(client, world, monkeypatch):
+    monkeypatch.setattr(smtp_service.settings, "app_env", "test")
+    assert (await send(client)).status_code == 200
+
+
+async def test_a_test_domain_do_not_contact_entry_is_refused_in_production(client, world, monkeypatch):
+    monkeypatch.setattr(smtp_service.settings, "app_env", "production")
+    resp = await client.post(f"{API}/do-not-contact", json={"email": "x@example.test"})
+    assert resp.status_code == 422 and code_of(resp) == "invalid_do_not_contact"
+    monkeypatch.setattr(smtp_service.settings, "app_env", "development")
+    assert (await client.post(f"{API}/do-not-contact", json={"email": "x@example.test"})).status_code == 201
