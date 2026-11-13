@@ -307,6 +307,8 @@ async def test_generate_draft_passes_frontend_payload_to_generator(client):
         "template_content": None,  # RF-VTA-07: sin templateId no hay plantilla aplicada
         "commercial_terms": None,
         "currency": "USD",
+        "client_industry": None,  # RF-VTA-03: sin cliente vinculado no hay perfil
+        "client_size": None,
     }
 
 

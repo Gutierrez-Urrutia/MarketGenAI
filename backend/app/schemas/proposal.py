@@ -68,6 +68,7 @@ VERSION_INTERNAL_FIELDS = ("versions", "versionCounter", "versionHash")
 SERVER_ONLY_FIELDS = VERSION_INTERNAL_FIELDS + (
     "id", "userId", "createdAt", "updatedAt", "crmSync", "filePath", "downloadUrl",
     "signedDocumentPath", "signedDocumentUrl", "signedDocumentName", "signedDocumentUploadedAt", "hasSignedDocument",
+    "clientIndustry", "clientSize",  # RF-VTA-03: copia del perfil del cliente que toma el servidor al generar
 )
 
 
@@ -203,6 +204,7 @@ class ProposalCreate(BaseModel):
     description: Optional[str] = None
     content:     Optional[str] = None
     bookId:      Optional[str] = None
+    customerId:  Optional[str] = None   # RF-VTA-03: cliente propio al que se vincula
     currency:    Optional[Currency] = None
 
     @model_validator(mode="after")
@@ -263,6 +265,7 @@ class GenerateProposalRequest(BaseModel):
     style:               str = "professional"
     language:            str = "es"
     customPrompt:        Optional[str] = None
+    customerId:          Optional[str] = None   # RF-VTA-03: cliente propio al que se vincula
     currency:            Currency = "USD"
     sync:                bool = False
 
