@@ -888,7 +888,9 @@ export const translations = {
         },
         send: {
           confirmTitle: "Send this email?",
-          confirmMessage: "To: {to} · From: {from} · Subject: {subject}",
+          toLabel: "To",
+          fromLabel: "From",
+          subjectLabel: "Subject",
           confirmWarning: "A real email will be sent now. It cannot be undone.",
           confirmButton: "Send email",
           retryTitle: "Retry a send that may have gone out?",
@@ -2239,7 +2241,9 @@ export const translations = {
         },
         send: {
           confirmTitle: "¿Enviar este correo?",
-          confirmMessage: "Para: {to} · Desde: {from} · Asunto: {subject}",
+          toLabel: "Para",
+          fromLabel: "Desde",
+          subjectLabel: "Asunto",
           confirmWarning: "Se enviará un correo real ahora. No se puede deshacer.",
           confirmButton: "Enviar correo",
           retryTitle: "¿Reintentar un envío que pudo haber salido?",
@@ -3626,7 +3630,9 @@ export const translations = {
         },
         send: {
           confirmTitle: "Enviar este e-mail?",
-          confirmMessage: "Para: {to} · De: {from} · Assunto: {subject}",
+          toLabel: "Para",
+          fromLabel: "De",
+          subjectLabel: "Assunto",
           confirmWarning: "Um e-mail real será enviado agora. Não é possível desfazer.",
           confirmButton: "Enviar e-mail",
           retryTitle: "Tentar de novo um envio que pode ter saído?",

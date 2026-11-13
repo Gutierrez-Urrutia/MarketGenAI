@@ -43,17 +43,39 @@ describe("«Enviar» y su confirmación", () => {
     expect(screen.queryByTestId("send-block-note")).toBeNull();
   });
 
-  it("el diálogo muestra destinatario, remitente y asunto; cancelar no envía", () => {
+  it("el diálogo muestra Para, Desde y Asunto en filas separadas; cancelar no envía", () => {
     const { onSend } = renderDetail();
     fireEvent.click(sendButton());
-    const text = dialog().textContent;
-    expect(text).toContain("ana@example.com");
-    expect(text).toContain("Equipo Ventas <ventas@example.com>");
-    expect(text).toContain("Asunto de prueba");
-    expect(text).toContain(P.send.confirmWarning);
+    const row = (id) => within(dialog()).getByTestId(id);
+    // Each row: the label (dt) above its value (dd), in this order.
+    const rows = within(dialog()).getByTestId("send-summary").querySelectorAll(":scope > div");
+    expect([...rows].map((el) => el.dataset.testid)).toEqual(["send-summary-to", "send-summary-from", "send-summary-subject"]);
+    expect(row("send-summary-to").querySelector("dt").textContent).toBe(P.send.toLabel);
+    expect(row("send-summary-to").querySelector("dd").textContent).toBe("ana@example.com");
+    expect(row("send-summary-from").querySelector("dt").textContent).toBe(P.send.fromLabel);
+    // Sender name and address on separate lines.
+    expect(row("send-summary-from-name").textContent).toBe("Equipo Ventas");
+    expect(row("send-summary-from-email").textContent).toBe("ventas@example.com");
+    expect(row("send-summary-from-name").className).toContain("block");
+    expect(row("send-summary-from-email").className).toContain("block");
+    expect(row("send-summary-subject").querySelector("dt").textContent).toBe(P.send.subjectLabel);
+    expect(row("send-summary-subject").querySelector("dd").textContent).toBe("Asunto de prueba");
+    // Long addresses wrap instead of overflowing.
+    expect(row("send-summary-to").querySelector("dd").className).toContain("[overflow-wrap:anywhere]");
+    // The real-send warning comes after the rows.
+    const warning = within(dialog()).getByText(P.send.confirmWarning);
+    expect(row("send-summary-subject").compareDocumentPosition(warning) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(dialog().getAttribute("aria-describedby")).toContain(within(dialog()).getByTestId("send-summary").parentElement.id);
     fireEvent.click(within(dialog()).getByRole("button", { name: P.send.cancel }));
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it("sin nombre de remitente, «Desde» muestra solo la dirección", () => {
+    renderDetail({ sendStatus: { ...READY, sender_name: "" } });
+    fireEvent.click(sendButton());
+    expect(within(dialog()).queryByTestId("send-summary-from-name")).toBeNull();
+    expect(within(dialog()).getByTestId("send-summary-from-email").textContent).toBe("ventas@example.com");
   });
 
   it("confirmar envía una vez, sin force_retry", () => {

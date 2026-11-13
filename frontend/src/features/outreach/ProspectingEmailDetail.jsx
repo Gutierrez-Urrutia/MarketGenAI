@@ -93,6 +93,33 @@ function History({ email, t }) {
   );
 }
 
+// The send confirmation's To / From / Subject: one row each, a small grey
+// label above its value. Long addresses wrap at any point instead of
+// overflowing; the sender's name and address go on separate lines.
+function SummaryRow({ label, testId, children }) {
+  return (
+    <div data-testid={testId}>
+      <dt className="text-xs text-gray-500 dark:text-slate-400">{label}</dt>
+      <dd className="text-sm text-gray-900 dark:text-white [overflow-wrap:anywhere]">{children}</dd>
+    </div>
+  );
+}
+
+function SendSummary({ email, sendStatus, t }) {
+  const senderName = sendStatus?.sender_name || "";
+  const senderEmail = sendStatus?.sender_email || "";
+  return (
+    <dl className="space-y-2" data-testid="send-summary">
+      <SummaryRow label={t(`${KP}.send.toLabel`)} testId="send-summary-to">{email.to_email || "—"}</SummaryRow>
+      <SummaryRow label={t(`${KP}.send.fromLabel`)} testId="send-summary-from">
+        {senderName && <span className="block" data-testid="send-summary-from-name">{senderName}</span>}
+        <span className="block text-gray-600 dark:text-slate-300" data-testid="send-summary-from-email">{senderEmail || "—"}</span>
+      </SummaryRow>
+      <SummaryRow label={t(`${KP}.send.subjectLabel`)} testId="send-summary-subject">{email.subject || "—"}</SummaryRow>
+    </dl>
+  );
+}
+
 function BlockNote({ id, reason, sendStatus, t, onOpenSettings }) {
   const fields = (sendStatus?.smtp_missing_fields || []).map((field) => t(`${KP}.send.fields.${field}`)).join(", ");
   return (
@@ -126,9 +153,6 @@ export default function ProspectingEmailDetail({
   const uncertain = isUncertain(email);
   const blockReason = onSend ? sendBlockReason(sendStatus, email, blocked) : null;
   const lastError = email.last_send_error?.code;
-  const sender = sendStatus?.sender_name
-    ? `${sendStatus.sender_name} <${sendStatus.sender_email}>`
-    : sendStatus?.sender_email || "";
 
   const confirmSend = () => {
     const forceRetry = confirming === "retry";
@@ -267,9 +291,7 @@ export default function ProspectingEmailDetail({
       <ConfirmDialog
         open={confirming === "send" || confirming === "retry"}
         title={t(`${KP}.send.${confirming === "retry" ? "retryTitle" : "confirmTitle"}`)}
-        message={fill(t(`${KP}.send.confirmMessage`), {
-          to: email.to_email || "", from: sender || "—", subject: email.subject || "",
-        })}
+        details={<SendSummary email={email} sendStatus={sendStatus} t={t} />}
         warning={t(`${KP}.send.${confirming === "retry" ? "retryWarning" : "confirmWarning"}`)}
         cancelLabel={t(`${KP}.send.cancel`)}
         confirmLabel={t(`${KP}.send.${confirming === "retry" ? "retryButton" : "confirmButton"}`)}

@@ -27,7 +27,7 @@ const SEND_KEYS = [
   ...SEND_BLOCK_REASONS.map((reason) => `${KP}.send.blocked.${reason}`),
   ...SMTP_FIELDS.map((field) => `${KP}.send.fields.${field}`),
   ...["send", "retrySend", "sending", "doNotContact"].map((key) => `${KP}.actions.${key}`),
-  ...["confirmTitle", "confirmMessage", "confirmWarning", "confirmButton", "retryTitle", "retryWarning", "retryButton",
+  ...["confirmTitle", "toLabel", "fromLabel", "subjectLabel", "confirmWarning", "confirmButton", "retryTitle", "retryWarning", "retryButton",
     "cancel", "uncertain", "lastError", "openSettings", "sentBySmtp", "markedSent"].map((key) => `${KP}.send.${key}`),
   ...["confirmTitle", "confirmMessage", "confirmButton"].map((key) => `${KP}.doNotContact.${key}`),
   `${KP}.detail.unsubscribeLabel`, `${KP}.detail.onDoNotContactList`,
