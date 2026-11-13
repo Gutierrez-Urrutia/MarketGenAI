@@ -49,10 +49,10 @@ export function CustomerPicker({ selected, onSelect }) {
 
   if (selected) {
     return (
-      <div className="rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-2 text-xs text-gray-800" data-testid="selected-customer">
+      <div className="rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-700" data-testid="selected-customer">
         <div className="flex items-start justify-between gap-3">
           <div>
-            <p className="font-semibold">{selected.name}{selected.company ? ` · ${selected.company}` : ""}</p>
+            <p className="font-semibold text-gray-900">{selected.name}{selected.company ? ` · ${selected.company}` : ""}</p>
             <p className="mt-0.5 text-gray-600">
               {t("customersPage.industry")}: {industry || t("customersPage.undefined")} · {t("customersPage.size")}: {size || t("customersPage.undefined")}
             </p>
@@ -60,7 +60,7 @@ export function CustomerPicker({ selected, onSelect }) {
               {industry || size ? t(`${PREFIX}.customerProfileHint`) : t(`${PREFIX}.customerNoProfile`)}
             </p>
           </div>
-          <button type="button" className="whitespace-nowrap text-indigo-700 underline" onClick={() => onSelect(null)}>{t(`${PREFIX}.customerClear`)}</button>
+          <button type="button" className="whitespace-nowrap text-indigo-600 underline" onClick={() => onSelect(null)}>{t(`${PREFIX}.customerClear`)}</button>
         </div>
       </div>
     );

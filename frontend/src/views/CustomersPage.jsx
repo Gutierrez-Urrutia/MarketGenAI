@@ -6,7 +6,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import toast from "react-hot-toast";
 
 import { customersApi } from "@/api/customersApi";
-import { Badge, Button, Modal, Spinner } from "@/components/ui";
+import { Button, Modal, Spinner } from "@/components/ui";
 import { CustomerDetailModal } from "@/features/customers/CustomerDetailModal";
 import { CustomerFormModal } from "@/features/customers/CustomerFormModal";
 import { CustomerImportModal } from "@/features/customers/CustomerImportModal";
@@ -157,12 +157,12 @@ export function CustomersPage() {
                 <td className="px-3 py-2">
                   {customer.industry
                     ? <span className="text-slate-700">{options.industryLabel(customer.industry)}</span>
-                    : <Badge status="draft" label={t("customersPage.undefined")} />}
+                    : <span className="inline-flex rounded bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-500">{t("customersPage.undefined")}</span>}
                 </td>
                 <td className="px-3 py-2">
                   {customer.size
                     ? <span className="text-slate-700">{options.sizeLabel(customer.size)}</span>
-                    : <Badge status="draft" label={t("customersPage.undefined")} />}
+                    : <span className="inline-flex rounded bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-500">{t("customersPage.undefined")}</span>}
                 </td>
                 <td className="px-3 py-2 text-right">
                   <div className="inline-flex gap-2">
