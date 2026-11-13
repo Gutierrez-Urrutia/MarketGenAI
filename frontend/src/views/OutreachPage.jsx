@@ -8,7 +8,7 @@ import { useEffect, useMemo, useState } from "react";
 import toast from "react-hot-toast";
 import ProspectingEmailDetail, { EmailStatusBadge } from "@/features/outreach/ProspectingEmailDetail";
 import {
-  copyText, copyToClipboard, describeEmailError, isActive, languageLabel,
+  SEND_RELOAD_CODES, copyText, copyToClipboard, describeEmailError, isActive, isBlockedRecipient, languageLabel,
 } from "@/features/outreach/prospectingEmails";
 import { useI18n } from "@/hooks/useI18n";
 import { useTheme } from "@/context/ThemeContext";
@@ -40,6 +40,11 @@ export function OutreachPage({ navigationState = {}, onNavigate = () => {}, onOu
   const [selectedProspectingId, setSelectedProspectingId] = useState(null);
   const [prospectingBusy, setProspectingBusy] = useState(false);
   const [regeneratingId, setRegeneratingId] = useState(null);
+  // Real send by SMTP: whether «Enviar» can be used (null until loaded, or if
+  // it failed: «Enviar» stays disabled) and the do-not-contact list.
+  const [sendStatus, setSendStatus] = useState(null);
+  const [doNotContact, setDoNotContact] = useState([]);
+  const [sendingId, setSendingId] = useState(null);
   const activeProspecting = useMemo(() => prospectingEmails.filter(isActive), [prospectingEmails]);
   const closedProspecting = useMemo(() => prospectingEmails.filter((email) => !isActive(email)), [prospectingEmails]);
 
@@ -52,8 +57,28 @@ export function OutreachPage({ navigationState = {}, onNavigate = () => {}, onOu
     }
   };
 
+  const loadSendStatus = async () => {
+    try {
+      const { data } = await outreachEmailsApi.sendStatus();
+      setSendStatus(data || null);
+    } catch {
+      setSendStatus(null);
+    }
+  };
+
+  const loadDoNotContact = async () => {
+    try {
+      const { data } = await outreachEmailsApi.listDoNotContact();
+      setDoNotContact(data?.items || []);
+    } catch {
+      setDoNotContact([]);
+    }
+  };
+
   useEffect(() => {
     loadProspecting();
+    loadSendStatus();
+    loadDoNotContact();
   }, []);
 
   useEffect(() => {
@@ -110,6 +135,42 @@ export function OutreachPage({ navigationState = {}, onNavigate = () => {}, onOu
       if (describeEmailError(error).timedOut) loadProspecting();
     } finally {
       setRegeneratingId(null);
+    }
+  };
+
+  // Real send: one at a time (prospectingBusy also blocks the other actions).
+  const sendProspecting = async (email, { forceRetry = false } = {}) => {
+    if (prospectingBusy || sendingId) return;
+    setProspectingBusy(true);
+    setSendingId(email.id);
+    try {
+      const { data } = await outreachEmailsApi.send(email.id, { confirmToEmail: email.to_email, forceRetry });
+      replaceProspecting(data);
+      toast.success(t("outreachPage.prospecting.messages.smtpSent"));
+      loadSendStatus();
+    } catch (error) {
+      const described = describeEmailError(error);
+      toast.error(t(described.key));
+      // The email changed (send lock, last error) or its state is unknown.
+      if (described.timedOut || SEND_RELOAD_CODES.includes(described.code)) loadProspecting();
+      loadSendStatus();
+    } finally {
+      setSendingId(null);
+      setProspectingBusy(false);
+    }
+  };
+
+  const doNotContactProspecting = async (email) => {
+    if (prospectingBusy) return;
+    setProspectingBusy(true);
+    try {
+      const { data } = await outreachEmailsApi.addDoNotContact({ emailId: email.id });
+      if (data?.id) setDoNotContact((list) => [data, ...list.filter((entry) => entry.id !== data.id)]);
+      toast.success(t("outreachPage.prospecting.messages.doNotContactAdded"));
+    } catch (error) {
+      showEmailError(error);
+    } finally {
+      setProspectingBusy(false);
     }
   };
 
@@ -516,6 +577,12 @@ export function OutreachPage({ navigationState = {}, onNavigate = () => {}, onOu
                 t={t}
                 busy={prospectingBusy}
                 regenerating={regeneratingId === shownProspecting.id}
+                sending={sendingId === shownProspecting.id}
+                sendStatus={sendStatus}
+                blocked={isBlockedRecipient(shownProspecting, doNotContact)}
+                onSend={sendProspecting}
+                onDoNotContact={doNotContactProspecting}
+                onOpenSettings={() => onNavigate("settings", { tab: "pipeline" })}
                 onApprove={(email) => decideProspecting(email, "approve")}
                 onReject={(email) => decideProspecting(email, "reject")}
                 onMarkSent={(email) => decideProspecting(email, "markSent")}

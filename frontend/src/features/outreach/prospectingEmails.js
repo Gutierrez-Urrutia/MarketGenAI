@@ -33,6 +33,35 @@ export const EMAIL_ERROR_CODES = [
   "invalid_email_transition",
   "email_not_found",
   "forbidden",
+  // Real send by SMTP (POST /outreach-emails/{id}/send) and its list.
+  "real_send_disabled",
+  "smtp_not_configured",
+  "smtp_credentials_unreadable",
+  "encryption_not_configured",
+  "recipient_mismatch",
+  "recipient_changed",
+  "invalid_recipient",
+  "do_not_contact",
+  "smtp_host_blocked",
+  "smtp_host_unresolvable",
+  "send_in_progress",
+  "send_uncertain",
+  "send_state_changed",
+  "daily_limit_reached",
+  "smtp_auth_failed",
+  "smtp_sender_refused",
+  "smtp_recipient_refused",
+  "smtp_message_refused",
+  "smtp_unavailable",
+  "smtp_timeout",
+  "invalid_do_not_contact",
+  "do_not_contact_not_found",
+];
+// Codes after which the email itself changed (send lock, last error): reload it.
+export const SEND_RELOAD_CODES = [
+  "smtp_timeout", "send_uncertain", "send_in_progress", "send_state_changed", "smtp_auth_failed",
+  "smtp_sender_refused", "smtp_recipient_refused", "smtp_message_refused", "smtp_unavailable",
+  "smtp_host_blocked", "smtp_host_unresolvable", "invalid_email_transition", "email_not_found",
 ];
 // Client-side cases: the request timed out, was rate limited, or anything else.
 export const EMAIL_ERROR_EXTRA = ["timeout", "rateLimited", "generic"];
@@ -48,9 +77,10 @@ export function describeEmailError(error) {
     return { key: `${ERRORS_KEY}.timeout`, code: "timeout", timedOut: true };
   }
   const status = error?.response?.status;
-  if (status === 429) return { key: `${ERRORS_KEY}.rateLimited`, code: "rateLimited", timedOut: false };
   const code = error?.response?.data?.detail?.code;
+  // A code first: a 429 may be the daily SMTP quota, not the rate limiter.
   if (EMAIL_ERROR_CODES.includes(code)) return { key: `${ERRORS_KEY}.${code}`, code, timedOut: false };
+  if (status === 429) return { key: `${ERRORS_KEY}.rateLimited`, code: "rateLimited", timedOut: false };
   if (status === 403) return { key: `${ERRORS_KEY}.forbidden`, code: "forbidden", timedOut: false };
   return { key: `${ERRORS_KEY}.generic`, code: "generic", timedOut: false };
 }
@@ -70,4 +100,44 @@ export async function copyToClipboard(text) {
   } catch {
     return false;
   }
+}
+
+// ── Real send by SMTP (RF-VTA-16) ────────────────────────────────────────────
+export const normalizeAddress = (value) => String(value || "").trim().toLowerCase();
+
+/** The do-not-contact entry blocking the email's recipient (address or domain), or null. */
+export function blockingEntry(email, entries = []) {
+  const address = normalizeAddress(email?.to_email);
+  if (!address) return null;
+  const domain = address.includes("@") ? address.split("@").pop() : "";
+  return entries.find((entry) => (
+    (entry?.kind === "email" && normalizeAddress(entry.value) === address)
+    || (entry?.kind === "domain" && domain && normalizeAddress(entry.value) === domain)
+  )) || null;
+}
+export const isBlockedRecipient = (email, entries) => Boolean(blockingEntry(email, entries));
+
+/** True when the last SMTP send may have gone out (timeout during DATA). */
+export const isUncertain = (email) => Boolean(email?.send_lock?.uncertain);
+
+// Why «Enviar» is disabled, in this order (the first that applies wins).
+export const SEND_BLOCK_REASONS = [
+  "loading", "smtp_not_configured", "server_disabled", "user_disabled",
+  "contact_not_reviewed", "do_not_contact", "daily_limit",
+];
+
+/**
+ * Why the approved `email` cannot be sent now, or null. `status` is GET
+ * /outreach-emails/send-status (null while loading or if it failed). An
+ * uncertain send is not a block: «Enviar» becomes «Reintentar envío».
+ */
+export function sendBlockReason(status, email, blocked = false) {
+  if (!status) return "loading";
+  if (!status.smtp_configured) return "smtp_not_configured";
+  if (!status.server_send_enabled) return "server_disabled";
+  if (!status.user_send_enabled) return "user_disabled";
+  if (["pending", "rejected"].includes(email?.contact_review_status)) return "contact_not_reviewed";
+  if (blocked) return "do_not_contact";
+  if (Number(status.sent_today) >= Number(status.daily_limit)) return "daily_limit";
+  return null;
 }

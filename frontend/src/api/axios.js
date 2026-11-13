@@ -34,6 +34,12 @@ export const CONTACT_SEARCH_TIMEOUT_MS = 90_000
 // request; the backend sets no LLM timeout, so this is the only bound. A
 // generation cut here may still finish on the server (the UI says so).
 export const GENERATION_TIMEOUT_MS = 120_000
+// POST /outreach-emails/{id}/send and POST /pipeline/config/smtp/test talk to
+// the SMTP server inside the request; the backend bounds that conversation at
+// SMTP_TIMEOUT_SECONDS = 20 s. 45 s leaves margin for the network and the
+// Firestore writes around it. A send cut here may still have gone out: the UI
+// reloads the email to see its real state.
+export const SEND_TIMEOUT_MS = 45_000
 // Per-call flag: keep this call's own timeout even when its URL matches a
 // generative keyword below (e.g. /outreach-emails contains "outreach").
 const EXPLICIT_TIMEOUT = { explicitTimeout: true }
@@ -557,6 +563,10 @@ export const pipelineApi = {
   updateSource: (id, data) => api.put(`/pipeline/config/sources/${id}`, data, NO_BODY_LOG),
   deleteSource: (id) => api.delete(`/pipeline/config/sources/${id}`),
   testSource: (id) => api.post(`/pipeline/config/sources/${id}/test`),
+  // Logs in to the saved SMTP account and NOOPs; nothing is sent.
+  testSmtp: () => api.post('/pipeline/config/smtp/test', undefined, {
+    ...NO_BODY_LOG, ...EXPLICIT_TIMEOUT, timeout: SEND_TIMEOUT_MS, suppressServerErrorToast: true,
+  }),
   // Fase 2 — Agente 1, siempre disparado a mano (ver job_scout_service.py)
   runScan: (data) => api.post('/pipeline/runs', data, { timeout: SCAN_REQUEST_TIMEOUT_MS }),
   listRuns: (params) => api.get('/pipeline/runs', { params, timeout: READ_TIMEOUT_MS }),
@@ -608,6 +618,22 @@ export const outreachEmailsApi = {
     language ? { language } : undefined,
     { ...OUTREACH_EMAIL_OPTIONS, timeout: GENERATION_TIMEOUT_MS },
   ),
+  // Real send by SMTP. `force_retry` is sent only for an explicit retry of a
+  // send whose outcome is unknown (the user confirmed it twice).
+  send: (id, { confirmToEmail, forceRetry = false } = {}) => api.post(
+    `/outreach-emails/${id}/send`,
+    { confirm_to_email: confirmToEmail, ...(forceRetry ? { force_retry: true } : {}) },
+    { ...OUTREACH_EMAIL_OPTIONS, timeout: SEND_TIMEOUT_MS },
+  ),
+  sendStatus: () => api.get('/outreach-emails/send-status', { ...OUTREACH_EMAIL_OPTIONS, timeout: READ_TIMEOUT_MS }),
+  listDoNotContact: () => api.get('/outreach-emails/do-not-contact', { ...OUTREACH_EMAIL_OPTIONS, timeout: READ_TIMEOUT_MS }),
+  // The server reads the recipient from the email: no address is sent.
+  addDoNotContact: ({ emailId }) => api.post(
+    '/outreach-emails/do-not-contact',
+    { email_id: emailId },
+    { ...OUTREACH_EMAIL_OPTIONS, timeout: READ_TIMEOUT_MS },
+  ),
+  removeDoNotContact: (id) => api.delete(`/outreach-emails/do-not-contact/${id}`, { ...OUTREACH_EMAIL_OPTIONS, timeout: READ_TIMEOUT_MS }),
 }
 
 export const publishingApi = {

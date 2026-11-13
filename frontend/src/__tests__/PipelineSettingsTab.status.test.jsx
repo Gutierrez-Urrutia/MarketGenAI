@@ -64,7 +64,7 @@ describe("PipelineSettingsTab without the automation thresholds section", () => 
 
   it("does not render the section or its fields", async () => {
     pipelineApi.getConfig.mockResolvedValue({
-      data: { sources: [], is_active: true, auto_send_threshold: 0.8, max_emails_per_day: 50, scan_frequency_hours: 12 },
+      data: { sources: [], is_active: true, auto_send_threshold: 0.8, max_emails_per_day: 77, scan_frequency_hours: 12 },
     });
     render(<PipelineSettingsTab />);
     await flush();
@@ -74,7 +74,8 @@ describe("PipelineSettingsTab without the automation thresholds section", () => 
       expect(screen.queryByText(`settings.pipelineTab.${key}`)).toBeNull();
     }
     expect(screen.queryByDisplayValue("0.8")).toBeNull();
-    expect(screen.queryByDisplayValue("50")).toBeNull();
+    // The retired max_emails_per_day is not shown, nor taken as the new daily limit (RF-VTA-16).
+    expect(screen.queryByDisplayValue("77")).toBeNull();
     expect(screen.queryByDisplayValue("12")).toBeNull();
   });
 

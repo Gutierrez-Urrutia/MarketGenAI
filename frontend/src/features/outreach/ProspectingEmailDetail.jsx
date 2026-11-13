@@ -4,12 +4,23 @@
  * Subject and body are model output: they are rendered as plain text only
  * (text nodes inside <pre>), never as HTML. The actions depend on the status:
  * pending_review → regenerate (optionally in another language), reject,
- * approve; approved → copy, mark as sent, reject; sent / rejected → none.
- * «Copiar» never calls the API nor changes the email.
+ * approve; approved → copy, send (real SMTP), mark as sent, reject; sent /
+ * rejected → none. «Copiar» never calls the API nor changes the email.
+ *
+ * Real send: «Enviar» is disabled, with a short note saying why, unless the
+ * SMTP account is complete, both real-send switches are on, the contact is
+ * reviewed, the recipient is not on the do-not-contact list and today's quota
+ * is not used up (sendBlockReason). It always asks for confirmation showing
+ * the recipient and the sender. After a send of unknown outcome (timeout
+ * during DATA) it becomes «Reintentar envío», behind a second, stronger
+ * confirmation; only that one sends `forceRetry`. The opt-out line the server
+ * appends when sending is shown apart from the body, so the reviewer sees
+ * exactly what goes out.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 
-import { DEFAULT_EMAIL_LANGUAGE, EMAIL_LANGUAGES, languageLabel } from "./prospectingEmails";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
+import { DEFAULT_EMAIL_LANGUAGE, EMAIL_LANGUAGES, isUncertain, languageLabel, sendBlockReason } from "./prospectingEmails";
 import { formatDateTime } from "@/utils/dates";
 
 const KP = "outreachPage.prospecting";
@@ -52,6 +63,8 @@ export function EmailStatusBadge({ status, t }) {
   );
 }
 
+const errorText = (t, code) => t(`${KP}.errors.${code}`);
+
 function History({ email, t }) {
   const entries = email.history || [];
   if (!entries.length) return null;
@@ -65,6 +78,7 @@ function History({ email, t }) {
             {entry.by_name && <span> · {fill(t(`${KP}.history.by`), { name: entry.by_name })}</span>}
             {entry.at && <span> · {formatDateTime(entry.at)}</span>}
             {entry.previous_language && <span> · {languageLabel(entry.previous_language)}</span>}
+            {entry.send_error && <span> · {fill(t(`${KP}.history.sendError`), { error: errorText(t, entry.send_error) })}</span>}
             {(entry.previous_subject || entry.previous_body) && (
               <details className="ml-2">
                 <summary className="cursor-pointer text-indigo-600">{t(`${KP}.history.previousVersion`)}</summary>
@@ -79,12 +93,52 @@ function History({ email, t }) {
   );
 }
 
+function BlockNote({ id, reason, sendStatus, t, onOpenSettings }) {
+  const fields = (sendStatus?.smtp_missing_fields || []).map((field) => t(`${KP}.send.fields.${field}`)).join(", ");
+  return (
+    <p id={id} role="note" className="text-right text-xs text-gray-500" data-testid="send-block-note">
+      {fill(t(`${KP}.send.blocked.${reason}`), { fields })}
+      {["smtp_not_configured", "user_disabled"].includes(reason) && onOpenSettings && (
+        <>
+          {" "}
+          <button type="button" className="font-medium text-indigo-600 underline" onClick={() => onOpenSettings()}>
+            {t(`${KP}.send.openSettings`)}
+          </button>
+        </>
+      )}
+    </p>
+  );
+}
+
 export default function ProspectingEmailDetail({
-  email, t, busy = false, regenerating = false, onApprove, onReject, onMarkSent, onRegenerate, onCopy,
+  email, t, busy = false, regenerating = false, sending = false,
+  sendStatus = null, blocked = false,
+  onApprove, onReject, onMarkSent, onRegenerate, onCopy, onSend, onDoNotContact, onOpenSettings,
 }) {
   const [language, setLanguage] = useState(email.language || DEFAULT_EMAIL_LANGUAGE);
+  // null | "send" | "retry" | "doNotContact"
+  const [confirming, setConfirming] = useState(null);
+  const blockNoteId = useId();
   useEffect(() => { setLanguage(email.language || DEFAULT_EMAIL_LANGUAGE); }, [email.id, email.language]);
-  const disabled = busy || regenerating;
+  useEffect(() => { setConfirming(null); }, [email.id]);
+  const disabled = busy || regenerating || sending;
+
+  const uncertain = isUncertain(email);
+  const blockReason = onSend ? sendBlockReason(sendStatus, email, blocked) : null;
+  const lastError = email.last_send_error?.code;
+  const sender = sendStatus?.sender_name
+    ? `${sendStatus.sender_name} <${sendStatus.sender_email}>`
+    : sendStatus?.sender_email || "";
+
+  const confirmSend = () => {
+    const forceRetry = confirming === "retry";
+    setConfirming(null);
+    onSend?.(email, { forceRetry });
+  };
+  const confirmDoNotContact = () => {
+    setConfirming(null);
+    onDoNotContact?.(email);
+  };
 
   return (
     <div className="space-y-3" data-testid="prospecting-email-detail">
@@ -121,10 +175,20 @@ export default function ProspectingEmailDetail({
         <p className="text-xs text-gray-500">{t(`${KP}.detail.subject`)}</p>
         <p className="text-sm font-semibold text-gray-900 whitespace-pre-wrap break-words" data-testid="email-subject">{email.subject}</p>
       </div>
-      <div className="rounded-lg border border-gray-200 bg-white p-2">
+      <div className="rounded-lg border border-gray-200 bg-white p-2 space-y-2">
         <p className="sr-only">{t(`${KP}.detail.body`)}</p>
         <pre className="text-xs whitespace-pre-wrap font-sans leading-relaxed text-gray-700" data-testid="email-body">{email.body}</pre>
+        {email.unsubscribe_line && email.status !== "rejected" && (
+          <div className="rounded-md border border-dashed border-gray-300 bg-gray-50 px-2 py-1.5" data-testid="email-unsubscribe-line">
+            <p className="text-[11px] font-medium uppercase tracking-wide text-gray-500">{t(`${KP}.detail.unsubscribeLabel`)}</p>
+            <p className="text-xs text-gray-600 whitespace-pre-wrap">{email.unsubscribe_line}</p>
+          </div>
+        )}
       </div>
+
+      {blocked && (
+        <p className="text-xs font-medium text-gray-600" data-testid="do-not-contact-mark">{t(`${KP}.detail.onDoNotContactList`)}</p>
+      )}
 
       {email.status === "pending_review" && (
         <div className="flex flex-wrap items-center justify-end gap-1.5">
@@ -146,16 +210,81 @@ export default function ProspectingEmailDetail({
       )}
       {email.status === "approved" && (
         <div className="space-y-1">
+          {uncertain ? (
+            <p role="alert" className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900" data-testid="send-uncertain">
+              {t(`${KP}.send.uncertain`)}
+            </p>
+          ) : lastError && (
+            <p role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800" data-testid="send-last-error">
+              {fill(t(`${KP}.send.lastError`), { error: errorText(t, lastError) })}
+            </p>
+          )}
           <div className="flex flex-wrap items-center justify-end gap-1.5">
             <Action disabled={disabled} onClick={() => onCopy?.(email)}>{t(`${KP}.actions.copy`)}</Action>
             <Action variant="danger" disabled={disabled} onClick={() => onReject?.(email)}>{t(`${KP}.actions.reject`)}</Action>
-            <Action variant="primary" disabled={disabled} onClick={() => onMarkSent?.(email)}>{t(`${KP}.actions.markSent`)}</Action>
+            <Action disabled={disabled} onClick={() => onMarkSent?.(email)}>{t(`${KP}.actions.markSent`)}</Action>
+            {onSend && (
+              <Action
+                variant="primary"
+                disabled={disabled || Boolean(blockReason)}
+                aria-busy={sending || undefined}
+                aria-describedby={blockReason ? blockNoteId : undefined}
+                onClick={() => setConfirming(uncertain ? "retry" : "send")}
+              >
+                {sending ? t(`${KP}.actions.sending`) : t(`${KP}.actions.${uncertain ? "retrySend" : "send"}`)}
+              </Action>
+            )}
           </div>
+          {blockReason && (
+            <BlockNote id={blockNoteId} reason={blockReason} sendStatus={sendStatus} t={t} onOpenSettings={onOpenSettings} />
+          )}
           <p className="text-right text-xs text-gray-500">{t(`${KP}.actions.markSentHint`)}</p>
+        </div>
+      )}
+      {email.status === "sent" && (
+        <p className="text-xs text-gray-600" data-testid="sent-by">
+          {email.send_method === "smtp"
+            ? fill(t(`${KP}.send.sentBySmtp`), { name: email.sent_by_name || email.sent_by || "—", date: formatDateTime(email.sent_at) })
+            : fill(t(`${KP}.send.markedSent`), { name: email.sent_marked_by_name || email.sent_marked_by || "—", date: formatDateTime(email.sent_at) })}
+        </p>
+      )}
+
+      {onDoNotContact && !blocked && email.to_email && (
+        <div className="flex justify-end">
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={() => setConfirming("doNotContact")}
+            className="text-xs font-medium text-gray-500 underline hover:text-gray-700 disabled:opacity-60"
+          >
+            {t(`${KP}.actions.doNotContact`)}
+          </button>
         </div>
       )}
 
       <History email={email} t={t} />
+
+      <ConfirmDialog
+        open={confirming === "send" || confirming === "retry"}
+        title={t(`${KP}.send.${confirming === "retry" ? "retryTitle" : "confirmTitle"}`)}
+        message={fill(t(`${KP}.send.confirmMessage`), {
+          to: email.to_email || "", from: sender || "—", subject: email.subject || "",
+        })}
+        warning={t(`${KP}.send.${confirming === "retry" ? "retryWarning" : "confirmWarning"}`)}
+        cancelLabel={t(`${KP}.send.cancel`)}
+        confirmLabel={t(`${KP}.send.${confirming === "retry" ? "retryButton" : "confirmButton"}`)}
+        onCancel={() => setConfirming(null)}
+        onConfirm={confirmSend}
+      />
+      <ConfirmDialog
+        open={confirming === "doNotContact"}
+        title={t(`${KP}.doNotContact.confirmTitle`)}
+        message={fill(t(`${KP}.doNotContact.confirmMessage`), { to: email.to_email || "" })}
+        cancelLabel={t(`${KP}.send.cancel`)}
+        confirmLabel={t(`${KP}.doNotContact.confirmButton`)}
+        onCancel={() => setConfirming(null)}
+        onConfirm={confirmDoNotContact}
+      />
     </div>
   );
 }

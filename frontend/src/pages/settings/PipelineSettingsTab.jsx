@@ -9,6 +9,12 @@
  * Each card saves on its own (there is no global save button): the tag lists
  * right away, SMTP with «Save account», Hunter with «Save key» and each source
  * with its own form button.
+ *
+ * SMTP card (RF-VTA-16, real send): a badge says whether the account is
+ * complete (smtp_configured / smtp_missing_fields, the same rule the backend
+ * applies before sending); «Real email sending» is a switch saved right away
+ * (off by default; the server's own switch is shown read-only); the daily
+ * limit is saved with the account; «Test connection» logs in without sending.
  */
 import { useEffect, useId, useRef, useState } from "react";
 import toast from "react-hot-toast";
@@ -202,6 +208,29 @@ function useAutoSaveQueue() {
 }
 
 const DEFAULT_SMTP ={ smtp_host: "", smtp_port: 587, smtp_user: "", sender_email: "", sender_name: "" };
+const DAILY_LIMIT_DEFAULT = 50;
+const DAILY_LIMIT_MAX = 100;
+const SMTP_TEST_ERROR_CODES = [
+  "smtp_not_configured", "smtp_auth_failed", "smtp_unavailable", "smtp_host_blocked",
+  "smtp_host_unresolvable", "smtp_credentials_unreadable", "encryption_not_configured",
+];
+const fillText = (text, params) => Object.entries(params).reduce((out, [k, v]) => out.split(`{${k}}`).join(String(v)), text);
+
+/** The daily limit typed by the user, or null when it is not an integer 1..100. */
+export function parseDailyLimit(raw) {
+  const text = String(raw ?? "").trim();
+  if (!/^\d+$/.test(text)) return null;
+  const value = Number(text);
+  return value >= 1 && value <= DAILY_LIMIT_MAX ? value : null;
+}
+
+// What the SMTP card shows about real sending, from a /pipeline/config response.
+const realSendStateOf = (data) => ({
+  configured: Boolean(data?.smtp_configured),
+  missing: Array.isArray(data?.smtp_missing_fields) ? data.smtp_missing_fields : [],
+  enabled: Boolean(data?.outreach_real_send_enabled),
+  serverEnabled: Boolean(data?.outreach_real_send_server_enabled),
+});
 
 export default function PipelineSettingsTab({ isDark = false }) {
   const { t } = useI18n();
@@ -229,6 +258,12 @@ export default function PipelineSettingsTab({ isDark = false }) {
   const [hunterKeyClearPending, setHunterKeyClearPending] = useState(false);
   const [hunterSaving, setHunterSaving] = useState(false);
   const [smtpSaving, setSmtpSaving] = useState(false);
+  const [realSend, setRealSend] = useState(realSendStateOf(null));
+  const [realSendSaving, setRealSendSaving] = useState(false);
+  const [dailyLimit, setDailyLimit] = useState(String(DAILY_LIMIT_DEFAULT));
+  const [smtpTesting, setSmtpTesting] = useState(false);
+  const realSendHintId = useId();
+  const dailyLimitHintId = useId();
   const [sourceFormOpen, setSourceFormOpen] = useState(false);
   const [sourceForm, setSourceForm] = useState({ id: null, name: "", source_type: "rss", config: {} });
   const [sourceTesting, setSourceTesting] = useState(null);
@@ -257,6 +292,8 @@ export default function PipelineSettingsTab({ isDark = false }) {
       });
       setSmtpPasswordConfigured(Boolean(data?.smtp_password_configured));
       setSmtpPasswordInput("");
+      setRealSend(realSendStateOf(data));
+      setDailyLimit(String(data?.outreach_daily_send_limit || DAILY_LIMIT_DEFAULT));
       setHunterKeyConfigured(Boolean(data?.hunter_api_key_configured));
       setHunterKeyInput("");
       setHunterKeyClearPending(false);
@@ -286,6 +323,11 @@ export default function PipelineSettingsTab({ isDark = false }) {
       toast.error(t("settings.pipelineTab.toastInvalidEmail"));
       return;
     }
+    const limit = parseDailyLimit(dailyLimit);
+    if (limit === null) {
+      toast.error(t("settings.pipelineTab.dailyLimitInvalid"));
+      return;
+    }
 
     setSmtpSaving(true);
     try {
@@ -295,6 +337,7 @@ export default function PipelineSettingsTab({ isDark = false }) {
         smtp_user: trimmedUser,
         sender_email: trimmedSenderEmail,
         sender_name: trimmedSenderName,
+        outreach_daily_send_limit: limit,
       };
       // A whitespace-only password is treated as "not provided" (keeps the
       // saved password) — only a non-blank value is sent.
@@ -311,6 +354,8 @@ export default function PipelineSettingsTab({ isDark = false }) {
       });
       setSmtpPasswordConfigured(Boolean(data?.smtp_password_configured));
       setSmtpPasswordInput("");
+      setRealSend(realSendStateOf(data));
+      setDailyLimit(String(data?.outreach_daily_send_limit || limit));
       toast.success(t("settings.pipelineTab.smtpSaved"));
     } catch (error) {
       // Not logged: the request may carry smtp_password.
@@ -319,6 +364,37 @@ export default function PipelineSettingsTab({ isDark = false }) {
         : getApiErrorMessage(error, t("settings.pipelineTab.smtpSaveError")));
     } finally {
       setSmtpSaving(false);
+    }
+  };
+
+  // «Real email sending» switch: saved right away, alone.
+  const toggleRealSend = async () => {
+    if (realSendSaving) return;
+    const next = !realSend.enabled;
+    setRealSendSaving(true);
+    try {
+      const { data } = await pipelineApi.updateConfig({ outreach_real_send_enabled: next });
+      setRealSend(realSendStateOf(data));
+      toast.success(t("settings.pipelineTab.realSendSaved"));
+    } catch (error) {
+      toast.error(getApiErrorMessage(error, t("settings.pipelineTab.realSendSaveError")));
+    } finally {
+      setRealSendSaving(false);
+    }
+  };
+
+  // «Test connection»: logs in with the saved account; nothing is sent.
+  const testSmtpConnection = async () => {
+    if (smtpTesting) return;
+    setSmtpTesting(true);
+    try {
+      await pipelineApi.testSmtp();
+      toast.success(t("settings.pipelineTab.testConnectionOk"));
+    } catch (error) {
+      const code = error?.response?.data?.detail?.code;
+      toast.error(t(`settings.pipelineTab.testConnectionErrors.${SMTP_TEST_ERROR_CODES.includes(code) ? code : "generic"}`));
+    } finally {
+      setSmtpTesting(false);
     }
   };
 
@@ -583,7 +659,24 @@ export default function PipelineSettingsTab({ isDark = false }) {
             )}
           </SettingsSection>
 
-          <SettingsSection isDark={isDark} title={t("settings.pipelineTab.smtpTitle")} IconComp={Mail} desc={t("settings.pipelineTab.smtpDesc")}>
+          <SettingsSection
+            isDark={isDark}
+            title={t("settings.pipelineTab.smtpTitle")}
+            IconComp={Mail}
+            desc={t("settings.pipelineTab.smtpDesc")}
+            badge={(
+              <span data-testid="smtp-account-badge" className={`px-2 py-0.5 rounded-full text-xs font-medium ${realSend.configured ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"}`}>
+                {t(realSend.configured ? "settings.pipelineTab.smtpConfigured" : "settings.pipelineTab.smtpIncomplete")}
+              </span>
+            )}
+          >
+            {!realSend.configured && realSend.missing.length > 0 && (
+              <p className="mb-2 text-xs text-amber-800" data-testid="smtp-missing-fields">
+                {fillText(t("settings.pipelineTab.smtpMissing"), {
+                  fields: realSend.missing.map((field) => t(`settings.pipelineTab.smtpFields.${field}`)).join(", "),
+                })}
+              </p>
+            )}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-1.5">
               <Field label={t("settings.pipelineTab.smtpServerLabel")}><Input value={smtp.smtp_host} onChange={(event) => setSmtp((s) => ({ ...s, smtp_host: event.target.value }))} placeholder="smtp.gmail.com" /></Field>
               <Field label={t("settings.pipelineTab.portLabel")}><Input type="number" value={smtp.smtp_port} onChange={(event) => setSmtp((s) => ({ ...s, smtp_port: Number(event.target.value) || 587 }))} /></Field>
@@ -610,7 +703,53 @@ export default function PipelineSettingsTab({ isDark = false }) {
               <Field label={t("settings.pipelineTab.senderEmailLabel")}><Input value={smtp.sender_email} onChange={(event) => setSmtp((s) => ({ ...s, sender_email: event.target.value }))} placeholder="sales@noondalton.com" /></Field>
               <Field label={t("settings.pipelineTab.senderNameLabel")}><Input value={smtp.sender_name} onChange={(event) => setSmtp((s) => ({ ...s, sender_name: event.target.value }))} placeholder="NoonDalton Sales" /></Field>
             </div>
-            <div className="flex justify-end">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-1.5">
+              <Field label={t("settings.pipelineTab.dailyLimitLabel")} hint={t("settings.pipelineTab.dailyLimitHint")} hintBelow hintId={dailyLimitHintId}>
+                <Input
+                  type="number"
+                  min={1}
+                  max={DAILY_LIMIT_MAX}
+                  step={1}
+                  aria-label={t("settings.pipelineTab.dailyLimitLabel")}
+                  aria-describedby={dailyLimitHintId}
+                  value={dailyLimit}
+                  onChange={(event) => setDailyLimit(event.target.value)}
+                />
+              </Field>
+              <div className="mb-[18px]">
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={realSend.enabled}
+                    aria-label={t("settings.pipelineTab.realSendLabel")}
+                    aria-describedby={realSendHintId}
+                    disabled={realSendSaving}
+                    onClick={toggleRealSend}
+                    className={`relative inline-flex h-5 w-9 flex-shrink-0 items-center rounded-full transition-colors disabled:opacity-60 ${realSend.enabled ? "bg-indigo-600" : "bg-gray-300"}`}
+                  >
+                    <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${realSend.enabled ? "translate-x-4" : "translate-x-0.5"}`} />
+                  </button>
+                  <span className="text-xs font-medium text-gray-700">{t("settings.pipelineTab.realSendLabel")}</span>
+                </div>
+                <p id={realSendHintId} className="mt-1 text-xs text-gray-400">{t("settings.pipelineTab.realSendHint")}</p>
+                {!realSend.serverEnabled && (
+                  <p role="note" className="mt-1 text-xs text-amber-800" data-testid="real-send-server-off">{t("settings.pipelineTab.realSendServerOff")}</p>
+                )}
+              </div>
+            </div>
+            <div className="flex flex-wrap justify-end gap-1.5">
+              <Btn
+                variant="secondary"
+                small
+                className="disabled:opacity-50 disabled:cursor-not-allowed"
+                icon={smtpTesting ? <Loader2 size={12} className="animate-spin" /> : <Plug size={12} />}
+                onClick={testSmtpConnection}
+                disabled={smtpTesting}
+                aria-busy={smtpTesting || undefined}
+              >
+                {smtpTesting ? t("settings.pipelineTab.testingConnection") : t("settings.pipelineTab.testConnectionButton")}
+              </Btn>
               <Btn small className="disabled:opacity-50 disabled:cursor-not-allowed" icon={<Save size={12} />} onClick={saveSmtp} disabled={smtpSaving}>
                 {smtpSaving ? t("settings.pipelineTab.savingButton") : t("settings.pipelineTab.smtpSaveButton")}
               </Btn>

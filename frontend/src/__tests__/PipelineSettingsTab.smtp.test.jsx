@@ -73,7 +73,8 @@ describe("PipelineSettingsTab SMTP password hint", () => {
     expect(row.className).toContain("sm:grid-cols-2");
     const card = row.parentElement;
     const rows = [...card.children].filter((el) => el.className.includes("grid"));
-    expect(rows).toHaveLength(3);
+    // server/port, user/password, sender, daily limit/real-send switch (RF-VTA-16)
+    expect(rows).toHaveLength(4);
     for (const r of rows) {
       expect(r.className).toContain("grid-cols-1 sm:grid-cols-2");
     }
@@ -89,7 +90,8 @@ describe("PipelineSettingsTab SMTP card save", () => {
     sender_email: "ventas@ejemplo.test", sender_name: "Equipo Demo",
     smtp_password_configured: false, hunter_api_key_configured: false,
   };
-  const SMTP_FIELDS = ["smtp_host", "smtp_port", "smtp_user", "sender_email", "sender_name"];
+  // The daily limit of real sending (RF-VTA-16) is saved with the account.
+  const SMTP_FIELDS = ["smtp_host", "smtp_port", "smtp_user", "sender_email", "sender_name", "outreach_daily_send_limit"];
   const flushAll = () => act(async () => { for (let i = 0; i < 5; i += 1) await Promise.resolve(); });
   const saveButton = () => screen.getByRole("button", { name: "settings.pipelineTab.smtpSaveButton" });
   const passwordInput = () => screen.getByText("settings.pipelineTab.passwordLabel").parentElement.querySelector("input[type=password]");
