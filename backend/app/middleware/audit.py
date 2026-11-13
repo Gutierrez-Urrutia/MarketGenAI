@@ -39,6 +39,10 @@ def _infer_action(method: str, path: str) -> str:
         ("PATCH", "/auth/users",            "roles",    "updated_user_roles"),
         ("POST",  "/content/generate",      "",         "generated_content_item"),
         # service-types first: "/catalog/services" is not a prefix of it, but keep the specific rule on top.
+        ("POST",  "/customers/import",      "",         "imported_customers"),
+        ("POST",  "/customers",             "",         "created_customer"),
+        ("PUT",   "/customers",             "",         "updated_customer"),
+        ("DELETE","/customers",             "",         "deleted_customer"),
         ("POST",  "/catalog/service-types", "",         "created_service_type"),
         ("PATCH", "/catalog/service-types", "",         "updated_service_type"),
         ("POST",  "/catalog/services",      "",         "created_service"),

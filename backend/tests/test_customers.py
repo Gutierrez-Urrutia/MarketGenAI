@@ -85,6 +85,7 @@ async def test_delete_customer(client):
     with (
         patch("app.routers.customers.customers_repo.get",    new_callable=AsyncMock, return_value=customer),
         patch("app.routers.customers.customers_repo.delete", new_callable=AsyncMock, return_value=None),
+        patch("app.routers.customers.proposals_repo.count", new_callable=AsyncMock, return_value=0),
     ):
         resp = await client.delete(f"{API}/cust-001")
     assert resp.status_code == 204
