@@ -102,6 +102,31 @@ export async function copyToClipboard(text) {
   }
 }
 
+/**
+ * Who closed a sent / rejected email, for the history table: the SMTP sender
+ * (sent_by_name) when it went out by SMTP, the person who marked it as sent
+ * (sent_marked_by_name) otherwise, or who rejected it. Null when there is no
+ * readable name — also when the stored "name" is just the user id (the
+ * backend falls back to the id when the session has neither name nor email).
+ */
+export function decidedByName(email) {
+  if (!email) return null;
+  let name;
+  let id;
+  if (email.status === "sent") {
+    const bySmtp = email.send_method === "smtp";
+    name = bySmtp ? email.sent_by_name : email.sent_marked_by_name;
+    id = bySmtp ? email.sent_by : email.sent_marked_by;
+  } else if (email.status === "rejected") {
+    name = email.rejected_by_name;
+    id = email.rejected_by;
+  } else {
+    return null;
+  }
+  const text = String(name || "").trim();
+  return text && text !== id ? text : null;
+}
+
 // ── Real send by SMTP (RF-VTA-16) ────────────────────────────────────────────
 export const normalizeAddress = (value) => String(value || "").trim().toLowerCase();
 

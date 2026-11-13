@@ -88,3 +88,20 @@ describe("códigos del envío", () => {
     expect(describeEmailError({ response: { status: 429, data: {} } }).code).toBe("rateLimited");
   });
 });
+
+import { decidedByName } from "@/features/outreach/prospectingEmails";
+
+describe("decidedByName", () => {
+  it.each([
+    ["SMTP", { status: "sent", send_method: "smtp", sent_by: "u1", sent_by_name: "Ana", sent_marked_by_name: "Otro" }, "Ana"],
+    ["manual", { status: "sent", send_method: "manual", sent_marked_by: "u2", sent_marked_by_name: "Beto", sent_by_name: "Otro" }, "Beto"],
+    ["sin send_method", { status: "sent", sent_marked_by: "u2", sent_marked_by_name: "Beto" }, "Beto"],
+    ["rechazado", { status: "rejected", rejected_by: "u3", rejected_by_name: "Caro" }, "Caro"],
+    ["SMTP sin nombre", { status: "sent", send_method: "smtp", sent_by: "u1" }, null],
+    ["nombre = id", { status: "sent", send_method: "smtp", sent_by: "local-dev-admin", sent_by_name: "local-dev-admin" }, null],
+    ["solo espacios", { status: "rejected", rejected_by: "u3", rejected_by_name: "  " }, null],
+    ["correo activo", { status: "approved", approved_by_name: "Ana" }, null],
+  ])("%s", (_name, email, expected) => {
+    expect(decidedByName(email)).toBe(expected);
+  });
+});

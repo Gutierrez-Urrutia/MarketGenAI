@@ -8,7 +8,7 @@ import { useEffect, useMemo, useState } from "react";
 import toast from "react-hot-toast";
 import ProspectingEmailDetail, { EmailStatusBadge } from "@/features/outreach/ProspectingEmailDetail";
 import {
-  SEND_RELOAD_CODES, copyText, copyToClipboard, describeEmailError, isActive, isBlockedRecipient, languageLabel,
+  SEND_RELOAD_CODES, copyText, copyToClipboard, decidedByName, describeEmailError, isActive, isBlockedRecipient, languageLabel,
 } from "@/features/outreach/prospectingEmails";
 import { useI18n } from "@/hooks/useI18n";
 import { useTheme } from "@/context/ThemeContext";
@@ -723,7 +723,7 @@ export function OutreachPage({ navigationState = {}, onNavigate = () => {}, onOu
                 </tr></thead>
                 <tbody className="divide-y divide-slate-100">
                   {closedProspecting.map((email) => {
-                    const decidedBy = email.status === "sent" ? email.sent_marked_by_name : email.rejected_by_name;
+                    const decidedBy = decidedByName(email) || t("outreachPage.prospecting.table.unknownUser");
                     const decidedAt = email.status === "sent" ? email.sent_at : email.rejected_at;
                     return (
                       <tr key={email.id}>
@@ -732,7 +732,7 @@ export function OutreachPage({ navigationState = {}, onNavigate = () => {}, onOu
                         <td className="px-3 py-2 text-gray-500 truncate max-w-[200px]">{email.subject}</td>
                         <td className="px-3 py-2"><EmailStatusBadge status={email.status} t={t} /></td>
                         <td className="px-3 py-2 text-gray-600">{languageLabel(email.language)}</td>
-                        <td className="px-3 py-2 text-gray-600">{decidedBy || "—"}</td>
+                        <td className="px-3 py-2 text-gray-600" data-testid="prospecting-decided-by">{decidedBy}</td>
                         <td className="px-3 py-2 text-gray-500">{String(decidedAt || "").slice(0, 10)}</td>
                       </tr>
                     );
