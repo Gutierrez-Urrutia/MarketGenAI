@@ -277,3 +277,36 @@ class TestEndpoints:
         with patch("app.routers.reports.books_repo.list", new_callable=AsyncMock, return_value=[]):
             resp = await client.get("/api/v1/reports/export?format=csv")
         assert resp.status_code == 200
+
+
+class TestBackfillPlan:
+    """scripts/migrations/backfill_status_dates: toma de la auditoría la fecha de los cambios ya hechos."""
+
+    def test_copies_the_latest_change_per_status(self):
+        from scripts.migrations.backfill_status_dates import plan_updates
+        logs = [
+            {"newStatus": "enviada", "timestamp": "2026-01-02T10:00:00+00:00"},
+            {"newStatus": "en_negociacion", "timestamp": "2026-01-03T10:00:00+00:00"},
+            {"newStatus": "en_negociacion", "timestamp": "2026-01-09T10:00:00+00:00"},   # reabierta
+            {"newStatus": "firmada", "timestamp": "2026-01-10T10:00:00+00:00"},
+        ]
+        assert plan_updates({}, logs) == {
+            "statusDates.enviada": "2026-01-02T10:00:00+00:00",
+            "statusDates.en_negociacion": "2026-01-09T10:00:00+00:00",
+            "statusDates.firmada": "2026-01-10T10:00:00+00:00",
+        }
+
+    def test_never_overwrites_a_date_the_proposal_already_has(self):
+        from scripts.migrations.backfill_status_dates import plan_updates
+        proposal = {"statusDates": {"firmada": "2026-02-01T00:00:00+00:00"}}
+        logs = [{"newStatus": "firmada", "timestamp": "2026-01-10T10:00:00+00:00"},
+                {"newStatus": "enviada", "timestamp": "2026-01-02T10:00:00+00:00"}]
+        assert plan_updates(proposal, logs) == {"statusDates.enviada": "2026-01-02T10:00:00+00:00"}
+
+    def test_without_audit_logs_nothing_changes(self):
+        from scripts.migrations.backfill_status_dates import plan_updates
+        assert plan_updates({"proposal_status": "firmada"}, []) == {}
+
+    def test_ignores_incomplete_log_entries(self):
+        from scripts.migrations.backfill_status_dates import plan_updates
+        assert plan_updates({}, [{"newStatus": "firmada"}, {"timestamp": "2026-01-01"}]) == {}
