@@ -215,3 +215,35 @@ class TestCP004PisoRelativo:
 
     def test_CP_004_el_piso_relativo_es_moderado(self):
         assert 0.2 <= rag.RELATIVE_COVERAGE_FLOOR <= 0.6
+
+
+class TestCP004ConsultaRealDelModal:
+    """Regresión encontrada en la interfaz real: el modal envía junto al título un texto de detalle largo con rótulos
+    de plantilla («Opportunity», «Keywords», «Content used»). Esos términos no están en ningún documento y diluían la
+    cobertura por debajo del umbral, bloqueando el contexto de una propuesta de cobranza legítima."""
+
+    DETALLE = ("Opportunity: Cobranza telefónica cartera de consumo\nCompany: Financiera Horizonte\nContact: María Fuentes\n"
+               "Role: Gerente de Cobranzas\nKeywords: cobranza, mora, WhatsApp, BPO\nContent used: Cartera de 12.000 clientes morosos, "
+               "recuperación actual del 9%. Buscan tercerizar cobranza temprana y media con campañas por WhatsApp.")
+    TITULO = ("Propuesta de Cobranza telefónica cartera de consumo – Financiera Horizonte Financiera Horizonte is evaluating support "
+              "for Cobranza telefónica cartera de consumo. Primary tags: cobranza, mora, WhatsApp, BPO.")
+
+    COBRANZA = ("Servicio BPO de cobranza telefónica de cartera de consumo: gestión de mora temprana y media, campañas por "
+                "WhatsApp, 12 gestores y supervisión de calidad para Retail Mercantil")
+    CHUNKS = [{"docId": "a", "text": COBRANZA, "tokens": rag._tokens(COBRANZA)}, *CHUNKS_BPO[1:]]
+
+    async def _sources(self, service_type, extra):
+        with (
+            patch.object(rag.knowledge_documents_repo, "list", new_callable=AsyncMock, return_value=DOCS_BPO),
+            patch.object(rag.knowledge_chunks_repo, "list", new_callable=AsyncMock, return_value=self.CHUNKS),
+        ):
+            return await rag.retrieve_sources(FAKE_USER_SUB, "Financiera Horizonte", service_type, extra, min_coverage=rag.MIN_QUERY_COVERAGE)
+
+    async def test_CP_004_un_detalle_largo_y_ruidoso_no_bloquea_el_contexto_de_un_servicio_cubierto(self):
+        sources = await self._sources(self.TITULO, self.DETALLE)
+        assert [s["title"] for s in sources] == ["Propuesta Cobranza Retail Mercantil"]
+
+    async def test_CP_004_ni_el_detalle_ni_el_cliente_hacen_pasar_un_servicio_que_no_esta_en_los_documentos(self):
+        sources = await self._sources(
+            "Propuesta de Ciberseguridad gestionada – Financiera Horizonte Monitoreo SOC 24x7 y respuesta a incidentes", self.DETALLE)
+        assert sources == []  # «cobranza», «mora»… están en el detalle, pero lo pedido es otro servicio

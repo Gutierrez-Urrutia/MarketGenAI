@@ -143,24 +143,28 @@ def rank_chunks(
     client_name: str = "",
     top_k: int = TOP_K,
     min_coverage: float = 0.0,
+    focus_query: str = "",
 ) -> list[dict[str, Any]]:
     """Ordena fragmentos por relevancia; devuelve [] si ninguno comparte términos con la consulta o si el mejor
-    cubre menos de `min_coverage` del peso de los términos del servicio (0 desactiva la regla)."""
+    cubre menos de `min_coverage` del peso de los términos del servicio (0 desactiva la regla).
+    `focus_query` es lo que se pide (título y descripción); la cobertura se mide sobre sus términos para que el texto
+    largo de detalle de la oportunidad no la diluya. Sin él, se mide sobre toda la consulta."""
     q_terms = set(_tokens(query))
     if not q_terms or not chunks:
         return []
 
     n = len(chunks)
+    focus_terms = set(_tokens(focus_query)) if focus_query else q_terms
     df: Counter[str] = Counter()
     for c in chunks:
-        df.update(set(c.get("tokens") or []) & q_terms)
+        df.update(set(c.get("tokens") or []) & (q_terms | focus_terms))
     idf = {t: math.log(1 + n / (1 + df[t])) for t in q_terms}
 
     service_terms = q_terms
     client_terms = set(_tokens(client_name))
     # La cobertura mide qué tanto trata el fragmento el SERVICIO pedido: el nombre del cliente casi nunca está en los
     # documentos históricos y no debe restarle relevancia.
-    cov_terms = (q_terms - set(_tokens(client_name))) or q_terms
+    cov_terms = (focus_terms - set(_tokens(client_name))) or focus_terms
     cov_idf = {t: math.log(1 + max(n, COVERAGE_MIN_CORPUS) / (1 + df[t])) for t in cov_terms}
     idf_total = sum(cov_idf.values())
     best_coverage = 0.0
@@ -214,7 +218,7 @@ async def retrieve_sources(
     )
     docs_by_id = {d["id"]: d for d in docs}
     query = " ".join(filter(None, [service_type, extra_query, client_name]))
-    top = rank_chunks(query, chunks, docs_by_id, client_name=client_name, min_coverage=min_coverage)
+    top = rank_chunks(query, chunks, docs_by_id, client_name=client_name, min_coverage=min_coverage, focus_query=service_type)
 
     sources, used = [], 0
     for c in top:
