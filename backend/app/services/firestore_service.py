@@ -523,9 +523,15 @@ class ProposalsRepo(FirestoreRepo):
             if "new_status" not in plan:
                 return plan
             updated_at = now_utc()
-            txn.update(ref, {"proposal_status": plan["new_status"], "updatedAt": updated_at})
+            # RF-VTA-10: fecha del último paso a cada estado; de ahí sale el tiempo de cierre del reporte.
+            txn.update(ref, {
+                "proposal_status": plan["new_status"],
+                "updatedAt": updated_at,
+                f"statusDates.{plan['new_status']}": updated_at,
+            })
             txn.set(audit_ref, plan["audit_log"])
-            return {"proposal": {**proposal, "proposal_status": plan["new_status"], "updatedAt": updated_at}}
+            dates = {**(proposal.get("statusDates") or {}), plan["new_status"]: updated_at}
+            return {"proposal": {**proposal, "proposal_status": plan["new_status"], "updatedAt": updated_at, "statusDates": dates}}
 
         return await _txn(transaction)
 
