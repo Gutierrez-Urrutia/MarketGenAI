@@ -60,6 +60,7 @@ async def test_generate_proposal_now_success():
         "status": "generated",
         "language": "es",
         "customPrompt": "Enfoque en ROI rápido",
+        "currency": "USD",  # propuestas sin moneda (RF-VTA-02) se tratan como USD
     })
     gen_content.assert_awaited_once()
 

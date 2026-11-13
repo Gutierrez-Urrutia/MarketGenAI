@@ -46,7 +46,11 @@ def _output_dir() -> Path:
     return output_dir
 
 
-def _format_proposal_line_items(line_items: list[dict] | None, total_amount: float | None) -> str:
+def _format_proposal_line_items(
+    line_items: list[dict] | None,
+    total_amount: float | None,
+    currency: str = "USD",
+) -> str:
     if not line_items:
         return (
             "No pricing items were provided. The cost table must contain only one row "
@@ -63,6 +67,7 @@ def _format_proposal_line_items(line_items: list[dict] | None, total_amount: flo
             f"Description: {item.get('description') or 'N/A'} | "
             f"Quantity: {qty if qty is not None else 'A definir'} | "
             f"Unit price: {unit_price if unit_price is not None else 'A definir'}"
+            + (f" {item.get('currency') or currency}" if unit_price is not None else "")
         )
 
     total = total_amount if total_amount is not None else "A definir"
@@ -142,20 +147,26 @@ def _to_number(value: Any) -> float | None:
         return None
 
 
-def format_usd(value: float | None, fallback: str, lang: str = "en") -> str:
-    """$21,950 USD en inglés; $21.950 USD en español/portugués, coherente con el texto del documento."""
+def format_money(value: float | None, fallback: str, lang: str = "en", currency: str = "USD") -> str:
+    """$21,950 USD en inglés; $21.950 USD en español/portugués, coherente con el texto del documento.
+    CLP sigue la misma regla de separadores y nunca lleva decimales (ej. $1.500 CLP)."""
     if value is None:
         return fallback
     text = f"{value:,.0f}"
     if lang in ("es", "pt"):
         text = text.replace(",", ".")
-    return f"${text} USD"
+    return f"${text} {currency or 'USD'}"
+
+
+def format_usd(value: float | None, fallback: str, lang: str = "en") -> str:
+    return format_money(value, fallback, lang, "USD")
 
 
 def build_pricing_table_html(
     line_items: list[dict] | None,
     total_amount: float | None,
     language: str = "es",
+    currency: str = "USD",
 ) -> str:
     """Tabla de precios determinista: el LLM nunca escribe cifras, solo se muestran las ingresadas."""
     lang = _lang_code(language)
@@ -167,9 +178,10 @@ def build_pricing_table_html(
         unit = _to_number(item.get("unitPrice") if item.get("unitPrice") is not None else item.get("unit_price"))
         subtotal = qty * unit if qty is not None and unit is not None else None
         qty_text = undefined if qty is None else f"{qty:g}"
+        line_currency = item.get("currency") or currency
         rows.append(
             f"<tr><td>{escape(str(name))}</td><td>{escape(str(item.get('description') or '—'))}</td>"
-            f"<td>{escape(qty_text)}</td><td>{format_usd(unit, undefined, lang)}</td><td>{format_usd(subtotal, undefined, lang)}</td></tr>"
+            f"<td>{escape(qty_text)}</td><td>{format_money(unit, undefined, lang, line_currency)}</td><td>{format_money(subtotal, undefined, lang, line_currency)}</td></tr>"
         )
     if not rows:
         rows.append(f"<tr><td>{undefined}</td><td>—</td><td>—</td><td>{undefined}</td><td>{undefined}</td></tr>")
@@ -266,6 +278,7 @@ async def _generate_proposal_content(
     user_id: str | None = None,
     template_content: str | None = None,
     commercial_terms: str | None = None,
+    currency: str = "USD",
 ) -> dict:
     """Call the LLM with the real proposal context and persist its response.
 
@@ -275,7 +288,7 @@ async def _generate_proposal_content(
     headings = SECTION_HEADINGS[lang]
     has_terms = bool(commercial_terms_html(commercial_terms or ""))
     length_instructions = _length_instructions(headings)
-    pricing_context = _format_proposal_line_items(line_items, total_amount)
+    pricing_context = _format_proposal_line_items(line_items, total_amount, currency)
     rag_context, sources = await get_rag_context_and_sources(
         user_id,
         client_name=client_name,
@@ -321,7 +334,7 @@ async def _generate_proposal_content(
         "commercial terms yourself anywhere in the proposal."
         if has_terms
         else (
-            "- Commercial terms: state the currency (USD), the billing period, and that prices exclude applicable taxes unless the data says otherwise (mark it as an assumption, writing the label in the output language). Contract duration, notice periods and payment terms taken from the historical context must be labeled as standard terms subject to agreement."
+            f"- Commercial terms: state the currency ({currency}), the billing period, and that prices exclude applicable taxes unless the data says otherwise (mark it as an assumption, writing the label in the output language). Contract duration, notice periods and payment terms taken from the historical context must be labeled as standard terms subject to agreement."
         )
     )
     prompt = f"""
@@ -383,7 +396,7 @@ REQUIRED STRUCTURE:
     )
     content = inject_pricing_table(
         _strip_code_fences(content),
-        build_pricing_table_html(line_items, total_amount, lang),
+        build_pricing_table_html(line_items, total_amount, lang, currency),
     )
     # Después de la tabla: si el LLM omitió el marcador, las condiciones quedan tras ella.
     content = inject_commercial_terms(content, commercial_terms or "")
@@ -455,6 +468,7 @@ async def generate_proposal_now(
     length = options.get("length", "standard")
     language = options.get("language", "es")
     custom_prompt = options.get("customPrompt") or options.get("custom_prompt")
+    currency = options.get("currency") or "USD"
 
     generated = await _generate_proposal_content(
         title,
@@ -470,6 +484,7 @@ async def generate_proposal_now(
         user_id=options.get("userId"),
         template_content=options.get("templateContent"),
         commercial_terms=options.get("commercialTerms"),
+        currency=currency,
     )
 
     await jobs_repo.update_progress(job_id, 80, "processing")
@@ -488,6 +503,7 @@ async def generate_proposal_now(
         "status": "generated",
         "language": language,
         "customPrompt": custom_prompt,
+        "currency": currency,
     })
 
     await _save_generation_version(proposal_id, "Generated", author)

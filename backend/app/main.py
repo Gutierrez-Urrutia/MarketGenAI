@@ -17,6 +17,7 @@ from app.routers import (
     auth,
     books,
     campaigns,
+    catalog,
     chat,
     content_types,
     customers,
@@ -86,6 +87,7 @@ app.include_router(customers.router, prefix="/api/v1")
 app.include_router(knowledge.router, prefix="/api/v1")
 app.include_router(sales_enablement.router, prefix="/api/v1")
 app.include_router(templates.router, prefix="/api/v1")
+app.include_router(catalog.router, prefix="/api/v1")
 app.include_router(assets.router, prefix="/api/v1")
 app.include_router(jobs.router, prefix="/api/v1")
 app.include_router(platform.router, prefix="/api/v1")

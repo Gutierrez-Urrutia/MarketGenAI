@@ -64,7 +64,7 @@ from app.services.firestore_service import proposals_repo, jobs_repo, settings_r
 from app.services import crm_service, deepseek_service
 from app.services.storage_service import storage_service
 from app.services.template_service import classification_labels
-from app.workers.tasks.proposal_tasks import _lang_code, format_usd
+from app.workers.tasks.proposal_tasks import _lang_code, format_money, format_usd
 from app.services.crm_service import (
     CrmAuthError,
     CrmError,
@@ -210,6 +210,21 @@ def _format_usd(value, not_calculated: str = "Not calculated", lang: str = "en")
     return format_usd(amount, not_calculated, lang)
 
 
+def _format_money(value, not_calculated: str = "Not calculated", lang: str = "en", currency: str = "USD") -> str:
+    try:
+        amount = float(value)
+    except (TypeError, ValueError):
+        return not_calculated
+    return format_money(amount, not_calculated, lang, currency)
+
+
+def _resolve_currency(proposal: dict) -> str:
+    """Proposals created before RF-VTA-02 have no currency: they were always USD."""
+    structured = proposal.get("structured_content") or proposal.get("structuredContent") or {}
+    currency = str(proposal.get("currency") or structured.get("currency") or "USD").upper()
+    return currency if currency in ("USD", "CLP") else "USD"
+
+
 def _resolve_total_amount(proposal: dict):
     """The frontend has saved this under totalAmount, total_amount, or nested
     in structured(_)Content.totalAmount depending on which flow wrote it —
@@ -264,7 +279,7 @@ def _proposal_cover_fields(proposal: dict) -> dict:
         # Proposal"); ahora solo se muestran si la propuesta trae serviceType/industry válidos.
         "industry": classification["industria"] or "",
         "service_line": classification["servicio"] or "",
-        "total_amount_display": _format_usd(total_amount, labels["not_calculated"], lang),
+        "total_amount_display": _format_money(total_amount, labels["not_calculated"], lang, _resolve_currency(proposal)),
         "issued_on": _localized_date(issued_on, lang),
         "valid_until": _localized_date(valid_until, lang),
         "prepared_by": proposal.get("issuedBy") or "—",
@@ -1073,6 +1088,7 @@ async def generate_proposal_draft(
         "proposal_status": ProposalStatus.borrador.value,
         "language": body.language,
         "customPrompt": body.customPrompt,
+        "currency": body.currency,
         "userId": user.sub,
     }, doc_id=str(uuid.uuid4()))
 
