@@ -3,7 +3,7 @@
 POST /outreach-emails writes an email for one contact of one lead; the review
 actions approve, reject and mark it as sent (`mark-sent` is only a mark —
 nothing is sent by it) and regenerate it while pending. POST /{id}/send
-delivers an approved email by SMTP with the user's account, only with both
+sends an approved email from the user's connected mailbox, only with both
 real-send switches on (OUTREACH_REAL_SEND_ENABLED and the user's own); GET
 /send-status says whether that is possible, and /do-not-contact holds the
 addresses and domains never to email. Every route checks that the email /
@@ -143,7 +143,7 @@ async def approve_outreach_email(email_id: str, user: CurrentUser = Depends(get_
 @router.patch("/{email_id}/reject", response_model=OutreachEmailResponse)
 async def reject_outreach_email(email_id: str, user: CurrentUser = Depends(get_current_user)):
     """pending_review | approved → rejected (final). 409 send_in_progress
-    while an SMTP send of it is running."""
+    while a send of it is running."""
     return await _decide(email_id, user, "reject")
 
 
@@ -151,8 +151,8 @@ async def reject_outreach_email(email_id: str, user: CurrentUser = Depends(get_c
 async def mark_outreach_email_sent(email_id: str, user: CurrentUser = Depends(get_current_user)):
     """approved → sent (send_method manual). Only a mark: no email is sent.
     422 contact_rejected when the contact was rejected meanwhile; 409
-    send_in_progress while an SMTP send of it is running. Allowed after a send
-    of unknown outcome (smtp_timeout), and it frees that send's lock."""
+    send_in_progress while a send of it is running. Allowed after a send of
+    unknown outcome (send_timeout), and it frees that send's lock."""
     return await _decide(email_id, user, "mark_sent")
 
 
@@ -164,10 +164,12 @@ async def send_outreach_email(
     body: OutreachEmailSend,
     user: CurrentUser = Depends(get_current_user),
 ):
-    """approved → sent by SMTP (send_method smtp), to the recipient the user
-    confirmed in `confirm_to_email`. See OutreachEmailService.send for every
-    refusal code; a 504 smtp_timeout means the email may have been sent: retry
-    only with `force_retry`, or mark it as sent."""
+    """approved → sent from the user's connected mailbox (send_method
+    platform), to the recipient the user confirmed in `confirm_to_email`. See
+    OutreachEmailService.send for every refusal code; a 504 send_timeout
+    means the email may have been sent: retry only with `force_retry` (which
+    first reads the message, and does not send it again if it went out), or
+    mark it as sent."""
     try:
         return await outreach_email_service.get_service().send(
             email_id, user.sub, _user_name(user), body.confirm_to_email, body.force_retry,

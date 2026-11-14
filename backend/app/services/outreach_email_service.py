@@ -1,10 +1,10 @@
 """Prospecting emails (Agente 3, RF-VTA-16): write one email for one contact
 of one lead, and record every review decision on it.
 
-An approved email is closed either by `send` (delivered by SMTP with the
-user's account, only with both real-send switches on; see `send` below and
-smtp_service.py) or by `mark_sent` (the user sent it by other means: nothing
-is sent). The model's output is plain text, validated before it is stored
+An approved email is closed either by `send` (sent from the user's connected
+Microsoft mailbox, only with both real-send switches on; see `send` below,
+mail_connection_service.py and graph_client.py) or by `mark_sent` (the user
+sent it by other means: nothing is sent). The model's output is plain text, validated before it is stored
 (JSON with a non-empty subject and body, within length limits), and never
 treated as HTML.
 
@@ -31,8 +31,10 @@ from app.core.pipeline_constants import (
     OUTREACH_EMAIL_LANGUAGES,
 )
 from app.schemas.outreach_email import ACTIVE_EMAIL_STATUSES, contact_blocks, plan_email_transition
-from app.services import smtp_service
+from app.services import graph_client, outreach_send_rules
 from app.services.contact_research_service import review_status_of, visible_contacts
+from app.services.graph_client import GraphError
+from app.services.mail_connection_service import MailConnectionError
 
 logger = logging.getLogger("marketgen.outreach_emails")
 
@@ -214,7 +216,7 @@ def _normalized_address(value: Any) -> str:
 
 
 def _valid_address(value: str) -> bool:
-    """Syntax only (whether the domain receives mail is the SMTP server's
+    """Syntax only (whether the domain receives mail is the mail service's
     answer). Outside production the reserved `.test` domains of synthetic
     data are accepted too (test_environment); in production they are not."""
     test_environment = settings.app_env.strip().lower() != "production"
@@ -226,7 +228,7 @@ def _valid_address(value: str) -> bool:
 
 
 def daily_send_limit(config: Optional[Dict[str, Any]]) -> int:
-    """The user's daily SMTP quota, within 1..OUTREACH_DAILY_SEND_LIMIT_MAX."""
+    """The user's daily send quota, within 1..OUTREACH_DAILY_SEND_LIMIT_MAX."""
     raw = (config or {}).get("outreach_daily_send_limit", OUTREACH_DAILY_SEND_LIMIT_DEFAULT)
     if isinstance(raw, bool) or not isinstance(raw, int):
         raw = OUTREACH_DAILY_SEND_LIMIT_DEFAULT
@@ -245,7 +247,8 @@ class OutreachEmailService:
         configs=None,
         do_not_contact=None,
         send_counters=None,
-        send_mail: Optional[Callable[..., Awaitable[None]]] = None,
+        mailbox=None,
+        mail_transport=None,
     ):
         self.leads = leads
         self.contacts = contacts
@@ -253,12 +256,15 @@ class OutreachEmailService:
         self.generate_text = generate_text
         self.clock = clock
         self.new_id = new_id
-        # Real sending (RF-VTA-16): pipeline configs (SMTP account), the
-        # do-not-contact list, the daily counters and the SMTP delivery.
+        # Real sending (RF-VTA-16): pipeline configs (the switches and the
+        # daily limit), the do-not-contact list, the daily counters, the
+        # user's connected mailbox (MailConnectionService) and the transport
+        # (create_draft / send_draft / get_message_state: graph_client).
         self.configs = configs
         self.do_not_contact = do_not_contact
         self.send_counters = send_counters
-        self.send_mail = send_mail or smtp_service.deliver
+        self.mailbox = mailbox
+        self.transport = mail_transport or graph_client
 
     # ── Reads ────────────────────────────────────────────────────────────────
     async def _lead_for_user(self, lead_id: str, user_id: str) -> Dict[str, Any]:
@@ -397,7 +403,7 @@ class OutreachEmailService:
 
     async def decide(self, email_id: str, user_id: str, user_name: Optional[str], action: str) -> Dict[str, Any]:
         """approve / reject / mark_sent. mark_sent and reject are refused with
-        409 send_in_progress while an SMTP send of the email is running."""
+        409 send_in_progress while a send of the email is running."""
         email = await self.email_for_user(email_id, user_id)
         plan = plan_email_transition(email, user_id, action)
         if not plan["ok"]:
@@ -435,7 +441,7 @@ class OutreachEmailService:
         )
 
 
-    # ── Real sending (SMTP) ──────────────────────────────────────────────────
+    # ── Real sending (from the user's connected mailbox) ─────────────────────
     def _require_send_repos(self) -> None:
         if self.configs is None or self.do_not_contact is None:
             raise RuntimeError("OutreachEmailService was built without the real-send repositories")
@@ -446,55 +452,66 @@ class OutreachEmailService:
         return await self.do_not_contact.find_block(user_id, address)
 
     async def _config(self, user_id: str) -> Dict[str, Any]:
-        doc = await self.configs.get_by_user(user_id)
-        return {"smtp_port": smtp_service.DEFAULT_SMTP_PORT, **(doc or {})}
+        return dict(await self.configs.get_by_user(user_id) or {})
+
+    def _mailbox(self):
+        if self.mailbox is None:
+            from app.services import mail_connection_service
+
+            self.mailbox = mail_connection_service.get_service()
+        return self.mailbox
 
     async def send_status(self, user_id: str) -> Dict[str, Any]:
         """Whether «Enviar» can be used now; no secret in it."""
         self._require_send_repos()
         config = await self._config(user_id)
-        missing = smtp_service.smtp_config_problems(config)
+        mailbox = await self._mailbox().status(user_id)
+        connected = bool(mailbox["connected"])
         sent_today = await self.send_counters.count_for(user_id, self.clock()) if self.send_counters else 0
         return {
-            "smtp_configured": not missing,
-            "smtp_missing_fields": missing,
-            "server_send_enabled": smtp_service.server_send_enabled(),
-            "user_send_enabled": smtp_service.user_send_enabled(config),
-            "real_send_enabled": smtp_service.real_send_enabled(config),
+            "oauth_configured": bool(mailbox["oauth_configured"]),
+            "mailbox_connected": connected,
+            "mailbox_needs_reconnect": bool(mailbox["needs_reconnect"]),
+            "mailbox_address": mailbox["address"] if connected else None,
+            "server_send_enabled": outreach_send_rules.server_send_enabled(),
+            "user_send_enabled": outreach_send_rules.user_send_enabled(config),
+            "real_send_enabled": outreach_send_rules.real_send_enabled(config),
             "daily_limit": daily_send_limit(config),
             "sent_today": sent_today,
-            "sender_email": str(config.get("sender_email") or "").strip(),
-            "sender_name": str(config.get("sender_name") or "").strip(),
+            "sender_email": str(mailbox["address"] or "") if connected else "",
+            "sender_name": str(mailbox["display_name"] or "") if connected else "",
         }
 
     async def send(
         self, email_id: str, user_id: str, user_name: Optional[str], confirm_to_email: str,
         force_retry: bool = False,
     ) -> Dict[str, Any]:
-        """Deliver an approved email by SMTP with the user's account.
+        """Send an approved email from the user's connected mailbox.
 
         Checks, in order (every refusal before the claim reserves nothing):
         owner (404/403) → approved (422 invalid_email_transition) → both
-        real-send switches (403 real_send_disabled) → complete account (422
-        smtp_not_configured + missing) → password readable (503
-        encryption_not_configured / 409 smtp_credentials_unreadable) → the
-        contact, read again (422 contact_not_approved while pending or
-        rejected; 409 recipient_changed when its address is no longer the
-        email's) → a valid recipient (422 contact_without_email /
-        invalid_recipient) → the do-not-contact list (422 do_not_contact) →
-        the confirmed recipient (409 recipient_mismatch) → the SMTP host (422
-        smtp_host_blocked / smtp_host_unresolvable) → lock and daily quota,
-        in one transaction (409 send_in_progress / send_uncertain, 429
-        daily_limit_reached) → SMTP.
+        real-send switches (403 real_send_disabled) → a usable mailbox (409
+        mailbox_not_connected / mailbox_reconnect_required, 503
+        encryption_not_configured, or the mail service failing while the
+        token is renewed) → the contact, read again (422 contact_not_approved
+        while pending or rejected; 409 recipient_changed when its address is
+        no longer the email's) → a valid recipient (422 contact_without_email
+        / invalid_recipient) → the do-not-contact list (422 do_not_contact) →
+        the confirmed recipient (409 recipient_mismatch) → lock and daily
+        quota, in one transaction (409 send_in_progress / send_uncertain, 429
+        daily_limit_reached) → the mail service.
 
-        A failure before DATA (502 smtp_auth_failed / smtp_sender_refused /
-        smtp_recipient_refused / smtp_message_refused / smtp_unavailable, or
-        a host refused at connection time) frees the lock and gives the quota
-        slot back: the email stays approved and may be sent again. A break
-        during DATA (504 smtp_timeout) may have delivered it: the lock stays,
+        The email goes out as a draft that is then sent (_deliver). Any
+        failure before the service accepted the send (409
+        mailbox_reconnect_required / missing_permissions, 502 mail_rejected /
+        mail_service_unavailable, 503 mail_throttled, 504
+        mail_service_timeout) frees the lock and gives the quota slot back:
+        the email stays approved and may be sent again. A timeout or server
+        error once the send was requested (504 send_timeout) may have sent it:
+        the message is read once, and unless it is out the lock stays
         `uncertain`, the slot stays used, and only `force_retry`, mark_sent or
-        reject resolve it. On success the email is `sent` (send_method smtp)
-        and the lead is recomputed like for any other decision."""
+        reject resolve it. On success the email is `sent` (send_method
+        "platform") and the lead is recomputed like for any other decision."""
         self._require_send_repos()
         email = await self.email_for_user(email_id, user_id)
         plan = plan_email_transition(email, user_id, "send")
@@ -502,12 +519,11 @@ class OutreachEmailService:
             raise OutreachEmailError(_TRANSITION_HTTP.get(plan["code"], 422), plan["code"], status=plan["from_status"])
 
         config = await self._config(user_id)
+        if not outreach_send_rules.real_send_enabled(config):
+            raise OutreachEmailError(403, "real_send_disabled")
         try:
-            if not smtp_service.real_send_enabled(config):
-                raise OutreachEmailError(403, "real_send_disabled")
-            account = smtp_service.require_account(config)
-            password = smtp_service.decrypt_password(config)
-        except smtp_service.SmtpError as exc:
+            mailbox = await self._mailbox().for_send(user_id)
+        except MailConnectionError as exc:
             raise OutreachEmailError(exc.status_code, exc.code, **exc.extra) from None
 
         contact = await self.contacts.get(email.get("contact_id") or "")
@@ -524,42 +540,102 @@ class OutreachEmailService:
             raise OutreachEmailError(422, "do_not_contact")
         if _normalized_address(confirm_to_email) != _normalized_address(to_email):
             raise OutreachEmailError(409, "recipient_mismatch")
-        try:
-            await smtp_service.check_host(account.host)
-        except smtp_service.SmtpError as exc:
-            raise OutreachEmailError(exc.status_code, exc.code) from None
 
+        # Whether this send takes over one of unknown outcome (force_retry).
+        retrying_uncertain = bool((email.get("send_lock") or {}).get("uncertain")) and force_retry
         lock_id = self.new_id()
         claim = await self.emails.claim_send(
-            email_id, user_id, lock_id, smtp_service.new_message_id(account.sender_email), self.clock(),
-            daily_send_limit(config), force_retry=force_retry,
+            email_id, user_id, lock_id, self.clock(), daily_send_limit(config),
+            mailbox["address"], mailbox["display_name"], force_retry=force_retry,
         )
         if not claim["ok"]:
             raise OutreachEmailError(_TRANSITION_HTTP.get(claim["code"], 409), claim["code"])
         claimed = claim["email"]
-        message = smtp_service.build_message(claimed, account, claim["message_id"], self.clock())
+        progress = {"previous_resolved": False}
         try:
-            await self.send_mail(account, password, message)
-        except smtp_service.SmtpError as exc:
+            outcome = await self._deliver(email_id, claimed, mailbox["access_token"], lock_id, progress)
+        except GraphError as exc:
+            if exc.code == "mailbox_reconnect_required":
+                await self._mailbox().flag_reconnect(user_id, "send_refused")
+            # A forced retry that sent nothing, while the earlier attempt is
+            # still unknown (its message could not be read), stays uncertain;
+            # this attempt's slot is given back.
+            keep_uncertain = exc.uncertain or (retrying_uncertain and not progress["previous_resolved"])
             await self.emails.release_send(
-                email_id, user_id, lock_id, self.clock(), exc.code, exc.uncertain, claim["day"],
+                email_id, user_id, lock_id, self.clock(), exc.code, keep_uncertain, claim["day"],
+                return_slot=not exc.uncertain,
             )
             logger.warning("outreach_emails: send of %s failed (%s)", email_id, exc.code)
-            raise OutreachEmailError(exc.status_code, exc.code) from None
-        except Exception:
+            raise OutreachEmailError(exc.status_code, exc.code, **exc.extra) from None
+        except Exception as exc:  # noqa: BLE001
             # Unknown failure inside the delivery: its outcome is unknown too.
             await self.emails.release_send(
-                email_id, user_id, lock_id, self.clock(), "smtp_timeout", True, claim["day"],
+                email_id, user_id, lock_id, self.clock(), "send_timeout", True, claim["day"],
             )
-            logger.exception("outreach_emails: unexpected failure sending %s", email_id)
-            raise OutreachEmailError(504, "smtp_timeout") from None
+            logger.error("outreach_emails: unexpected failure sending %s (%s)", email_id, type(exc).__name__)
+            raise OutreachEmailError(504, "send_timeout") from None
 
+        if outcome["already_sent"]:
+            # The earlier attempt had gone out: nothing new was sent.
+            await self.emails.give_back_slot(user_id, claim["day"], self.clock())
+        ids = outcome["ids"]
         return await self._apply(
             claimed, user_id, user_name, "send",
-            extra={"smtp_message_id": claim["message_id"]},
-            history_extra={"send_method": "smtp", "smtp_message_id": claim["message_id"]},
+            extra={
+                "graph_message_id": ids["id"],
+                "internet_message_id": ids.get("internet_message_id") or "",
+                "conversation_id": ids.get("conversation_id") or "",
+            },
+            history_extra={
+                "send_method": "platform",
+                "internet_message_id": ids.get("internet_message_id") or "",
+                **({"resolved_by_reading": True} if outcome["already_sent"] else {}),
+            },
             lock_id=lock_id,
         )
+
+    async def _deliver(
+        self, email_id: str, claimed: Dict[str, Any], token: str, lock_id: str, progress: Dict[str, bool],
+    ) -> Dict[str, Any]:
+        """Send the claimed email: reuse the draft of an earlier attempt when
+        there is one (reading it first: if it is no longer a draft, it went
+        out and is not sent again), else create a draft and store its ids;
+        then send the draft. When the send itself is uncertain, the message is
+        read once: if it went out, that is a success. Returns
+        {"already_sent", "ids"}; raises GraphError."""
+        ids: Optional[Dict[str, str]] = None
+        previous_id = str(claimed.get("graph_message_id") or "")
+        if previous_id:
+            state = await self.transport.get_message_state(token, previous_id)
+            if state is not None:
+                ids = {
+                    "id": previous_id,
+                    "internet_message_id": state["internet_message_id"] or str(claimed.get("internet_message_id") or ""),
+                    "conversation_id": state["conversation_id"] or str(claimed.get("conversation_id") or ""),
+                }
+                if not state["is_draft"]:
+                    return {"already_sent": True, "ids": ids}
+                progress["previous_resolved"] = True  # still a draft: it was not sent
+        if ids is None:
+            ids = await self.transport.create_draft(
+                token, claimed.get("subject"),
+                outreach_send_rules.body_as_sent(claimed.get("body"), claimed.get("language")),
+                (claimed.get("to_email") or "").strip(),
+            )
+            await self.emails.record_draft(email_id, lock_id, ids, self.clock())
+        try:
+            await self.transport.send_draft(token, ids["id"])
+        except GraphError as exc:
+            if not exc.uncertain:
+                raise
+            try:
+                state = await self.transport.get_message_state(token, ids["id"])
+            except GraphError:
+                state = None
+            if state is not None and not state["is_draft"]:
+                return {"already_sent": False, "ids": ids}
+            raise
+        return {"already_sent": False, "ids": ids}
 
     # ── Do-not-contact list ──────────────────────────────────────────────────
     async def add_do_not_contact(

@@ -274,7 +274,18 @@ def test_send_needs_a_reviewed_contact_and_an_approved_email():
 
 def test_transition_fields_of_send_and_mark_sent():
     send_fields, _ = OutreachEmailsRepo.transition_fields("send", "approved", "sent", USER, "Ana", NOW)
-    assert send_fields["send_method"] == "smtp" and send_fields["sent_by"] == USER and send_fields["sent_at"] == NOW
+    assert send_fields["send_method"] == "platform" and send_fields["sent_by"] == USER and send_fields["sent_at"] == NOW
     mark_fields, _ = OutreachEmailsRepo.transition_fields("mark_sent", "approved", "sent", USER, "Ana", NOW)
     assert mark_fields["send_method"] == "manual" and mark_fields["sent_marked_by"] == USER
     assert "sent_by" not in mark_fields
+
+
+def test_send_method_accepts_only_platform_and_manual():
+    import pydantic
+    from app.schemas.outreach_email import EmailHistoryEntry
+
+    base = {"action": "send", "at": NOW, "by": USER, "from_status": "approved", "to_status": "sent"}
+    assert EmailHistoryEntry(**base, send_method="platform").send_method == "platform"
+    assert EmailHistoryEntry(**base, send_method="manual").send_method == "manual"
+    with pytest.raises(pydantic.ValidationError):
+        EmailHistoryEntry(**base, send_method="smtp")

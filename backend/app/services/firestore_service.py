@@ -19,7 +19,7 @@ Collections used by this project:
   - leads/{leadId}
   - contacts/{contactId}
   - outreach_emails/{emailId}
-  - outreach_send_counters/{hash(userId, day)}   (SMTP sends per user and UTC day)
+  - outreach_send_counters/{hash(userId, day)}   (platform sends per user and UTC day)
   - do_not_contact/{hash(userId, kind, value)}   (addresses / domains never to email)
   - mail_oauth_states/{hash(state)}   (pending mailbox connections: single use, expire)
   - mail_connections/{userId}         (connected Microsoft mailbox, tokens encrypted)
@@ -50,6 +50,7 @@ from app.core.pipeline_constants import (
     COMPOSE_STARTABLE_STATUSES,
     COMPOSING_STALE_SECONDS,
     EMAIL_RECOMPUTABLE_STATUSES,
+    MAIL_SEND_MAX_HTTP_CALLS,
     OUTREACH_EMAILS_PER_LEAD_LIMIT,
     SEND_LOCK_STALE_FACTOR,
 )
@@ -980,7 +981,7 @@ class OutreachEmailsRepo(FirestoreRepo):
         if action == "mark_sent":
             fields["send_method"] = "manual"
         elif action == "send":
-            fields["send_method"] = "smtp"
+            fields["send_method"] = "platform"
         entry = {
             "action": action,
             "at": now,
@@ -994,8 +995,11 @@ class OutreachEmailsRepo(FirestoreRepo):
 
     @staticmethod
     def send_lock_stale_after() -> timedelta:
-        """Age after which a (not uncertain) send lock is presumed dead."""
-        return timedelta(seconds=float(settings.smtp_timeout_seconds) * SEND_LOCK_STALE_FACTOR)
+        """Age after which a (not uncertain) send lock is presumed dead: twice
+        the longest a claimed send can take (MAIL_SEND_MAX_HTTP_CALLS calls)."""
+        return timedelta(
+            seconds=float(settings.mail_http_timeout_seconds) * MAIL_SEND_MAX_HTTP_CALLS * SEND_LOCK_STALE_FACTOR,
+        )
 
     @staticmethod
     def _without_deleted(doc: Dict[str, Any]) -> Dict[str, Any]:
@@ -1059,16 +1063,15 @@ class OutreachEmailsRepo(FirestoreRepo):
         return await _txn(transaction)
 
     async def claim_send(
-        self, email_id: str, user_id: str, lock_id: str, message_id: str, now: datetime,
-        daily_limit: int, force_retry: bool = False,
+        self, email_id: str, user_id: str, lock_id: str, now: datetime, daily_limit: int,
+        sender_address: str, sender_display_name: str, force_retry: bool = False,
     ) -> Dict[str, Any]:
         """Take the email's send lock and one slot of today's quota, in one
         transaction that re-reads both (two clicks / two tabs: exactly one
         wins). Refusals: email_not_found, forbidden, invalid_email_transition
         (not approved), send_in_progress / send_uncertain (plan_send_lock),
-        daily_limit_reached. The email keeps a Message-ID from an earlier
-        attempt (a retry reuses it), else gets `message_id`. Returns {"ok",
-        "code", "email", "message_id", "day"}."""
+        daily_limit_reached. Stores the mailbox it is sent from (what «Desde»
+        shows afterwards). Returns {"ok", "code", "email", "day"}."""
         ref = self._doc(email_id)
         day = OutreachSendCountersRepo.day_of(now)
         counter_ref = outreach_send_counters_repo._doc(OutreachSendCountersRepo.doc_id_for(user_id, day))
@@ -1082,7 +1085,7 @@ class OutreachEmailsRepo(FirestoreRepo):
             counter = counter_snap.to_dict() if counter_snap.exists else None
 
             def refuse(code: str) -> Dict[str, Any]:
-                return {"ok": False, "code": code, "email": email, "message_id": None, "day": day}
+                return {"ok": False, "code": code, "email": email, "day": day}
 
             plan = plan_email_transition(email, user_id, "send")
             if not plan["ok"]:
@@ -1093,10 +1096,10 @@ class OutreachEmailsRepo(FirestoreRepo):
             count = int((counter or {}).get("count") or 0)
             if count >= daily_limit:
                 return refuse("daily_limit_reached")
-            msg_id = email.get("smtp_message_id") or message_id
             fields = {
                 "send_lock": {"id": lock_id, "at": now, "uncertain": False},
-                "smtp_message_id": msg_id,
+                "sender_address": sender_address,
+                "sender_display_name": sender_display_name,
                 "send_attempts": int(email.get("send_attempts") or 0) + 1,
                 "updatedAt": now,
             }
@@ -1104,18 +1107,59 @@ class OutreachEmailsRepo(FirestoreRepo):
             txn.set(counter_ref, {
                 "id": counter_ref.id, "user_id": user_id, "day": day, "count": count + 1, "updatedAt": now,
             })
-            return {"ok": True, "code": None, "email": {**email, **fields}, "message_id": msg_id, "day": day}
+            return {"ok": True, "code": None, "email": {**email, **fields}, "day": day}
 
         return await _txn(transaction)
 
+    async def record_draft(self, email_id: str, lock_id: str, ids: Dict[str, str], now: datetime) -> bool:
+        """Store the ids of the draft just created for the email (before it is
+        sent), only while `lock_id` still holds its send lock. True if stored."""
+        ref = self._doc(email_id)
+        transaction = self.db.transaction()
+
+        @firestore.async_transactional
+        async def _txn(txn):
+            snap = await ref.get(transaction=txn)
+            email = snap.to_dict() if snap.exists else None
+            if email is None or (email.get("send_lock") or {}).get("id") != lock_id:
+                return False
+            txn.update(ref, {
+                "graph_message_id": ids.get("id") or "",
+                "internet_message_id": ids.get("internet_message_id") or "",
+                "conversation_id": ids.get("conversation_id") or "",
+                "updatedAt": now,
+            })
+            return True
+
+        return await _txn(transaction)
+
+    async def give_back_slot(self, user_id: str, day: str, now: datetime) -> None:
+        """Return one slot of `day`'s quota (a claimed send that sent nothing
+        new: it found the email already sent)."""
+        counter_ref = outreach_send_counters_repo._doc(OutreachSendCountersRepo.doc_id_for(user_id, day))
+        transaction = self.db.transaction()
+
+        @firestore.async_transactional
+        async def _txn(txn):
+            snap = await counter_ref.get(transaction=txn)
+            counter = snap.to_dict() if snap.exists else None
+            if counter and counter.get("user_id") == user_id:
+                txn.update(counter_ref, {"count": max(0, int(counter.get("count") or 0) - 1), "updatedAt": now})
+
+        await _txn(transaction)
+
     async def release_send(
         self, email_id: str, user_id: str, lock_id: str, now: datetime, error_code: str, uncertain: bool,
-        day: str,
+        day: str, return_slot: Optional[bool] = None,
     ) -> Optional[Dict[str, Any]]:
         """After a failed send, only if `lock_id` still holds the lock: record
         `last_send_error`. A safe failure (nothing was sent) frees the lock and
         gives the quota slot back; an uncertain one keeps the lock, marked
-        `uncertain`, and keeps the slot used. Returns the email afterwards."""
+        `uncertain`, and keeps the slot used. `return_slot` overrides the slot
+        rule (a forced retry that could not even read the earlier, still
+        uncertain attempt: the lock stays uncertain, but this attempt sent
+        nothing). Returns the email afterwards."""
+        give_back = (not uncertain) if return_slot is None else return_slot
         ref = self._doc(email_id)
         counter_ref = outreach_send_counters_repo._doc(OutreachSendCountersRepo.doc_id_for(user_id, day))
         transaction = self.db.transaction()
@@ -1134,7 +1178,7 @@ class OutreachEmailsRepo(FirestoreRepo):
             else:
                 fields["send_lock"] = firestore.DELETE_FIELD
             txn.update(ref, fields)
-            if not uncertain and counter:
+            if give_back and counter:
                 txn.update(counter_ref, {"count": max(0, int(counter.get("count") or 0) - 1), "updatedAt": now})
             return self._without_deleted({**email, **fields})
 
@@ -1148,7 +1192,7 @@ def _hashed_id(*parts: str) -> str:
 
 
 class OutreachSendCountersRepo(FirestoreRepo):
-    """SMTP sends per user and UTC day (RF-VTA-16): one document per pair, so
+    """Platform sends per user and UTC day (RF-VTA-16): one document per pair, so
     the daily quota is a single read inside the claim transaction (no range
     query, no index)."""
 

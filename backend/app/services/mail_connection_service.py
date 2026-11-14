@@ -225,6 +225,23 @@ class MailConnectionService:
             await self.connections.delete(user_id)
 
     # ── 3. access token ──────────────────────────────────────────────────────
+    async def for_send(self, user_id: str) -> Dict[str, str]:
+        """What a send needs: {"access_token", "address", "display_name"} of
+        the connected mailbox. Same refusals as access_token."""
+        token = await self.access_token(user_id)
+        conn = await self.connections.for_user(user_id)
+        if not conn:
+            raise MailConnectionError(409, "mailbox_not_connected")
+        return {
+            "access_token": token,
+            "address": str(conn.get("address") or ""),
+            "display_name": str(conn.get("display_name") or ""),
+        }
+
+    async def flag_reconnect(self, user_id: str, reason: str) -> None:
+        """The mail service refused the token (401) during a send."""
+        await self.connections.mark_needs_reconnect(user_id, reason)
+
     async def access_token(self, user_id: str) -> str:
         """A usable access token for the user's mailbox. 409
         mailbox_not_connected / mailbox_reconnect_required, 503

@@ -238,3 +238,110 @@ async def test_me_failures_become_codes(reply, code):
     assert err.value.code == code
     if code == "mail_throttled":
         assert err.value.detail == {"code": "mail_throttled"}  # unreadable Retry-After is left out
+
+
+# ── Messages (only the platform's own) ───────────────────────────────────────
+from tests.fake_microsoft import SENT_THEN_500, SENT_THEN_TIMEOUT  # noqa: E402
+
+
+async def test_create_draft_posts_plain_text_to_one_recipient_with_immutable_ids():
+    with FakeMicrosoft() as ms:
+        ids = await graph_client.create_draft("fake-access-token-9", "Asunto\nsegunda línea", "Cuerpo\n", "ana@example.test")
+    [call] = ms.drafts_created()
+    assert call["url"] == f"{DEFAULT_GRAPH_BASE_URL}/me/messages"
+    assert call["headers"]["authorization"] == "Bearer fake-access-token-9"
+    assert call["headers"]["prefer"] == 'IdType="ImmutableId"'
+    assert call["json"] == {
+        "subject": "Asunto segunda línea",
+        "body": {"contentType": "Text", "content": "Cuerpo\n"},
+        "toRecipients": [{"emailAddress": {"address": "ana@example.test"}}],
+    }
+    message = ms.messages[ids["id"]]
+    assert message["isDraft"] is True and ms.sent_messages() == []          # nothing was sent
+    assert ids == {"id": message["id"], "internet_message_id": message["internetMessageId"],
+                   "conversation_id": message["conversationId"]}
+
+
+@pytest.mark.parametrize("reply, code", [
+    ((400, {}), "mail_rejected"), ((404, {}), "mail_rejected"), ((401, {}), "mailbox_reconnect_required"),
+    ((403, {}), "missing_permissions"), ((429, {}), "mail_throttled"), ((500, {}), "mail_service_unavailable"),
+    ((201, {"subject": "sin id"}), "mail_service_unavailable"),
+])
+async def test_create_draft_failures_are_safe_codes(reply, code):
+    with FakeMicrosoft() as ms:
+        ms.next["draft"].append(reply)
+        with pytest.raises(GraphError) as err:
+            await graph_client.create_draft("t", "s", "b", "ana@example.test")
+    assert err.value.code == code and err.value.uncertain is False
+
+
+async def test_send_draft_sends_the_draft_by_its_escaped_id():
+    with FakeMicrosoft() as ms:
+        ids = await graph_client.create_draft("t", "s", "b", "ana@example.test")
+        await graph_client.send_draft("t", ids["id"])
+    [call] = ms.sends()
+    assert call["raw_path"] == "/v1.0/me/messages/AAMk-fake%2Fimmutable%2B1%3D%3D/send"
+    assert ms.messages[ids["id"]]["isDraft"] is False
+
+
+@pytest.mark.parametrize("planned, code, uncertain", [
+    ((400, {}), "mail_rejected", False),
+    ((401, {}), "mailbox_reconnect_required", False),
+    ((429, {}), "mail_throttled", False),
+    (httpx.ConnectError("c"), "mail_service_unavailable", False),   # never reached Microsoft
+    (httpx.ConnectTimeout("c"), "mail_service_timeout", False),
+    (httpx.ReadTimeout("t"), "send_timeout", True),                  # may have been accepted
+    (httpx.WriteTimeout("t"), "send_timeout", True),
+    (httpx.RemoteProtocolError("dropped"), "send_timeout", True),
+    ((500, {}), "send_timeout", True),
+    ((503, {}), "send_timeout", True),
+    (SENT_THEN_TIMEOUT, "send_timeout", True),
+    (SENT_THEN_500, "send_timeout", True),
+])
+async def test_send_draft_tells_safe_failures_from_uncertain_ones(planned, code, uncertain):
+    with FakeMicrosoft() as ms:
+        ids = await graph_client.create_draft("t", "s", "b", "ana@example.test")
+        ms.next["send"].append(planned)
+        with pytest.raises(GraphError) as err:
+            await graph_client.send_draft("t", ids["id"])
+    assert (err.value.code, err.value.uncertain) == (code, uncertain)
+    assert "uncertain" not in err.value.detail
+
+
+async def test_reading_a_message_selects_only_its_state():
+    with FakeMicrosoft() as ms:
+        ids = await graph_client.create_draft("t", "s", "b", "ana@example.test")
+        draft = await graph_client.get_message_state("t", ids["id"])
+        await graph_client.send_draft("t", ids["id"])
+        sent = await graph_client.get_message_state("t", ids["id"])
+        gone = await graph_client.get_message_state("t", "AAMk-not-there")
+    assert draft["is_draft"] is True and sent["is_draft"] is False and gone is None
+    for call in ms.reads():
+        assert call["params"] == {"$select": "isDraft,internetMessageId,conversationId"}
+        assert call["headers"]["prefer"] == 'IdType="ImmutableId"'
+
+
+@pytest.mark.parametrize("reply, code", [((401, {}), "mailbox_reconnect_required"), ((500, {}), "mail_service_unavailable"),
+                                         ((200, {"id": "x"}), "mail_service_unavailable")])
+async def test_reading_failures_become_codes(reply, code):
+    with FakeMicrosoft() as ms:
+        ms.next["read"].append(reply)
+        with pytest.raises(GraphError) as err:
+            await graph_client.get_message_state("t", "AAMk-x")
+    assert err.value.code == code
+
+
+def test_the_client_has_no_way_to_list_or_read_other_messages():
+    """Ajuste 1: only messages the platform created are read, by their id."""
+    import inspect
+
+    source = inspect.getsource(graph_client)
+    # The only URLs under /me/messages: the collection (POST, to create a
+    # draft) and one message by id (_message_url).
+    assert source.count('f"{graph}/me/messages"') == 1
+    assert source.count('f"{graph}/me/messages/') == 1
+    create = inspect.getsource(graph_client.create_draft)
+    assert '"POST", f"{graph}/me/messages"' in create
+    public = {name for name, fn in inspect.getmembers(graph_client, inspect.iscoroutinefunction) if not name.startswith("_")}
+    assert public == {"exchange_code", "refresh", "get_me", "create_draft", "send_draft", "get_message_state"}
+    assert list(inspect.signature(graph_client.get_message_state).parameters) == ["access_token", "message_id"]

@@ -5,9 +5,15 @@ mailbox with delegated OAuth (authorization code + PKCE).
 What it does: build the authorization URL (response_mode=form_post, so the
 code never travels in a URL that an access log would keep), exchange the code,
 refresh the access token (Microsoft rotates the refresh token: the new one is
-returned) and read the signed-in user (GET /me). Reading or sending messages
-is not here yet; when it is, it reads only messages the platform itself sent,
-by their stored id — never a listing of the mailbox.
+returned), read the signed-in user (GET /me), and send a prospecting email as
+a draft that is then sent (create_draft → send_draft), so that its ids are
+known before it goes out. The only message it ever reads is one the platform
+itself created, by the id stored on the email (get_message_state): there is
+no listing of the mailbox and no other email's content is read.
+
+Message ids are immutable (Prefer: IdType="ImmutableId"): the id of the draft
+stays the same once Microsoft moves it to Sent Items, so reading it later says
+whether it went out.
 
 Endpoints: MICROSOFT_LOGIN_BASE_URL and GRAPH_BASE_URL. Anything other than
 the official ones (e.g. the local fake Graph) needs MAIL_ALLOW_CUSTOM_ENDPOINTS
@@ -23,7 +29,7 @@ import hashlib
 import secrets
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 import httpx
 
@@ -38,12 +44,15 @@ _RECONNECT_ERRORS = {"invalid_grant", "interaction_required", "consent_required"
 
 
 class GraphError(Exception):
-    """A refusal of the login or Graph endpoint, as a code (never its text)."""
+    """A refusal of the login or Graph endpoint, as a code (never its text).
+    `uncertain`: only for send_draft — the request may have been accepted
+    (a timeout or server error after it was sent), so the email may be out."""
 
-    def __init__(self, status_code: int, code: str, **extra: Any):
+    def __init__(self, status_code: int, code: str, *, uncertain: bool = False, **extra: Any):
         super().__init__(code)
         self.status_code = status_code
         self.code = code
+        self.uncertain = uncertain
         self.extra = extra
 
     @property
@@ -139,13 +148,24 @@ def _transport_failure(resp: httpx.Response) -> Optional[GraphError]:
     return None
 
 
-async def _send(method: str, url: str, **kwargs: Any) -> httpx.Response:
+async def _send(method: str, url: str, *, uncertain_once_sent: bool = False, **kwargs: Any) -> httpx.Response:
+    """One HTTP call. With `uncertain_once_sent` (send_draft), a failure after
+    the connection was made — the request may have reached Microsoft — is
+    504 send_timeout, uncertain; failing to connect is always safe."""
     try:
         async with _new_client() as client:
             return await client.request(method, url, **kwargs)
+    except (httpx.ConnectTimeout, httpx.PoolTimeout):
+        raise GraphError(504, "mail_service_timeout") from None
+    except httpx.ConnectError:
+        raise GraphError(502, "mail_service_unavailable") from None
     except httpx.TimeoutException:
+        if uncertain_once_sent:
+            raise GraphError(504, "send_timeout", uncertain=True) from None
         raise GraphError(504, "mail_service_timeout") from None
     except httpx.HTTPError:
+        if uncertain_once_sent:
+            raise GraphError(504, "send_timeout", uncertain=True) from None
         raise GraphError(502, "mail_service_unavailable") from None
 
 
@@ -245,4 +265,107 @@ async def get_me(access_token: str) -> Dict[str, str]:
         "id": str(body.get("id") or ""),
         "address": address,
         "display_name": str(body.get("displayName") or "").strip(),
+    }
+
+
+# ── Messages (only the platform's own) ───────────────────────────────────────
+def _message_headers(access_token: str) -> Dict[str, str]:
+    return {
+        "Authorization": f"Bearer {access_token}",
+        "Accept": "application/json",
+        "Prefer": 'IdType="ImmutableId"',
+    }
+
+
+def _message_url(graph: str, message_id: str, suffix: str = "") -> str:
+    return f"{graph}/me/messages/{quote(message_id, safe='')}{suffix}"
+
+
+def _message_failure(resp: httpx.Response) -> GraphError:
+    """A refusal of a message call that sent nothing."""
+    failure = _transport_failure(resp)
+    if failure:
+        return failure
+    if resp.status_code == 401:
+        return GraphError(409, "mailbox_reconnect_required")
+    if resp.status_code == 403:
+        return GraphError(409, "missing_permissions")
+    # 400 / 404 / 413 / 422…: Graph refused this message (bad recipient,
+    # too large, mailbox not enabled for mail…).
+    return GraphError(502, "mail_rejected")
+
+
+def _single_line(value: Any) -> str:
+    """A subject with no line breaks. Pure."""
+    return " ".join(str(value or "").split())
+
+
+def draft_payload(subject: Any, body_text: str, to_address: str) -> Dict[str, Any]:
+    """The draft of one prospecting email: plain text, one recipient. The
+    sender is the signed-in mailbox itself. Pure."""
+    return {
+        "subject": _single_line(subject),
+        "body": {"contentType": "Text", "content": body_text},
+        "toRecipients": [{"emailAddress": {"address": to_address}}],
+    }
+
+
+async def create_draft(access_token: str, subject: Any, body_text: str, to_address: str) -> Dict[str, str]:
+    """Create the email as a draft in the user's mailbox. Nothing is sent.
+    Returns {"id" (immutable), "internet_message_id", "conversation_id"}.
+    Any failure here is safe: at most an unsent draft is left."""
+    _, graph = endpoints()
+    resp = await _send(
+        "POST", f"{graph}/me/messages",
+        json=draft_payload(subject, body_text, to_address), headers=_message_headers(access_token),
+    )
+    if resp.status_code not in (200, 201):
+        raise _message_failure(resp)
+    body = _json(resp)
+    message_id = str(body.get("id") or "")
+    if not message_id:
+        raise GraphError(502, "mail_service_unavailable")
+    return {
+        "id": message_id,
+        "internet_message_id": str(body.get("internetMessageId") or ""),
+        "conversation_id": str(body.get("conversationId") or ""),
+    }
+
+
+async def send_draft(access_token: str, message_id: str) -> None:
+    """Send the draft `message_id` (202 Accepted). A refusal (4xx, 429) or
+    failing to connect sent nothing; a timeout or a server error once the
+    request was made is uncertain (504 send_timeout, `uncertain`)."""
+    _, graph = endpoints()
+    resp = await _send(
+        "POST", _message_url(graph, message_id, "/send"),
+        headers=_message_headers(access_token), uncertain_once_sent=True,
+    )
+    if resp.status_code == 202:
+        return
+    if resp.status_code >= 500:
+        raise GraphError(504, "send_timeout", uncertain=True)
+    raise _message_failure(resp)
+
+
+async def get_message_state(access_token: str, message_id: str) -> Optional[Dict[str, Any]]:
+    """Whether the platform's message `message_id` is still a draft (not sent)
+    or went out: {"is_draft", "internet_message_id", "conversation_id"}, or
+    None when it no longer exists (deleted). Reads nothing but these fields."""
+    _, graph = endpoints()
+    resp = await _send(
+        "GET", _message_url(graph, message_id),
+        params={"$select": "isDraft,internetMessageId,conversationId"}, headers=_message_headers(access_token),
+    )
+    if resp.status_code == 404:
+        return None
+    if resp.status_code != 200:
+        raise _message_failure(resp)
+    body = _json(resp)
+    if not isinstance(body.get("isDraft"), bool):
+        raise GraphError(502, "mail_service_unavailable")
+    return {
+        "is_draft": body["isDraft"],
+        "internet_message_id": str(body.get("internetMessageId") or ""),
+        "conversation_id": str(body.get("conversationId") or ""),
     }

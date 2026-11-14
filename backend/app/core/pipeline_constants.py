@@ -208,7 +208,7 @@ OUTREACH_EMAILS_PER_LEAD_LIMIT = 200
 OUTREACH_EMAIL_LANGUAGE = "en"
 OUTREACH_EMAIL_LANGUAGES = ("en", "es", "pt")
 
-# ── Real sending of prospecting emails by SMTP (RF-VTA-16) ──────────────────
+# ── Real sending of prospecting emails from the platform (RF-VTA-16) ────────
 # Opt-out line the server appends to every email it sends, in the email's
 # language. Never written by the model. PROVISIONAL TEXT: NoonDalton must
 # approve the final wording. It promises nothing the system does not do (there
@@ -220,14 +220,17 @@ OUTREACH_UNSUBSCRIBE_LINE = {
     "pt": "Se preferir não receber mais e-mails, responda a esta mensagem e tomaremos nota.",
 }
 assert set(OUTREACH_UNSUBSCRIBE_LINE) == set(OUTREACH_EMAIL_LANGUAGES)
-# Emails one user may send by SMTP per UTC day: default and server cap.
+# Emails one user may send from the platform per UTC day: default and server cap.
 OUTREACH_DAILY_SEND_LIMIT_DEFAULT = 50
 OUTREACH_DAILY_SEND_LIMIT_MAX = 100
 # slowapi limit of POST /outreach-emails/{id}/send, per client address.
 OUTREACH_SEND_RATE_LIMIT = "10/minute"
-# A send lock older than this many SMTP timeouts is presumed dead (the process
-# died mid-send) and no longer blocks — unless it is `uncertain`.
+# A send lock older than SEND_LOCK_STALE_FACTOR × the longest a send can take
+# (MAIL_SEND_MAX_HTTP_CALLS calls of MAIL_HTTP_TIMEOUT_SECONDS each, once it is
+# claimed: create the draft, send it, read it back) is presumed dead (the
+# process died mid-send) and no longer blocks — unless it is `uncertain`.
 SEND_LOCK_STALE_FACTOR = 2
+MAIL_SEND_MAX_HTTP_CALLS = 3
 
 # ── Mailbox connection: Microsoft 365 / Outlook by OAuth (RF-VTA-16) ─────────
 # Delegated permissions asked for when a user connects their mailbox.

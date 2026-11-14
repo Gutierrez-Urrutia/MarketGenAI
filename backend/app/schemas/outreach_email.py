@@ -10,18 +10,19 @@ An email is written for one contact of one lead and goes through review:
     pending_review → approved → sent
     pending_review | approved → rejected
 
-An approved email reaches `sent` in one of two ways: `send` delivers it by
-SMTP with the user's account (routers/outreach_emails.py, POST /{id}/send, only
-with the real-send switches on), or `mark_sent` records that the user sent it
-by other means (`send_method` tells them apart). `sent` and `rejected` are
-final; a rejected email no longer counts as active, so a new one may be written
-for the same contact. Every decision is appended to the email's `history`, and
-a regeneration keeps the previous subject and body there.
+An approved email reaches `sent` in one of two ways: `send` sends it from the
+platform, from the user's connected mailbox (routers/outreach_emails.py, POST
+/{id}/send, only with the real-send switches on; send_method "platform"), or
+`mark_sent` records that the user sent it by other means (send_method
+"manual"). `sent` and `rejected` are final; a rejected email no longer counts
+as active, so a new one may be written for the same contact. Every decision is
+appended to the email's `history`, and a regeneration keeps the previous
+subject and body there.
 
-While an SMTP send runs, the email stays `approved` and carries a `send_lock`
-(see plan_send_lock). A send whose outcome is unknown (timeout after DATA)
-leaves the lock `uncertain`: it blocks a plain retry until the user forces one,
-marks the email as sent, or rejects it.
+While a send runs, the email stays `approved` and carries a `send_lock` (see
+plan_send_lock). A send whose outcome is unknown (the mail service did not
+answer after the send was requested) leaves the lock `uncertain`: it blocks a
+plain retry until the user forces one, marks the email as sent, or rejects it.
 """
 from __future__ import annotations
 
@@ -43,7 +44,9 @@ class EmailStatus(str, Enum):
 
 
 EmailAction = Literal["generate", "regenerate", "approve", "reject", "mark_sent", "send"]
-SendMethod = Literal["smtp", "manual"]
+# "platform": sent from the user's connected mailbox; "manual": marked as sent.
+# None on emails marked before real sending existed (manual too).
+SendMethod = Literal["platform", "manual"]
 
 # Statuses that make an email the contact's active one (at most one per contact).
 ACTIVE_EMAIL_STATUSES = (EmailStatus.PENDING_REVIEW.value, EmailStatus.APPROVED.value)
@@ -168,10 +171,13 @@ class EmailHistoryEntry(BaseModel):
     previous_subject: Optional[str] = None
     previous_body: Optional[str] = None
     previous_language: Optional[str] = None
-    # Set by `send` (smtp) and `mark_sent` (manual).
+    # Set by `send` (platform) and `mark_sent` (manual).
     send_method: Optional[SendMethod] = None
-    smtp_message_id: Optional[str] = None
-    # mark_sent / reject after a failed or uncertain SMTP send: that error's code.
+    internet_message_id: Optional[str] = None
+    # `send` that found the email already sent (an uncertain send resolved by
+    # reading the message) instead of sending it again.
+    resolved_by_reading: Optional[bool] = None
+    # mark_sent / reject after a failed or uncertain send: that error's code.
     send_error: Optional[str] = None
 
 
@@ -184,7 +190,7 @@ class SendLock(BaseModel):
 
 
 class SendError(BaseModel):
-    """The last failed SMTP send: a code only, never the server's text."""
+    """The last failed send: a code only, never the mail service's text."""
 
     code: str
     at: datetime
@@ -214,14 +220,22 @@ class OutreachEmail(BaseModel):
     rejected_at: Optional[datetime] = None
     sent_marked_by: Optional[str] = None
     sent_marked_by_name: Optional[str] = None
-    # Who sent it by SMTP (`send`); sent_marked_by* is who marked it (`mark_sent`).
+    # Who sent it from the platform (`send`); sent_marked_by* is who marked it (`mark_sent`).
     sent_by: Optional[str] = None
     sent_by_name: Optional[str] = None
     sent_at: Optional[datetime] = None
-    # "smtp" | "manual"; None on emails marked before real sending existed (manual).
+    # "platform" | "manual"; None on emails marked before real sending existed (manual).
     send_method: Optional[SendMethod] = None
-    # Generated and stored before the SMTP conversation starts; a retry reuses it.
-    smtp_message_id: Optional[str] = None
+    # The mailbox it was (or is being) sent from, stored when the send is
+    # claimed: what «Desde» shows afterwards, whatever the mailbox is later.
+    sender_address: Optional[str] = None
+    sender_display_name: Optional[str] = None
+    # Ids of the draft created in that mailbox, stored before it is sent; a
+    # retry reuses the draft. graph_message_id is immutable (it survives the
+    # move to Sent Items), so reading it tells whether an uncertain send went out.
+    graph_message_id: Optional[str] = None
+    internet_message_id: Optional[str] = None
+    conversation_id: Optional[str] = None
     send_lock: Optional[SendLock] = None
     last_send_error: Optional[SendError] = None
     send_attempts: int = 0
@@ -293,16 +307,20 @@ class OutreachEmailListResponse(BaseModel):
 class SendStatusResponse(BaseModel):
     """GET /outreach-emails/send-status: whether «Enviar» can be used, with
     no secret in it. `real_send_enabled` is server_send_enabled and
-    user_send_enabled together."""
+    user_send_enabled together. Sending also needs a connected mailbox that
+    does not need reconnecting."""
 
-    smtp_configured: bool
-    smtp_missing_fields: List[str]
+    # Whether the server has an app registration to connect mailboxes with.
+    oauth_configured: bool
+    mailbox_connected: bool
+    mailbox_needs_reconnect: bool
+    mailbox_address: Optional[str] = None
     server_send_enabled: bool
     user_send_enabled: bool
     real_send_enabled: bool
     daily_limit: int
     sent_today: int
-    # Shown in the send confirmation (not secret: also in /pipeline/config).
+    # Shown in the send confirmation: the connected mailbox (empty without one).
     sender_email: str = ""
     sender_name: str = ""
 
