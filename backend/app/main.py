@@ -18,7 +18,6 @@ from app.routers import (
     books,
     campaigns,
     catalog,
-    chat,
     content_types,
     customers,
     health,
@@ -95,7 +94,6 @@ app.include_router(reports.router, prefix="/api/v1")
 app.include_router(analysis.router, prefix="/api/v1")
 app.include_router(publishing.router, prefix="/api/v1")
 app.include_router(settings_router.router, prefix="/api/v1")
-app.include_router(chat.router, prefix="/api/v1")
 app.include_router(proposals.router, prefix="/api/v1")
 # social must be registered before social_mock: both define overlapping
 # /settings/social/* paths, and Starlette uses the first route that matches —
