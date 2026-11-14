@@ -229,6 +229,22 @@ OUTREACH_SEND_RATE_LIMIT = "10/minute"
 # died mid-send) and no longer blocks — unless it is `uncertain`.
 SEND_LOCK_STALE_FACTOR = 2
 
+# ── Mailbox connection: Microsoft 365 / Outlook by OAuth (RF-VTA-16) ─────────
+# Delegated permissions asked for when a user connects their mailbox.
+# Mail.ReadWrite is needed to create the draft that is then sent (Mail.Send
+# alone only allows sendMail, which returns no message id). The code only ever
+# reads messages the platform itself sent, by their stored id (or their
+# conversation): never a listing of the mailbox, never another email's content.
+MAIL_OAUTH_SCOPES = ("openid", "offline_access", "User.Read", "Mail.ReadWrite", "Mail.Send")
+# Of those, the ones a connection is useless without (checked on the token).
+MAIL_OAUTH_REQUIRED_SCOPES = ("Mail.ReadWrite", "Mail.Send")
+# An authorization request (state + PKCE verifier) is valid this long, once.
+MAIL_OAUTH_STATE_TTL_SECONDS = 600
+# The access token is renewed when less than this is left of it.
+MAIL_TOKEN_REFRESH_MARGIN_SECONDS = 300
+# slowapi limit of POST /mail-connection/start and /test, per client address.
+MAIL_CONNECTION_RATE_LIMIT = "10/minute"
+
 # ── What NoonDalton sells ───────────────────────────────────────────────────
 # One source for the relevance prompt of Agente 1 (RF14-D-005) and the
 # prospecting email of Agente 3 (RF-VTA-16). Fixed here on purpose: the

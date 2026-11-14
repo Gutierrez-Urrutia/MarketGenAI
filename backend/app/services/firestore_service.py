@@ -21,6 +21,8 @@ Collections used by this project:
   - outreach_emails/{emailId}
   - outreach_send_counters/{hash(userId, day)}   (SMTP sends per user and UTC day)
   - do_not_contact/{hash(userId, kind, value)}   (addresses / domains never to email)
+  - mail_oauth_states/{hash(state)}   (pending mailbox connections: single use, expire)
+  - mail_connections/{userId}         (connected Microsoft mailbox, tokens encrypted)
   - pipeline_runs/{runId}
   - knowledge_documents/{docId}   (RAG: propuestas históricas cargadas por el usuario)
   - knowledge_chunks/{chunkId}    (RAG: fragmentos de cada documento)
@@ -1221,6 +1223,99 @@ class DoNotContactRepo(FirestoreRepo):
         return [item for item in items if item.get("user_id") == user_id]
 
 
+class MailOAuthStatesRepo(FirestoreRepo):
+    """Pending mailbox-connection requests (RF-VTA-16): one per click on
+    «Conectar», holding who asked, the PKCE verifier (encrypted) and when it
+    expires. The doc id is the sha256 of the OAuth `state`, never the state
+    itself. Single use: `consume` marks it used inside a transaction, so two
+    callbacks with the same state cannot both get it."""
+
+    collection = "mail_oauth_states"
+
+    @staticmethod
+    def doc_id_for(state: str) -> str:
+        return _hashed_id("mail-oauth-state", state)
+
+    async def consume(self, state: str, now: datetime) -> Optional[Dict[str, Any]]:
+        """The request for `state`, marked used — or None when it does not
+        exist, was used already or has expired (an expired one is marked used
+        too, so it can never come back)."""
+        ref = self._doc(self.doc_id_for(state))
+        transaction = self.db.transaction()
+
+        @firestore.async_transactional
+        async def _txn(txn):
+            snap = await ref.get(transaction=txn)
+            doc = snap.to_dict() if snap.exists else None
+            if not doc or doc.get("used"):
+                return None
+            txn.update(ref, {"used": True, "used_at": now, "updatedAt": now})
+            expires_at = doc.get("expires_at")
+            if expires_at is None or expires_at <= now:
+                return None
+            return doc
+
+        return await _txn(transaction)
+
+
+class MailConnectionsRepo(FirestoreRepo):
+    """Each user's connected mailbox (RF-VTA-16), doc id = userId: address,
+    display name and the OAuth tokens, always encrypted. Apart from
+    pipeline_configs on purpose, so GET /pipeline/config can never return a
+    token. `token_version` grows on every token change: a refresh only writes
+    if nobody else refreshed since it read (`replace_tokens`)."""
+
+    collection = "mail_connections"
+
+    async def save(self, user_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Store a fresh connection, replacing any previous one."""
+        return await self.create(
+            {**data, "user_id": user_id, "token_version": 1, "needs_reconnect": False, "reconnect_reason": None},
+            doc_id=user_id,
+        )
+
+    async def for_user(self, user_id: str) -> Optional[Dict[str, Any]]:
+        doc = await self.get(user_id)
+        return doc if doc and doc.get("user_id") == user_id else None
+
+    async def replace_tokens(self, user_id: str, expected_version: int, fields: Dict[str, Any]) -> Dict[str, Any]:
+        """Write refreshed tokens only if the connection is still at
+        `expected_version`. {"ok": bool, "doc": the connection after the
+        write, or as it is now when someone else got there first (None when it
+        is gone)}."""
+        ref = self._doc(user_id)
+        transaction = self.db.transaction()
+
+        @firestore.async_transactional
+        async def _txn(txn):
+            snap = await ref.get(transaction=txn)
+            doc = snap.to_dict() if snap.exists else None
+            if not doc or doc.get("user_id") != user_id:
+                return {"ok": False, "doc": None}
+            if int(doc.get("token_version") or 0) != int(expected_version):
+                return {"ok": False, "doc": doc}
+            update = {**fields, "token_version": int(expected_version) + 1, "updatedAt": now_utc()}
+            txn.update(ref, update)
+            return {"ok": True, "doc": {**doc, **update}}
+
+        return await _txn(transaction)
+
+    async def mark_needs_reconnect(self, user_id: str, reason: str) -> None:
+        """Flag the connection as unusable until the user connects again
+        (only a code is stored as the reason, never a server's text)."""
+        ref = self._doc(user_id)
+        transaction = self.db.transaction()
+
+        @firestore.async_transactional
+        async def _txn(txn):
+            snap = await ref.get(transaction=txn)
+            doc = snap.to_dict() if snap.exists else None
+            if doc and doc.get("user_id") == user_id:
+                txn.update(ref, {"needs_reconnect": True, "reconnect_reason": reason, "updatedAt": now_utc()})
+
+        await _txn(transaction)
+
+
 class PipelineRunsRepo(FirestoreRepo):
     collection = "pipeline_runs"
 
@@ -1335,6 +1430,8 @@ contacts_repo         = ContactsRepo()
 outreach_emails_repo  = OutreachEmailsRepo()
 outreach_send_counters_repo = OutreachSendCountersRepo()
 do_not_contact_repo   = DoNotContactRepo()
+mail_oauth_states_repo = MailOAuthStatesRepo()
+mail_connections_repo  = MailConnectionsRepo()
 pipeline_runs_repo    = PipelineRunsRepo()
 pipeline_run_locks_repo = PipelineRunLocksRepo()
 knowledge_documents_repo = KnowledgeDocumentsRepo()
