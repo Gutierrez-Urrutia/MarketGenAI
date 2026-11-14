@@ -494,11 +494,6 @@ export const reportsApi = {
   export: (params) => api.get('/reports/export', { params, responseType: 'blob' }),
 }
 
-export const chatApi = {
-  send: (data) => api.post('/chat', data),
-  history: (sessionId) => api.get(`/chat/${sessionId}`),
-}
-
 export const analysisApi = {
   seo: (data) => api.post('/analysis/seo', data),
   plagiarism: (data) => api.post('/analysis/plagiarism', data),

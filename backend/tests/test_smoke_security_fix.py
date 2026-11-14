@@ -50,8 +50,11 @@ async def test_update_proposal_partial(client):
 
 
 @pytest.mark.asyncio
-async def test_assistant_chat_requires_auth(client):
-    with patch("app.routers.assistant.deepseek_service.generate_text", new_callable=AsyncMock, return_value="hola"):
+async def test_assistant_chat_replies(client):
+    with (
+        patch("app.routers.assistant.assistant_context_service.build_context", new_callable=AsyncMock, return_value=""),
+        patch("app.routers.assistant.deepseek_service.generate_text", new_callable=AsyncMock, return_value="hola"),
+    ):
         resp = await client.post("/api/v1/assistant/chat", json={"message": "hola"})
     assert resp.status_code == 200
     assert resp.json()["reply"] == "hola"
