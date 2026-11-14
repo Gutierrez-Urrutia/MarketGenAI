@@ -7,7 +7,7 @@ import { useTheme } from "./context/ThemeContext";
 
 import LeadList from "./pages/pipeline/LeadList";
 
-import { BookIcon, ChartIcon, FolderIcon, GearIcon, GridIcon, PenIcon, RadarIcon, SendIcon, ShieldIcon, SparkIcon, TargetIcon } from "./components/dashboard/icons";
+import { BookIcon, BriefIcon, UsersIcon, ChartIcon, FolderIcon, GearIcon, GridIcon, PenIcon, RadarIcon, SendIcon, ShieldIcon, SparkIcon, TargetIcon } from "./components/dashboard/icons";
 import { AppSidebar } from "./components/shell/AppSidebar";
 import { AppTopbar } from "./components/shell/AppTopbar";
 
@@ -26,6 +26,8 @@ import { DashboardPage } from "./views/DashboardPage";
 import { ContentGeneratorPage } from "./views/ContentGeneratorPage";
 import { ContentLibraryPage } from "./views/ContentLibraryPage";
 import { SalesEnablementPage } from "./views/SalesEnablementPage";
+import { CatalogPage } from "./views/CatalogPage";
+import { CustomersPage } from "./views/CustomersPage";
 
 
 /* ═══════════════════════════════════════════════════════════════ */
@@ -33,7 +35,7 @@ import { SalesEnablementPage } from "./views/SalesEnablementPage";
 /* ═══════════════════════════════════════════════════════════════ */
 
 
-const MAIN_NAV = ["dashboard", "books", "opportunities", "content", "enablement", "outreach", "leads", "assistant", "reports", "auditLogs"];
+const MAIN_NAV = ["dashboard", "books", "opportunities", "customers", "content", "enablement", "catalog", "outreach", "leads", "assistant", "reports", "auditLogs"];
 const BOTTOM_NAV = ["settings"];
 
 const PATH_TO_PAGE = {
@@ -41,8 +43,10 @@ const PATH_TO_PAGE = {
   "/dashboard": "dashboard",
   "/books": "books",
   "/opportunities": "opportunities",
+  "/customers": "customers",
   "/content": "content",
   "/sales-enablement": "enablement",
+  "/catalog": "catalog",
   "/campaign_brief": "campaign_brief",
   "/outreach": "outreach",
   "/leads": "leads",
@@ -67,9 +71,11 @@ export default function App() {
     dashboard:  { label: t("sidebar.dashboard"),        icon: GridIcon,    component: DashboardPage },
     books:      { label: t("sidebar.books"),    icon: BookIcon,    component: ContentGeneratorPage },
     opportunities: { label: t("sidebar.opportunities"),  icon: TargetIcon,  component: OpportunitiesPage },
+    customers:  { label: t("sidebar.customers"),         icon: UsersIcon,   component: CustomersPage },
     campaign_brief: { label: "Campaign Brief", icon: TargetIcon, component: CampaignBriefPage },
     content:    { label: t("sidebar.contentLibrary"),   icon: FolderIcon,  component: ContentLibraryPage },
     enablement: { label: t("sidebar.enablement"),        icon: PenIcon,     component: SalesEnablementPage },
+    catalog:    { label: t("sidebar.catalog"),           icon: BriefIcon,   component: CatalogPage },
     outreach:   { label: t("sidebar.outreach"),          icon: SendIcon,    component: OutreachPage, badge: outreachBadge },
     leads:      { label: t("sidebar.leads"),             icon: RadarIcon,   component: LeadList },
     assistant: { label: t("sidebar.chat"), icon: SparkIcon, component: AssistantPage },

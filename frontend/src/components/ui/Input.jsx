@@ -1,12 +1,15 @@
 import { clsx } from 'clsx'
-import { forwardRef } from 'react'
+import { forwardRef, useId } from 'react'
 
-export const Input = forwardRef(function Input({ label, error, className, ...props }, ref) {
+export const Input = forwardRef(function Input({ label, error, className, id, ...props }, ref) {
+  const autoId = useId()
+  const fieldId = id || autoId
   return (
     <div className="space-y-1">
-      {label && <label className="block text-sm font-medium text-slate-700">{label}</label>}
+      {label && <label htmlFor={fieldId} className="block text-sm font-medium text-slate-700">{label}</label>}
       <input
         ref={ref}
+        id={fieldId}
         className={clsx(
           'w-full px-3 py-2 text-sm border rounded-lg bg-white',
           'placeholder:text-slate-400 text-slate-900',
@@ -22,12 +25,15 @@ export const Input = forwardRef(function Input({ label, error, className, ...pro
   )
 })
 
-export const Textarea = forwardRef(function Textarea({ label, error, className, ...props }, ref) {
+export const Textarea = forwardRef(function Textarea({ label, error, className, id, ...props }, ref) {
+  const autoId = useId()
+  const fieldId = id || autoId
   return (
     <div className="space-y-1">
-      {label && <label className="block text-sm font-medium text-slate-700">{label}</label>}
+      {label && <label htmlFor={fieldId} className="block text-sm font-medium text-slate-700">{label}</label>}
       <textarea
         ref={ref}
+        id={fieldId}
         className={clsx(
           'w-full px-3 py-2 text-sm border rounded-lg bg-white resize-y min-h-[80px]',
           'placeholder:text-slate-400 text-slate-900',

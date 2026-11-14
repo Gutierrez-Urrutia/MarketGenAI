@@ -32,6 +32,17 @@ def _result_backend_url() -> str:
 _broker = _broker_url()
 _backend = _result_backend_url()
 
+# Con Redis caído, Celery reintentaba reconectar el backend de resultados 20 veces (~5 s cada una):
+# `.delay()` tardaba ~110 s en fallar y la generación parecía no terminar. Sin reintentos, falla en
+# unos 8 s y el fallback en línea de los routers arranca enseguida.
+RESULT_BACKEND_TRANSPORT_OPTIONS = {
+    "socket_connect_timeout": 2,
+    "socket_timeout": 5,
+    "socket_keepalive": True,
+    "health_check_interval": 25,
+    "retry_policy": {"max_retries": 0, "interval_start": 0, "interval_step": 0.5, "interval_max": 0.5},
+}
+
 celery_app = Celery(
     "nd_marketing",
     broker=_broker,
@@ -67,12 +78,7 @@ celery_app.conf.update(
         "socket_keepalive": True,
         "health_check_interval": 25,
     },
-    result_backend_transport_options={
-        "socket_connect_timeout": 5,
-        "socket_timeout": 5,
-        "socket_keepalive": True,
-        "health_check_interval": 25,
-    },
+    result_backend_transport_options=RESULT_BACKEND_TRANSPORT_OPTIONS,
     task_routes={
         "app.workers.tasks.content_tasks.*": {"queue": "llm"},
         "app.workers.tasks.asset_tasks.*": {"queue": "llm"},

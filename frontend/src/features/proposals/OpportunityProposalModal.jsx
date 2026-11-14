@@ -1,5 +1,7 @@
 import { ProposalDocumentPreview } from "@/features/proposals/ProposalDocumentPreview";
-import { calculateProposalTotal, formatUsd, normalizeLineItem, normalizeProposalDocument } from "@/features/proposals/proposalDocument";
+import { CatalogServicePicker } from "@/features/proposals/CatalogServicePicker";
+import { CustomerPicker } from "@/features/proposals/CustomerPicker";
+import { calculateProposalTotal, formatMoney, normalizeLineItem, normalizeProposalDocument } from "@/features/proposals/proposalDocument";
 import { createProposal, generateProposalById, updateProposal } from "@/api/proposalsApi";
 import { ProposalTemplateFields, useProposalTemplatePicker } from "@/features/proposals/ProposalTemplatePicker";
 import { announceProposalGeneration } from "@/features/proposals/generationNotifier";
@@ -27,10 +29,18 @@ export function OpportunityProposalModal({ opportunity, onClose }) {
   const [draftContent, setDraftContent] = useState("");
   const [editingPreview, setEditingPreview] = useState(false);
   const [customerEmail, setCustomerEmail] = useState("");
+  const [selectedCustomer, setSelectedCustomer] = useState(null); // RF-VTA-03: cliente propio al que se vincula la propuesta
   const [teamSizing, setTeamSizing] = useState("");
   const templatePicker = useProposalTemplatePicker(); // RF-VTA-07
   const mountedRef = useRef(true);
   const backgroundRef = useRef(false);
+  // Elegir un cliente completa el correo y propone su industria (misma lista que la de plantillas); ambos siguen editables.
+  const pickCustomer = (customer) => {
+    setSelectedCustomer(customer);
+    if (!customer) return;
+    if (customer.email) setCustomerEmail(customer.email);
+    if (customer.industry) templatePicker.setIndustry(customer.industry);
+  };
   useEffect(() => {
     mountedRef.current = true;
     return () => { mountedRef.current = false; };
@@ -54,6 +64,9 @@ export function OpportunityProposalModal({ opportunity, onClose }) {
   };
   const opportunitySummary = `${opportunity?.company} is evaluating support for ${opportunity?.job}. Primary tags: ${opportunityTags.join(", ") || "not specified"}.`;
   const pricingTotal = calculateProposalTotal({ pricingRows }).totalAmount;
+  // Una propuesta usa una sola moneda: la fija la primera fila del catálogo; las filas manuales o antiguas son USD.
+  const proposalCurrency = pricingRows.find((row) => row.currency)?.currency || "USD";
+  const catalogCurrency = pricingRows.find((row) => row.currency)?.currency || null;
   const progressSteps = t("opportunitiesPage.proposalModal.steps");
   const [proposalLanguage, setProposalLanguage] = useState(activeLanguage || getStoredPreference(PREF_KEYS.language, "en"));
   useEffect(() => {
@@ -71,6 +84,20 @@ export function OpportunityProposalModal({ opportunity, onClose }) {
   };
   const addPricingRow = () => {
     setPricingRows((current) => [...current, { id: Date.now(), service: "", description: "", quantity: 1, unitPrice: 0 }]);
+  };
+  // Copia del servicio del catálogo: después de agregarla, la fila es independiente del catálogo.
+  const addCatalogRow = (service) => {
+    setPricingRows((current) => [...current, {
+      id: `${Date.now()}-${service.id}`,
+      serviceId: service.id,
+      service: service.name,
+      description: service.description || "",
+      unit: service.unit,
+      quantity: 1,
+      unitPrice: service.price,
+      currency: service.currency,
+      conditions: service.conditions || "",
+    }]);
   };
   const removePricingRow = (id) => setPricingRows((current) => current.filter((row) => row.id !== id));
 
@@ -206,12 +233,14 @@ export function OpportunityProposalModal({ opportunity, onClose }) {
     customer_name: proposalForm.customer,
     clientName: proposalForm.customer,
     clientEmail: proposalForm.customerEmail || undefined,
+    customerId: selectedCustomer?.id,
     clientCompany: proposalForm.customerCompany || undefined,
     template: proposalForm.template,
     ...templatePicker.persistenceFields(),
     tags: opportunityTags,
     pricing_rows: pricingRows,
     lineItems: pricingRows.map(normalizeLineItem),
+    currency: proposalCurrency,
     total_amount: total.totalAmount,
     structured_content: {
       ...structuredContent,
@@ -277,11 +306,13 @@ export function OpportunityProposalModal({ opportunity, onClose }) {
         length: proposalLength,
         clientName: proposalForm.customer,
         customer: proposalForm.customer,
+        customerId: selectedCustomer?.id,
         template: proposalForm.template,
         ...templatePicker.generationFields(),
         tags: opportunityTags,
         lineItems: pricingRows.map(normalizeLineItem),
         totalAmount: total.totalAmount,
+        currency: proposalCurrency,
         language: proposalLanguage,
         customPrompt: `Generate a proposal for this opportunity using the provided company, role, stage, score, keywords, and content context. Keep the proposal specific to ${opportunity?.company || "the client"} and the opportunity ${opportunity?.job || "identified"}.`,
       });
@@ -313,6 +344,7 @@ export function OpportunityProposalModal({ opportunity, onClose }) {
         date: proposalForm.date,
         template: proposalForm.template,
         pricingRows,
+        currency: proposalCurrency,
         totalAmount: backendStructuredContent.totalAmount ?? total.totalAmount,
         tags: opportunityTags,
         length: proposalLength,
@@ -436,6 +468,9 @@ export function OpportunityProposalModal({ opportunity, onClose }) {
 
           {step === 1 && (
             <div className="grid grid-cols-2 gap-3">
+              <div className="col-span-2">
+                <CustomerPicker selected={selectedCustomer} onSelect={pickCustomer} />
+              </div>
               <Field label={t("opportunitiesPage.proposalModal.customer")}><Input value={proposalForm.customer} readOnly /></Field>
               <Field label="Client email" hint="Used to send this proposal to your CRM">
                 <Input type="email" value={customerEmail} onChange={(event) => setCustomerEmail(event.target.value)} placeholder="client@company.com" />
@@ -473,11 +508,13 @@ export function OpportunityProposalModal({ opportunity, onClose }) {
 
           {step === 2 && (
             <div className="space-y-3">
+              <CatalogServicePicker currency={catalogCurrency} onPick={addCatalogRow} />
               <div className="overflow-x-auto border border-gray-100 rounded-xl">
                 <table className="min-w-full text-xs">
                   <thead className="bg-gray-50 text-gray-500">
                     <tr>
                       <th className="px-2 py-2 text-left">{t("opportunitiesPage.proposalModal.serviceUnit")}</th>
+                      <th className="px-2 py-2 text-left">{t("opportunitiesPage.proposalModal.unit")}</th>
                       <th className="px-2 py-2 text-left">{t("opportunitiesPage.proposalModal.description")}</th>
                       <th className="px-2 py-2 text-left">{t("opportunitiesPage.proposalModal.qty")}</th>
                       <th className="px-2 py-2 text-left">{t("opportunitiesPage.proposalModal.unitPrice")}</th>
@@ -487,15 +524,27 @@ export function OpportunityProposalModal({ opportunity, onClose }) {
                   </thead>
                   <tbody>
                     {pricingRows.length === 0 && (
-                      <tr><td colSpan={6} className="px-3 py-8 text-center text-gray-400">{t("opportunitiesPage.proposalModal.noPricing")}</td></tr>
+                      <tr><td colSpan={7} className="px-3 py-8 text-center text-gray-400">{t("opportunitiesPage.proposalModal.noPricing")}</td></tr>
                     )}
                     {pricingRows.map((row) => (
                       <tr key={row.id} className="border-t border-gray-100">
-                        <td className="p-2"><Input value={row.service} onChange={(e) => updatePricingRow(row.id, "service", e.target.value)} /></td>
-                        <td className="p-2"><Input value={row.description} onChange={(e) => updatePricingRow(row.id, "description", e.target.value)} /></td>
-                        <td className="p-2 w-20"><Input type="number" min="0" value={row.quantity} onChange={(e) => updatePricingRow(row.id, "quantity", e.target.value)} /></td>
-                        <td className="p-2 w-28"><Input type="number" min="0" value={row.unitPrice} onChange={(e) => updatePricingRow(row.id, "unitPrice", e.target.value)} /></td>
-                        <td className="p-2 text-right font-semibold text-gray-700">{formatUsd(Number(row.quantity || 0) * Number(row.unitPrice || 0))}</td>
+                        <td className="p-2"><Input aria-label={t("opportunitiesPage.proposalModal.serviceUnit")} value={row.service} onChange={(e) => updatePricingRow(row.id, "service", e.target.value)} /></td>
+                        <td className="p-2 w-24"><Input aria-label={t("opportunitiesPage.proposalModal.unit")} value={row.unit || ""} onChange={(e) => updatePricingRow(row.id, "unit", e.target.value)} /></td>
+                        <td className="p-2">
+                          <Input aria-label={t("opportunitiesPage.proposalModal.description")} value={row.description} onChange={(e) => updatePricingRow(row.id, "description", e.target.value)} />
+                          {row.serviceId && (
+                            <Input
+                              className="mt-1"
+                              aria-label={t("opportunitiesPage.proposalModal.conditions")}
+                              placeholder={t("opportunitiesPage.proposalModal.conditions")}
+                              value={row.conditions || ""}
+                              onChange={(e) => updatePricingRow(row.id, "conditions", e.target.value)}
+                            />
+                          )}
+                        </td>
+                        <td className="p-2 w-20"><Input aria-label={t("opportunitiesPage.proposalModal.qty")} type="number" min="0" value={row.quantity} onChange={(e) => updatePricingRow(row.id, "quantity", e.target.value)} /></td>
+                        <td className="p-2 w-28"><Input aria-label={t("opportunitiesPage.proposalModal.unitPrice")} type="number" min="0" value={row.unitPrice} onChange={(e) => updatePricingRow(row.id, "unitPrice", e.target.value)} /></td>
+                        <td className="p-2 text-right font-semibold text-gray-700">{formatMoney(Number(row.quantity || 0) * Number(row.unitPrice || 0), row.currency || proposalCurrency)}</td>
                         <td className="p-2"><button onClick={() => removePricingRow(row.id)} className="p-1 rounded hover:bg-red-50"><TrashIcon size={12} className="text-red-500" /></button></td>
                       </tr>
                     ))}
@@ -504,7 +553,7 @@ export function OpportunityProposalModal({ opportunity, onClose }) {
               </div>
               <div className="flex items-center justify-between">
                 <Btn variant="secondary" small icon={<PlusIcon size={12} />} onClick={addPricingRow}>{t("opportunitiesPage.proposalModal.addLineItem")}</Btn>
-                <div className="text-sm text-gray-700">{t("opportunitiesPage.proposalModal.totalAmount")}: <strong>{pricingTotal ? formatUsd(pricingTotal) : t("opportunitiesPage.proposalModal.notCalculated")}</strong></div>
+                <div className="text-sm text-gray-700">{t("opportunitiesPage.proposalModal.totalAmount")}: <strong>{pricingTotal ? formatMoney(pricingTotal, proposalCurrency) : t("opportunitiesPage.proposalModal.notCalculated")}</strong></div>
               </div>
             </div>
           )}

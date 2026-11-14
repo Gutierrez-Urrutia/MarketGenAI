@@ -22,6 +22,7 @@ export default {
     extend: {
       colors: {
         brand,
+        primary: brand,
         indigo: brand,
         teal: brand,
         accent: scale("accent"),

@@ -60,11 +60,11 @@ from app.schemas.proposal import (
     public_proposal,
 )
 from app.services.auth_service import JWT_ALGORITHM
-from app.services.firestore_service import proposals_repo, jobs_repo, settings_repo
+from app.services.firestore_service import customers_repo, proposals_repo, jobs_repo, settings_repo
 from app.services import crm_service, deepseek_service
 from app.services.storage_service import storage_service
 from app.services.template_service import classification_labels
-from app.workers.tasks.proposal_tasks import _lang_code, format_usd
+from app.workers.tasks.proposal_tasks import _lang_code, format_money, format_usd
 from app.services.crm_service import (
     CrmAuthError,
     CrmError,
@@ -119,6 +119,46 @@ async def _get_proposal_for_user(proposal_id: str, user_id: str) -> dict:
         )
     _assert_owner(proposal, user_id)
     return proposal
+
+
+async def _resolve_customer(customer_id: Optional[str], user: CurrentUser) -> Optional[dict]:
+    """RF-VTA-03: el cliente al que se vincula la propuesta debe existir y ser del usuario
+    (404 si no existe, 403 si es de otro). Sin `customerId` no hay vínculo."""
+    if not customer_id:
+        return None
+    customer = await customers_repo.get(customer_id)
+    if not customer:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Customer not found.")
+    if customer.get("userId") != user.sub:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied.")
+    return customer
+
+
+def _customer_copy(customer: Optional[dict]) -> dict:
+    """Lo que la propuesta guarda del cliente: el vínculo y una copia del perfil al generar (RN-09)."""
+    if not customer:
+        return {}
+    return {
+        "customerId": customer["id"],
+        "clientIndustry": customer.get("industry"),
+        "clientSize": customer.get("size"),
+    }
+
+
+def _apply_customer_options(options: dict, customer: Optional[dict]) -> None:
+    """El perfil que ve el worker sale solo del cliente guardado: lo que mande el navegador se descarta."""
+    for key in ("customerId", "clientIndustry", "clientSize"):
+        options.pop(key, None)
+    options.update(_customer_copy(customer))
+
+
+async def _customer_for_generation(proposal: dict, requested_id: Optional[str], user: CurrentUser) -> Optional[dict]:
+    """Cliente de una propuesta ya creada. Una vez vinculada no se puede cambiar de cliente (409);
+    si el cuerpo no trae `customerId` se conserva el vínculo existente."""
+    linked = proposal.get("customerId")
+    if linked and requested_id and requested_id != linked:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="This proposal is already linked to another customer.")
+    return await _resolve_customer(linked or requested_id, user)
 
 
 async def _apply_proposal_template(proposal: dict, options: dict, user: CurrentUser) -> None:
@@ -210,6 +250,21 @@ def _format_usd(value, not_calculated: str = "Not calculated", lang: str = "en")
     return format_usd(amount, not_calculated, lang)
 
 
+def _format_money(value, not_calculated: str = "Not calculated", lang: str = "en", currency: str = "USD") -> str:
+    try:
+        amount = float(value)
+    except (TypeError, ValueError):
+        return not_calculated
+    return format_money(amount, not_calculated, lang, currency)
+
+
+def _resolve_currency(proposal: dict) -> str:
+    """Proposals created before RF-VTA-02 have no currency: they were always USD."""
+    structured = proposal.get("structured_content") or proposal.get("structuredContent") or {}
+    currency = str(proposal.get("currency") or structured.get("currency") or "USD").upper()
+    return currency if currency in ("USD", "CLP") else "USD"
+
+
 def _resolve_total_amount(proposal: dict):
     """The frontend has saved this under totalAmount, total_amount, or nested
     in structured(_)Content.totalAmount depending on which flow wrote it —
@@ -264,7 +319,7 @@ def _proposal_cover_fields(proposal: dict) -> dict:
         # Proposal"); ahora solo se muestran si la propuesta trae serviceType/industry válidos.
         "industry": classification["industria"] or "",
         "service_line": classification["servicio"] or "",
-        "total_amount_display": _format_usd(total_amount, labels["not_calculated"], lang),
+        "total_amount_display": _format_money(total_amount, labels["not_calculated"], lang, _resolve_currency(proposal)),
         "issued_on": _localized_date(issued_on, lang),
         "valid_until": _localized_date(valid_until, lang),
         "prepared_by": proposal.get("issuedBy") or "—",
@@ -991,6 +1046,7 @@ async def create_proposal(
 ):
     data = body.model_dump(exclude_none=True)
     strip_server_only_fields(data)   # RF-VTA-11: dueño, documento firmado, CRM, archivo e historial los escribe solo el servidor
+    customer = await _resolve_customer(data.pop("customerId", None), user)   # RF-VTA-03
 
     client_name = (
         data.get("clientName")
@@ -1022,6 +1078,8 @@ async def create_proposal(
         "proposal_status": ProposalStatus.borrador.value,
         "userId": user.sub,
     }
+    if customer:
+        proposal["customerId"] = customer["id"]   # la copia del perfil la toma el servidor al generar
     if data.get("opportunity_id"):
         proposal["opportunity_id"] = data["opportunity_id"]
     return await proposals_repo.create(proposal, doc_id=str(uuid.uuid4()))
@@ -1061,6 +1119,7 @@ async def generate_proposal_draft(
         or extra.get("proposal_description")
         or ""
     )
+    customer = await _resolve_customer(body.customerId, user)   # RF-VTA-03: antes de crear, para no dejar propuestas huérfanas
 
     proposal = await proposals_repo.create({
         "title": title,
@@ -1073,13 +1132,16 @@ async def generate_proposal_draft(
         "proposal_status": ProposalStatus.borrador.value,
         "language": body.language,
         "customPrompt": body.customPrompt,
+        "currency": body.currency,
         "userId": user.sub,
+        **_customer_copy(customer),
     }, doc_id=str(uuid.uuid4()))
 
     options = body.model_dump(exclude_none=True)
     if extra:
         options.update(extra)
     options["userId"] = user.sub  # tras extra: el cliente no puede suplantarlo; el worker lo usa para recuperar el contexto RAG del usuario
+    _apply_customer_options(options, customer)
     options["versionAuthor"] = _version_author(user)  # RF-VTA-11: autor de las versiones que deja la generación (tampoco suplantable)
     await _apply_proposal_template(proposal, options, user)
 
@@ -1137,6 +1199,7 @@ async def generate_proposal_by_id(
     user: CurrentUser = Depends(get_current_user),
 ):
     proposal = await _get_proposal_for_user(proposal_id, user.sub)
+    customer = await _customer_for_generation(proposal, body.customerId, user)   # RF-VTA-03
 
     title = body.title or proposal.get("title") or "AI Marketing Proposal"
     client_name = body.clientName or proposal.get("clientName") or "Demo Client"
@@ -1147,6 +1210,11 @@ async def generate_proposal_by_id(
         options.update(body.model_extra)
     options["userId"] = user.sub  # tras extra: el cliente no puede suplantarlo; el worker lo usa para recuperar el contexto RAG del usuario
     options["versionAuthor"] = _version_author(user)  # RF-VTA-11: la regeneración deja el contenido anterior en el historial, a nombre de quien la pidió
+    _apply_customer_options(options, customer)
+    if customer:
+        # La copia del perfil se toma cada vez que se genera: la propuesta ya generada conserva
+        # lo que tenía hasta que alguien la regenera (RN-09).
+        await proposals_repo.update(proposal_id, _customer_copy(customer))
     await _apply_proposal_template(proposal, options, user)
 
     job = await jobs_repo.create_job(
@@ -1226,6 +1294,7 @@ async def update_proposal(
             detail="No fields to update."
         )
     strip_server_only_fields(update_data)   # RF-VTA-11: dueño, documento firmado, CRM, archivo e historial los escribe solo el servidor
+    update_data.pop("customerId", None)     # RF-VTA-03: el vínculo con el cliente no se cambia por edición
     # El estado comercial solo cambia por PATCH /status (transiciones + auditoría).
     # `status` (ciclo de generación con IA) sí pasa: el frontend lo usa.
     update_data.pop("proposal_status", None)

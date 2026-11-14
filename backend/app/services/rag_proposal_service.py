@@ -28,6 +28,18 @@ CHUNK_SIZE = 1200
 CHUNK_OVERLAP = 150
 MAX_CHUNKS_PER_DOC = 400
 MAX_DOCS_PER_USER = 200
+# RF-VTA-01 (CP-004): relevancia mínima. Un solo término genérico en común («24x7», «monitoreo») bastaba para
+# meter fragmentos de otro rubro en el contexto. Se exige que el mejor fragmento cubra al menos esta fracción
+# del peso (idf) de los términos de la consulta; si no, no hay contexto histórico para ese servicio. Solo la aplica el
+# camino de las propuestas (get_rag_context_and_sources); rank_chunks y retrieve_sources la dejan apagada por defecto
+# (la búsqueda de Sales enablement usa consultas ampliadas con sinónimos, donde coinciden pocos términos).
+MIN_QUERY_COVERAGE = 0.30
+# Con pocos fragmentos el idf se distorsiona (un término ausente pesa casi lo mismo que uno presente): para la cobertura
+# se calcula como si hubiera al menos estos fragmentos.
+COVERAGE_MIN_CORPUS = 20
+# Con la regla activa, un fragmento solo entra si alcanza esta fracción de la cobertura del mejor: junto al fragmento que
+# sí trata el servicio no se cuelan otros que comparten solo un par de términos (CP-004, control de cobranza).
+RELATIVE_COVERAGE_FLOOR = 0.4
 TOP_K = 5
 MAX_CONTEXT_CHARS = 6000
 _MAX_CHUNKS_SCANNED = 5000
@@ -130,20 +142,32 @@ def rank_chunks(
     *,
     client_name: str = "",
     top_k: int = TOP_K,
+    min_coverage: float = 0.0,
+    focus_query: str = "",
 ) -> list[dict[str, Any]]:
-    """Ordena fragmentos por relevancia; devuelve [] si ninguno comparte términos con la consulta."""
+    """Ordena fragmentos por relevancia; devuelve [] si ninguno comparte términos con la consulta o si el mejor
+    cubre menos de `min_coverage` del peso de los términos del servicio (0 desactiva la regla).
+    `focus_query` es lo que se pide (título y descripción); la cobertura se mide sobre sus términos para que el texto
+    largo de detalle de la oportunidad no la diluya. Sin él, se mide sobre toda la consulta."""
     q_terms = set(_tokens(query))
     if not q_terms or not chunks:
         return []
 
     n = len(chunks)
+    focus_terms = set(_tokens(focus_query)) if focus_query else q_terms
     df: Counter[str] = Counter()
     for c in chunks:
-        df.update(set(c.get("tokens") or []) & q_terms)
+        df.update(set(c.get("tokens") or []) & (q_terms | focus_terms))
     idf = {t: math.log(1 + n / (1 + df[t])) for t in q_terms}
 
     service_terms = q_terms
     client_terms = set(_tokens(client_name))
+    # La cobertura mide qué tanto trata el fragmento el SERVICIO pedido: el nombre del cliente casi nunca está en los
+    # documentos históricos y no debe restarle relevancia.
+    cov_terms = (focus_terms - set(_tokens(client_name))) or focus_terms
+    cov_idf = {t: math.log(1 + max(n, COVERAGE_MIN_CORPUS) / (1 + df[t])) for t in cov_terms}
+    idf_total = sum(cov_idf.values())
+    best_coverage = 0.0
     scored = []
     for c in chunks:
         toks = c.get("tokens") or []
@@ -153,6 +177,8 @@ def rank_chunks(
         score = sum(idf[t] * (1 + math.log(tf[t])) for t in q_terms if t in tf)
         if score <= 0:
             continue
+        coverage = sum(cov_idf[t] for t in cov_terms if t in tf) / idf_total if idf_total else 0.0
+        best_coverage = max(best_coverage, coverage)
         score /= math.sqrt(len(toks))
 
         doc = docs_by_id.get(c.get("docId"), {})
@@ -161,10 +187,14 @@ def rank_chunks(
             score *= 1.5
         if client_terms and client_terms & set(_tokens(doc.get("client", ""))):
             score *= 1.3
-        scored.append((score, c))
+        scored.append((score, c, coverage))
 
+    if best_coverage < min_coverage:
+        return []  # ningún fragmento trata realmente lo que se pide
+    if min_coverage > 0:
+        scored = [x for x in scored if x[2] >= RELATIVE_COVERAGE_FLOOR * best_coverage]
     scored.sort(key=lambda x: x[0], reverse=True)
-    return [c for _, c in scored[:top_k]]
+    return [c for _, c, _ in scored[:top_k]]
 
 
 async def retrieve_sources(
@@ -172,6 +202,7 @@ async def retrieve_sources(
     client_name: str = "",
     service_type: str = "",
     extra_query: str = "",
+    min_coverage: float = 0.0,
 ) -> list[dict[str, str]]:
     """Fragmentos más relevantes del usuario como [{docId, title, text}], dentro del presupuesto
     de caracteres. Lista vacía si no hay documentos relevantes."""
@@ -187,7 +218,7 @@ async def retrieve_sources(
     )
     docs_by_id = {d["id"]: d for d in docs}
     query = " ".join(filter(None, [service_type, extra_query, client_name]))
-    top = rank_chunks(query, chunks, docs_by_id, client_name=client_name)
+    top = rank_chunks(query, chunks, docs_by_id, client_name=client_name, min_coverage=min_coverage, focus_query=service_type)
 
     sources, used = [], 0
     for c in top:
@@ -229,7 +260,8 @@ async def get_rag_context_and_sources(
     extra_query: str = "",
 ) -> tuple[str, list[dict[str, str]]]:
     """Como get_rag_context, pero devuelve además los documentos usados (para mostrarlos al usuario)."""
-    sources = await retrieve_sources(user_id, client_name, service_type, extra_query)
+    # Propuestas (RF-VTA-01): solo hay contexto histórico si algún fragmento trata realmente el servicio pedido (CP-004).
+    sources = await retrieve_sources(user_id, client_name, service_type, extra_query, min_coverage=MIN_QUERY_COVERAGE)
     if not sources:
         return "", []
     blocks = [f"[Fuente: {s['title']}]\n{s['text']}" for s in sources]

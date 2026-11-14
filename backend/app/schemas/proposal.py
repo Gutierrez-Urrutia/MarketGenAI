@@ -9,6 +9,34 @@ from typing import Any, Dict, FrozenSet, List, Literal, Optional, Union
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, EmailStr, Field, model_validator
 
+Currency = Literal["USD", "CLP"]
+
+
+def line_item_currencies(line_items: Any) -> set[str]:
+    """Explicit currencies among the lines (models or raw dicts). Lines without
+    one are legacy / manual rows and take the proposal's currency."""
+    found: set[str] = set()
+    if not isinstance(line_items, (list, tuple)):
+        return found
+    for item in line_items:
+        value = item.get("currency") if isinstance(item, dict) else getattr(item, "currency", None)
+        if value:
+            found.add(str(value).upper())
+    return found
+
+
+def ensure_single_currency(line_items: Any, proposal_currency: Optional[str] = None) -> Optional[str]:
+    """A proposal uses one currency, with no conversion. Returns the currency the
+    lines point to (or None) and raises ValueError when they disagree."""
+    currencies = line_item_currencies(line_items)
+    if proposal_currency:
+        currencies.add(str(proposal_currency).upper())
+    if len(currencies) > 1:
+        raise ValueError(
+            "A proposal can only use one currency: found " + ", ".join(sorted(currencies)) + "."
+        )
+    return next(iter(currencies), None)
+
 
 class ProposalStatus(str, Enum):
     """Estado comercial de la propuesta (campo `proposal_status`, RF-VTA-05).
@@ -40,6 +68,7 @@ VERSION_INTERNAL_FIELDS = ("versions", "versionCounter", "versionHash")
 SERVER_ONLY_FIELDS = VERSION_INTERNAL_FIELDS + (
     "id", "userId", "createdAt", "updatedAt", "crmSync", "filePath", "downloadUrl",
     "signedDocumentPath", "signedDocumentUrl", "signedDocumentName", "signedDocumentUploadedAt", "hasSignedDocument",
+    "clientIndustry", "clientSize",  # RF-VTA-03: copia del perfil del cliente que toma el servidor al generar
 )
 
 
@@ -175,6 +204,14 @@ class ProposalCreate(BaseModel):
     description: Optional[str] = None
     content:     Optional[str] = None
     bookId:      Optional[str] = None
+    customerId:  Optional[str] = None   # RF-VTA-03: cliente propio al que se vincula
+    currency:    Optional[Currency] = None
+
+    @model_validator(mode="after")
+    def _single_currency(self):
+        extra = self.model_extra or {}
+        ensure_single_currency(extra.get("lineItems") or extra.get("line_items"), self.currency)
+        return self
 
 
 class ProposalUpdate(BaseModel):
@@ -188,6 +225,13 @@ class ProposalUpdate(BaseModel):
     description: Optional[str] = None
     status:      Optional[str] = None
     content:     Optional[str] = None   # HTML/markdown body
+    currency:    Optional[Currency] = None
+
+    @model_validator(mode="after")
+    def _single_currency(self):
+        extra = self.model_extra or {}
+        ensure_single_currency(extra.get("lineItems") or extra.get("line_items"), self.currency)
+        return self
 
 
 class ProposalLineItem(BaseModel):
@@ -198,6 +242,12 @@ class ProposalLineItem(BaseModel):
     description: Optional[str] = None
     qty:         Optional[float] = Field(None, validation_alias=AliasChoices("qty", "quantity"))
     unitPrice:   Optional[float] = Field(None, validation_alias=AliasChoices("unitPrice", "unit_price"))
+    # Copy of the catalog service chosen in step 2 (RF-VTA-02); all optional so
+    # manual rows and proposals created before the catalog keep working.
+    serviceId:   Optional[str] = None
+    unit:        Optional[str] = None
+    currency:    Optional[Currency] = None
+    conditions:  Optional[str] = None
 
 
 class GenerateProposalRequest(BaseModel):
@@ -215,7 +265,17 @@ class GenerateProposalRequest(BaseModel):
     style:               str = "professional"
     language:            str = "es"
     customPrompt:        Optional[str] = None
+    customerId:          Optional[str] = None   # RF-VTA-03: cliente propio al que se vincula
+    currency:            Currency = "USD"
     sync:                bool = False
+
+    @model_validator(mode="after")
+    def _single_currency(self):
+        explicit = "currency" in self.model_fields_set
+        found = ensure_single_currency(self.lineItems, self.currency if explicit else None)
+        if found and not explicit:
+            self.currency = found  # type: ignore[assignment]
+        return self
 
 
 class ProposalVersionCreate(BaseModel):
