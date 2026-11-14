@@ -16,11 +16,17 @@
  * confirmation; only that one sends `forceRetry`. The opt-out line the server
  * appends when sending is shown apart from the body, so the reviewer sees
  * exactly what goes out.
+ *
+ * `readOnly` (Historial): the same email, with no action of any kind — no
+ * buttons, block notes, send warnings, decision history nor dialogs — and one
+ * line saying how and when it was closed and by whom.
  */
 import { useEffect, useId, useState } from "react";
 
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
-import { DEFAULT_EMAIL_LANGUAGE, EMAIL_LANGUAGES, isUncertain, languageLabel, sendBlockReason } from "./prospectingEmails";
+import {
+  DEFAULT_EMAIL_LANGUAGE, EMAIL_LANGUAGES, decidedByName, isSystemSend, isUncertain, languageLabel, sendBlockReason,
+} from "./prospectingEmails";
 import { formatDateTime } from "@/utils/dates";
 
 const KP = "outreachPage.prospecting";
@@ -137,9 +143,30 @@ function BlockNote({ id, reason, sendStatus, t, onOpenSettings }) {
   );
 }
 
+// Read-only: how the email was closed, when and by whom.
+function ClosedStatus({ email, t }) {
+  let key;
+  let at;
+  if (email.status === "sent") {
+    key = isSystemSend(email) ? "sentBySystem" : "markedSent";
+    at = email.sent_at;
+  } else if (email.status === "rejected") {
+    key = "rejected";
+    at = email.rejected_at;
+  } else {
+    return null;
+  }
+  const name = decidedByName(email) || t(`${KP}.table.unknownUser`);
+  return (
+    <p className="text-xs text-gray-600" data-testid="readonly-status">
+      {fill(t(`${KP}.readOnly.${key}`), { name, date: at ? formatDateTime(at) : "—" })}
+    </p>
+  );
+}
+
 export default function ProspectingEmailDetail({
   email, t, busy = false, regenerating = false, sending = false,
-  sendStatus = null, blocked = false,
+  sendStatus = null, blocked = false, readOnly = false,
   onApprove, onReject, onMarkSent, onRegenerate, onCopy, onSend, onDoNotContact, onOpenSettings,
 }) {
   const [language, setLanguage] = useState(email.language || DEFAULT_EMAIL_LANGUAGE);
@@ -151,7 +178,7 @@ export default function ProspectingEmailDetail({
   const disabled = busy || regenerating || sending;
 
   const uncertain = isUncertain(email);
-  const blockReason = onSend ? sendBlockReason(sendStatus, email, blocked) : null;
+  const blockReason = onSend && !readOnly ? sendBlockReason(sendStatus, email, blocked) : null;
   const lastError = email.last_send_error?.code;
 
   const confirmSend = () => {
@@ -210,11 +237,13 @@ export default function ProspectingEmailDetail({
         )}
       </div>
 
-      {blocked && (
+      {readOnly && <ClosedStatus email={email} t={t} />}
+
+      {blocked && !readOnly && (
         <p className="text-xs font-medium text-gray-600" data-testid="do-not-contact-mark">{t(`${KP}.detail.onDoNotContactList`)}</p>
       )}
 
-      {email.status === "pending_review" && (
+      {!readOnly && email.status === "pending_review" && (
         <div className="flex flex-wrap items-center justify-end gap-1.5">
           <select
             aria-label={t(`${KP}.actions.regenerateLanguage`)}
@@ -232,7 +261,7 @@ export default function ProspectingEmailDetail({
           <Action variant="success" disabled={disabled} onClick={() => onApprove?.(email)}>{t(`${KP}.actions.approve`)}</Action>
         </div>
       )}
-      {email.status === "approved" && (
+      {!readOnly && email.status === "approved" && (
         <div className="space-y-1">
           {uncertain ? (
             <p role="alert" className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900" data-testid="send-uncertain">
@@ -265,7 +294,7 @@ export default function ProspectingEmailDetail({
           <p className="text-right text-xs text-gray-500">{t(`${KP}.actions.markSentHint`)}</p>
         </div>
       )}
-      {email.status === "sent" && (
+      {!readOnly && email.status === "sent" && (
         <p className="text-xs text-gray-600" data-testid="sent-by">
           {email.send_method === "smtp"
             ? fill(t(`${KP}.send.sentBySmtp`), { name: email.sent_by_name || email.sent_by || "—", date: formatDateTime(email.sent_at) })
@@ -273,7 +302,7 @@ export default function ProspectingEmailDetail({
         </p>
       )}
 
-      {onDoNotContact && !blocked && email.to_email && (
+      {!readOnly && onDoNotContact && !blocked && email.to_email && (
         <div className="flex justify-end">
           <button
             type="button"
@@ -286,8 +315,10 @@ export default function ProspectingEmailDetail({
         </div>
       )}
 
-      <History email={email} t={t} />
+      {!readOnly && <History email={email} t={t} />}
 
+      {!readOnly && (
+      <>
       <ConfirmDialog
         open={confirming === "send" || confirming === "retry"}
         title={t(`${KP}.send.${confirming === "retry" ? "retryTitle" : "confirmTitle"}`)}
@@ -307,6 +338,8 @@ export default function ProspectingEmailDetail({
         onCancel={() => setConfirming(null)}
         onConfirm={confirmDoNotContact}
       />
+      </>
+      )}
     </div>
   );
 }

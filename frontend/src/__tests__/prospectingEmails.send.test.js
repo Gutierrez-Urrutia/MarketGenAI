@@ -104,4 +104,25 @@ describe("decidedByName", () => {
   ])("%s", (_name, email, expected) => {
     expect(decidedByName(email)).toBe(expected);
   });
+
+  it("cualquier send_method distinto de «manual» es envío del sistema (no depende del transporte)", () => {
+    expect(decidedByName({
+      status: "sent", send_method: "platform", sent_by: "u1", sent_by_name: "Ana", sent_marked_by_name: "Otro",
+    })).toBe("Ana");
+  });
+});
+
+import { isSystemSend } from "@/features/outreach/prospectingEmails";
+
+describe("isSystemSend", () => {
+  it.each([
+    ["un send_method genérico", { send_method: "platform" }, true],
+    ["otro send_method genérico", { send_method: "otro-transporte" }, true],
+    ["manual", { send_method: "manual" }, false],
+    ["sin send_method", {}, false],
+    ["send_method vacío", { send_method: "" }, false],
+    ["sin correo", null, false],
+  ])("%s", (_name, email, expected) => {
+    expect(isSystemSend(email)).toBe(expected);
+  });
 });

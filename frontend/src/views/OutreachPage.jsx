@@ -4,8 +4,9 @@ import api, { campaignsApi, outreachEmailsApi } from "@/api/axios";
 import { completeCampaignFlowSteps } from "@/utils/campaignContent";
 import { fetchOptional } from "@/utils/dashboardData";
 import { normalizeStageName } from "@/features/opportunities/opportunityHelpers";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import toast from "react-hot-toast";
+import Modal from "@/components/ui/Modal";
 import ProspectingEmailDetail, { EmailStatusBadge } from "@/features/outreach/ProspectingEmailDetail";
 import {
   SEND_RELOAD_CODES, copyText, copyToClipboard, decidedByName, describeEmailError, isActive, isBlockedRecipient, languageLabel,
@@ -47,6 +48,28 @@ export function OutreachPage({ navigationState = {}, onNavigate = () => {}, onOu
   const [sendingId, setSendingId] = useState(null);
   const activeProspecting = useMemo(() => prospectingEmails.filter(isActive), [prospectingEmails]);
   const closedProspecting = useMemo(() => prospectingEmails.filter((email) => !isActive(email)), [prospectingEmails]);
+  // Historial › «Correos de prospección»: the closed email opened read-only.
+  // Apart from the review queue's selection, which it never changes.
+  const [historyDetailId, setHistoryDetailId] = useState(null);
+  const historyDetailRow = useRef(null);
+  const historyDetail = closedProspecting.find((email) => email.id === historyDetailId) || null;
+  const openHistoryDetail = (email, row) => {
+    historyDetailRow.current = row;
+    setHistoryDetailId(email.id);
+  };
+  const closeHistoryDetail = useCallback(() => {
+    setHistoryDetailId(null);
+    const row = historyDetailRow.current;
+    historyDetailRow.current = null;
+    // Back to the row that opened it, once the dialog is gone.
+    setTimeout(() => row?.focus?.(), 0);
+  }, []);
+  const historyDetailOpen = Boolean(historyDetail);
+  useEffect(() => {
+    // Focus into the dialog (its close button) when it opens.
+    if (!historyDetailOpen) return;
+    document.querySelector('[data-testid="history-email-dialog"]')?.closest('[role="dialog"]')?.querySelector("button")?.focus();
+  }, [historyDetailOpen]);
 
   const loadProspecting = async () => {
     try {
@@ -726,7 +749,21 @@ export function OutreachPage({ navigationState = {}, onNavigate = () => {}, onOu
                     const decidedBy = decidedByName(email) || t("outreachPage.prospecting.table.unknownUser");
                     const decidedAt = email.status === "sent" ? email.sent_at : email.rejected_at;
                     return (
-                      <tr key={email.id}>
+                      <tr
+                        key={email.id}
+                        data-testid="prospecting-history-row"
+                        tabIndex={0}
+                        role="button"
+                        aria-label={t("outreachPage.prospecting.readOnly.openAria").replace("{name}", email.contact_name || email.to_email || "")}
+                        onClick={(event) => openHistoryDetail(email, event.currentTarget)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter" || event.key === " ") {
+                            event.preventDefault();
+                            openHistoryDetail(email, event.currentTarget);
+                          }
+                        }}
+                        className={`cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 ${isDark ? "hover:bg-slate-800" : "hover:bg-gray-50"}`}
+                      >
                         <td className="px-3 py-2 font-medium text-gray-900">{email.contact_name}</td>
                         <td className="px-3 py-2 text-gray-600">{email.company_name}</td>
                         <td className="px-3 py-2 text-gray-500 truncate max-w-[200px]">{email.subject}</td>
@@ -741,6 +778,18 @@ export function OutreachPage({ navigationState = {}, onNavigate = () => {}, onOu
               </table>
             )}
           </Card>
+          <Modal
+            open={Boolean(historyDetail)}
+            onClose={closeHistoryDetail}
+            title={t("outreachPage.prospecting.readOnly.title")}
+            maxWidth="2xl"
+          >
+            {historyDetail && (
+              <div data-testid="history-email-dialog">
+                <ProspectingEmailDetail email={historyDetail} t={t} readOnly />
+              </div>
+            )}
+          </Modal>
         </>
       )}
 

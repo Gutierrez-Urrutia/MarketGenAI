@@ -846,6 +846,13 @@ export const translations = {
           date: "Date",
           empty: "No prospecting emails have been sent or rejected yet.",
         },
+        readOnly: {
+          title: "Prospecting email",
+          openAria: "View the email to {name}",
+          sentBySystem: "Sent from the platform · {date} · by {name}",
+          markedSent: "Marked as sent · {date} · by {name}",
+          rejected: "Rejected · {date} · by {name}",
+        },
         errors: {
           invalid_language: "That email language is not available.",
           contact_rejected: "This contact was rejected: no email can be drafted or sent to it.",
@@ -2199,6 +2206,13 @@ export const translations = {
           unknownUser: "Usuario sin nombre",
           date: "Fecha",
           empty: "Todavía no hay correos de prospección enviados ni rechazados.",
+        },
+        readOnly: {
+          title: "Correo de prospección",
+          openAria: "Ver el correo a {name}",
+          sentBySystem: "Enviado desde la plataforma · {date} · por {name}",
+          markedSent: "Marcado como enviado · {date} · por {name}",
+          rejected: "Rechazado · {date} · por {name}",
         },
         errors: {
           invalid_language: "Ese idioma de correo no está disponible.",
@@ -3589,6 +3603,13 @@ export const translations = {
           unknownUser: "Usuário sem nome",
           date: "Data",
           empty: "Ainda não há e-mails de prospecção enviados nem rejeitados.",
+        },
+        readOnly: {
+          title: "E-mail de prospecção",
+          openAria: "Ver o e-mail para {name}",
+          sentBySystem: "Enviado pela plataforma · {date} · por {name}",
+          markedSent: "Marcado como enviado · {date} · por {name}",
+          rejected: "Rejeitado · {date} · por {name}",
         },
         errors: {
           invalid_language: "Esse idioma de e-mail não está disponível.",

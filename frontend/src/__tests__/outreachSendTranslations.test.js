@@ -79,6 +79,31 @@ describe("textos del envío real", () => {
     }
   });
 
+  // Detalle en solo lectura (Historial): textos neutros respecto del transporte.
+  const READ_ONLY_KEYS = ["title", "openAria", "sentBySystem", "markedSent", "rejected"].map((key) => `${KP}.readOnly.${key}`);
+
+  it.each(LANGS)("los textos del detalle en solo lectura existen en %s, sin vacíos ni «SMTP»", (lang) => {
+    for (const key of READ_ONLY_KEYS) {
+      const value = lookup(lang, key);
+      expect(typeof value, `${lang}.${key}`).toBe("string");
+      expect(value.trim(), `${lang}.${key}`).not.toBe("");
+      expect(value, `${lang}.${key}`).not.toMatch(/smtp/i);
+      expect(value, `${lang}.${key}`).not.toMatch(/\p{L}\?+\p{L}/u);
+      expect(value, `${lang}.${key}`).not.toContain("�");
+    }
+  });
+
+  it("los marcadores del detalle en solo lectura coinciden en los tres idiomas", () => {
+    for (const key of READ_ONLY_KEYS) {
+      const en = placeholders(lookup("en", key));
+      expect(placeholders(lookup("es", key)), `es.${key}`).toEqual(en);
+      expect(placeholders(lookup("pt", key)), `pt.${key}`).toEqual(en);
+    }
+    for (const key of ["sentBySystem", "markedSent", "rejected"]) {
+      expect(placeholders(lookup("en", `${KP}.readOnly.${key}`))).toEqual(["date", "name"]);
+    }
+  });
+
   it("el estado «sent» dice «Enviado» (también cubre el envío por SMTP), no «Marcado»", () => {
     for (const lang of LANGS) {
       expect(lookup(lang, `${KP}.status.sent`)).not.toMatch(/marcad|marked/i);
