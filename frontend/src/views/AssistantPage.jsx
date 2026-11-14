@@ -262,7 +262,7 @@ export function AssistantPage({ navigationState = {}, onNavigate = () => {}, cam
               sendAssistantMessage();
             }
           }}
-          className="flex-1 border border-gray-300 rounded-xl px-4 py-4 text-xs"
+          className="flex-1 min-w-0 border border-gray-300 rounded-xl px-4 py-4 text-xs"
           placeholder={t("chat.placeholder")}
         />
 
