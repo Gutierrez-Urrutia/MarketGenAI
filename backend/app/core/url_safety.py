@@ -78,8 +78,8 @@ class UnresolvableHostError(UnsafeUrlError):
 async def validate_host_target(host: str, label: str = "Host") -> None:
     """Resolve `host` and refuse it when any of its addresses is in a blocked
     range (see _is_blocked_ip). Raises UnresolvableHostError when it does not
-    resolve, UnsafeUrlError when it is blocked. Used for URLs (above) and for
-    the SMTP host (smtp_service.py) — call it right before connecting."""
+    resolve, UnsafeUrlError when it is blocked. Used for URLs (above) — call
+    it right before connecting."""
     try:
         infos = await asyncio.to_thread(socket.getaddrinfo, host, None)
     except socket.gaierror as exc:

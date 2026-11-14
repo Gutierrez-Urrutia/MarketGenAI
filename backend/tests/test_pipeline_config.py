@@ -36,11 +36,6 @@ def fake_config(overrides: dict | None = None) -> dict:
         "industries": ["finance"],
         "excluded_companies": [],
         "sources": [],
-        "smtp_host": "smtp.gmail.com",
-        "smtp_port": 587,
-        "smtp_user": "sales@noondalton.com",
-        "sender_email": "sales@noondalton.com",
-        "sender_name": "NoonDalton Sales",
         "scan_frequency_hours": 24,
         "is_active": True,
     }
@@ -88,14 +83,18 @@ async def test_get_config_defaults_when_missing(client):
     assert resp.status_code == 200
     body = resp.json()
     assert body["keywords"] == []
-    assert body["smtp_password_configured"] is False
-    assert "smtp_password" not in body
-    assert "smtp_password_encrypted" not in body
+    assert not any(key.startswith("smtp") or key.startswith("sender_") for key in body)
 
 
 @pytest.mark.asyncio
-async def test_get_config_never_returns_encrypted_password(client):
-    doc = fake_config({"smtp_password_encrypted": encryption_service.encrypt("s3cret")})
+async def test_get_config_never_returns_the_retired_smtp_settings(client):
+    """Older docs still hold the SMTP account of the removed SMTP sending,
+    with the password encrypted: none of it is returned."""
+    doc = fake_config({
+        "smtp_host": "smtp.example.test", "smtp_port": 587, "smtp_user": "smtp-user",
+        "smtp_password_encrypted": encryption_service.encrypt("s3cret"),
+        "sender_email": "ventas@example.test", "sender_name": "Equipo Ventas",
+    })
     with patch(
         "app.routers.pipeline.pipeline_configs_repo.get_by_user",
         new_callable=AsyncMock, return_value=doc,
@@ -103,10 +102,9 @@ async def test_get_config_never_returns_encrypted_password(client):
         resp = await client.get(API)
     assert resp.status_code == 200
     body = resp.json()
-    assert body["smtp_password_configured"] is True
-    assert "smtp_password" not in body
-    assert "smtp_password_encrypted" not in body
-    assert "s3cret" not in resp.text
+    assert not any(key.startswith("smtp") or key.startswith("sender_") for key in body)
+    assert "s3cret" not in resp.text and doc["smtp_password_encrypted"] not in resp.text
+    assert "smtp.example.test" not in resp.text and "ventas@example.test" not in resp.text
 
 
 @pytest.mark.asyncio
@@ -161,159 +159,6 @@ async def test_first_tag_autosave_creates_the_doc_with_defaults(client):
     assert body["excluded_companies"] == []
     assert body["is_active"] is True
 
-@pytest.mark.asyncio
-async def test_update_config_encrypts_smtp_password(client):
-    with (
-        patch(
-            "app.routers.pipeline.pipeline_configs_repo.get_by_user",
-            new_callable=AsyncMock, return_value=fake_config(),
-        ),
-        patch(
-            "app.routers.pipeline.pipeline_configs_repo.upsert_for_user",
-            new_callable=AsyncMock,
-        ) as mock_upsert,
-    ):
-        mock_upsert.return_value = fake_config({
-            "smtp_password_encrypted": encryption_service.encrypt("new-secret"),
-        })
-        resp = await client.put(API, json={"smtp_password": "new-secret"})
-
-    assert resp.status_code == 200
-    assert "new-secret" not in resp.text
-    assert "smtp_password" not in resp.json()
-
-    # The router must never persist the plaintext password.
-    persisted_payload = mock_upsert.call_args.args[1]
-    assert "smtp_password" not in persisted_payload
-    assert persisted_payload["smtp_password_encrypted"] != "new-secret"
-    assert encryption_service.decrypt(persisted_payload["smtp_password_encrypted"]) == "new-secret"
-
-
-@pytest.mark.asyncio
-async def test_update_config_strips_leading_trailing_whitespace(client):
-    """Username (smtp_user), Sender Email and Sender Name must not persist
-    accidental leading/trailing spaces."""
-    with (
-        patch(
-            "app.routers.pipeline.pipeline_configs_repo.get_by_user",
-            new_callable=AsyncMock, return_value=fake_config(),
-        ),
-        patch(
-            "app.routers.pipeline.pipeline_configs_repo.upsert_for_user",
-            new_callable=AsyncMock,
-        ) as mock_upsert,
-    ):
-        mock_upsert.return_value = fake_config()
-        resp = await client.put(API, json={
-            "smtp_user": "  sales@noondalton.com  ",
-            "sender_email": "  sales@noondalton.com ",
-            "sender_name": " NoonDalton Sales  ",
-        })
-
-    assert resp.status_code == 200
-    persisted_payload = mock_upsert.call_args.args[1]
-    assert persisted_payload["smtp_user"] == "sales@noondalton.com"
-    assert persisted_payload["sender_email"] == "sales@noondalton.com"
-    assert persisted_payload["sender_name"] == "NoonDalton Sales"
-
-
-@pytest.mark.asyncio
-async def test_update_config_rejects_invalid_sender_email(client):
-    with patch(
-        "app.routers.pipeline.pipeline_configs_repo.get_by_user",
-        new_callable=AsyncMock, return_value=fake_config(),
-    ):
-        resp = await client.put(API, json={"sender_email": "not-an-email"})
-
-    assert resp.status_code == 422
-
-
-@pytest.mark.asyncio
-async def test_update_config_whitespace_only_password_keeps_existing(client):
-    """A Password field containing only spaces must be treated as if it were
-    not provided at all — the previously saved password stays untouched."""
-    with (
-        patch(
-            "app.routers.pipeline.pipeline_configs_repo.get_by_user",
-            new_callable=AsyncMock, return_value=fake_config(),
-        ),
-        patch(
-            "app.routers.pipeline.pipeline_configs_repo.upsert_for_user",
-            new_callable=AsyncMock,
-        ) as mock_upsert,
-    ):
-        mock_upsert.return_value = fake_config()
-        resp = await client.put(API, json={"smtp_password": "   "})
-
-    assert resp.status_code == 200
-    persisted_payload = mock_upsert.call_args.args[1]
-    assert "smtp_password_encrypted" not in persisted_payload
-
-
-@pytest.mark.asyncio
-async def test_update_config_explicit_empty_password_clears_it(client):
-    """An explicit empty string ("") is the one value that clears a
-    previously configured password — distinct from whitespace-only above."""
-    with (
-        patch(
-            "app.routers.pipeline.pipeline_configs_repo.get_by_user",
-            new_callable=AsyncMock, return_value=fake_config(),
-        ),
-        patch(
-            "app.routers.pipeline.pipeline_configs_repo.upsert_for_user",
-            new_callable=AsyncMock,
-        ) as mock_upsert,
-    ):
-        mock_upsert.return_value = fake_config({"smtp_password_encrypted": ""})
-        resp = await client.put(API, json={"smtp_password": ""})
-
-    assert resp.status_code == 200
-    persisted_payload = mock_upsert.call_args.args[1]
-    assert persisted_payload["smtp_password_encrypted"] == ""
-
-
-@pytest.mark.asyncio
-async def test_update_config_password_not_stripped(client):
-    """Unlike smtp_user/sender_email/sender_name, a real password's own
-    leading/trailing spaces must be preserved — they can be intentional."""
-    with (
-        patch(
-            "app.routers.pipeline.pipeline_configs_repo.get_by_user",
-            new_callable=AsyncMock, return_value=fake_config(),
-        ),
-        patch(
-            "app.routers.pipeline.pipeline_configs_repo.upsert_for_user",
-            new_callable=AsyncMock,
-        ) as mock_upsert,
-    ):
-        mock_upsert.return_value = fake_config()
-        resp = await client.put(API, json={"smtp_password": "  pad ded  "})
-
-    assert resp.status_code == 200
-    persisted_payload = mock_upsert.call_args.args[1]
-    assert encryption_service.decrypt(persisted_payload["smtp_password_encrypted"]) == "  pad ded  "
-
-
-
-@pytest.mark.asyncio
-async def test_update_config_returns_503_when_encryption_key_missing(client, monkeypatch):
-    """PIPELINE_ENCRYPTION_KEY unset must surface as a clear 503 on this one
-    endpoint, not crash the app or leak a raw stack trace."""
-    monkeypatch.setattr(
-        "app.services.encryption_service.settings.pipeline_encryption_key", ""
-    )
-    encryption_service._fernet.cache_clear()
-    try:
-        with patch(
-            "app.routers.pipeline.pipeline_configs_repo.get_by_user",
-            new_callable=AsyncMock, return_value=fake_config(),
-        ):
-            resp = await client.put(API, json={"smtp_password": "new-secret"})
-    finally:
-        encryption_service._fernet.cache_clear()
-
-    assert resp.status_code == 503
-    assert "PIPELINE_ENCRYPTION_KEY" in resp.json()["detail"]
 
 
 @pytest.mark.asyncio
@@ -1060,7 +905,7 @@ async def test_update_config_requires_auth():
         fastapi_app.dependency_overrides.update(original_overrides)
 
 
-# ── hunter_api_key (RF15): write-only, same treatment as smtp_password ───────
+# ── hunter_api_key (RF15): write-only ────────────────────────────────────────
 HUNTER_KEY = "hunter-test-key-0000"
 
 
@@ -1137,7 +982,7 @@ async def test_update_config_explicit_empty_hunter_key_clears_it(client):
 
 @pytest.mark.asyncio
 async def test_update_config_without_hunter_key_does_not_touch_it(client):
-    _, persisted = await _put_config(client, {"sender_name": "NoonDalton Sales"})
+    _, persisted = await _put_config(client, {"keywords": ["BPO"]})
     assert "hunter_api_key_encrypted" not in persisted
 
 

@@ -8,16 +8,16 @@ analisis-worker-serverless.md). `POST /pipeline/runs` es la única forma de
 disparar un escaneo: siempre manual, a pedido de quien lo llame.
 
 One PipelineConfig document per user (doc_id == user.sub), same pattern as
-SettingsRepo. smtp_password is write-only: it is encrypted with
+SettingsRepo. hunter_api_key (Agente 2) is write-only: it is encrypted with
 app.services.encryption_service before being persisted as
-`smtp_password_encrypted`, and the API never returns it — only a
-`smtp_password_configured` boolean so the frontend can show "configured"
-without ever getting the secret back. hunter_api_key (Agente 2) gets the same
-treatment: `hunter_api_key_encrypted` / `hunter_api_key_configured`.
-`smtp_configured` / `smtp_missing_fields` tell whether the whole SMTP account
-is complete (smtp_service.smtp_config_problems — the rule the real send of
-prospecting emails applies), and POST /config/smtp/test checks it by logging
-in, without sending anything.
+`hunter_api_key_encrypted`, and the API never returns it — only a
+`hunter_api_key_configured` boolean so the frontend can show "configured"
+without ever getting the secret back.
+
+Real sending of prospecting emails: the user's switch and daily limit live
+here; the mailbox it is sent from is connected apart (routers/
+mail_connection.py). The settings of the removed SMTP sending, which older
+documents still hold, are never returned nor accepted (RETIRED_CONFIG_FIELDS).
 """
 
 import asyncio
@@ -29,6 +29,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, sta
 from app.core import url_safety
 from app.core.pipeline_constants import (
     OUTREACH_DAILY_SEND_LIMIT_DEFAULT,
+    RETIRED_SMTP_CONFIG_FIELDS,
     JSEARCH_DATE_POSTED_OPTIONS,
     JSEARCH_MAX_NUM_PAGES,
     RUN_CONSIDERED_DEAD_AFTER_SECONDS,
@@ -50,7 +51,7 @@ from app.schemas.pipeline import (
     PipelineRunStatus,
     SourceType,
 )
-from app.services import encryption_service, job_scout_service, smtp_service
+from app.services import encryption_service, job_scout_service, outreach_send_rules
 from app.services.firestore_service import (
     new_id,
     now_utc,
@@ -65,9 +66,11 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/pipeline", tags=["Pipeline"])
 
 
-# Removed "automation thresholds" settings. Existing pipeline_configs docs may
-# still hold them; they are ignored and never returned.
-RETIRED_CONFIG_FIELDS = ("auto_send_threshold", "max_emails_per_day")
+# Removed settings that existing pipeline_configs docs may still hold: the
+# "automation thresholds" and the SMTP account of the removed SMTP sending.
+# They are ignored, never returned, and never written by PUT /config (its
+# body model does not have them).
+RETIRED_CONFIG_FIELDS = ("auto_send_threshold", "max_emails_per_day") + RETIRED_SMTP_CONFIG_FIELDS
 
 
 def _default_config() -> Dict[str, Any]:
@@ -76,11 +79,6 @@ def _default_config() -> Dict[str, Any]:
         "industries": [],
         "excluded_companies": [],
         "sources": [],
-        "smtp_host": "",
-        "smtp_port": 587,
-        "smtp_user": "",
-        "sender_email": "",
-        "sender_name": "",
         # Real sending of prospecting emails (RF-VTA-16): off until the user
         # switches it on (and the server's master switch is on too).
         "outreach_real_send_enabled": False,
@@ -170,7 +168,7 @@ def _split_source_config(
     Fields listed in SOURCE_TYPE_SECRET_CONFIG_FIELDS for this source_type
     (e.g. `api_key` for source_type=api) are encrypted with Fernet and moved
     out of the plaintext config — same treatment as
-    PipelineConfig.smtp_password. Everything else stays in plaintext (e.g.
+    PipelineConfig.hunter_api_key. Everything else stays in plaintext (e.g.
     `base_url`, `feed_url`, scraper selectors — not secrets).
     """
     secret_fields = set(SOURCE_TYPE_SECRET_CONFIG_FIELDS.get(source_type, []))
@@ -216,16 +214,13 @@ def _public_source(source: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _to_public(doc: Dict[str, Any], user_id: str) -> Dict[str, Any]:
-    """Strip secrets, add a userId, and never leak smtp_password_encrypted
-    nor hunter_api_key_encrypted."""
+    """Strip secrets, add a userId, and never leak hunter_api_key_encrypted
+    nor any retired field (e.g. the old smtp_password_encrypted)."""
     base = _default_config()
     public = {**base, **doc}
     public["userId"] = user_id
-    public["smtp_password_configured"] = bool(public.get("smtp_password_encrypted"))
-    public["smtp_missing_fields"] = smtp_service.smtp_config_problems(public)
-    public["smtp_configured"] = not public["smtp_missing_fields"]
-    public["outreach_real_send_server_enabled"] = smtp_service.server_send_enabled()
-    public.pop("smtp_password_encrypted", None)
+    public["outreach_real_send_server_enabled"] = outreach_send_rules.server_send_enabled()
+    # Never stored in plaintext, but never returned even if it were.
     public.pop("smtp_password", None)
     public["hunter_api_key_configured"] = bool(public.get("hunter_api_key_encrypted"))
     public.pop("hunter_api_key_encrypted", None)
@@ -265,28 +260,12 @@ async def update_config(
     body: PipelineConfigUpdate,
     user: CurrentUser = Depends(get_current_user),
 ):
-    payload = body.model_dump(exclude_unset=True, exclude={"smtp_password", "hunter_api_key"})
-
-    if body.smtp_password is not None:
-        # smtp_password is never stripped (its own spaces can be meaningful),
-        # but a whitespace-only value is not a real password: treat it as
-        # "not provided" and keep whatever is already stored. Only a true
-        # empty string ("") is an explicit request to clear it.
-        if body.smtp_password.strip():
-            try:
-                payload["smtp_password_encrypted"] = encryption_service.encrypt(body.smtp_password)
-            except encryption_service.EncryptionNotConfiguredError as exc:
-                raise HTTPException(
-                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                    detail=str(exc),
-                ) from exc
-        elif body.smtp_password == "":
-            # Explicit empty string clears a previously configured password.
-            payload["smtp_password_encrypted"] = ""
+    payload = body.model_dump(exclude_unset=True, exclude={"hunter_api_key"})
 
     if body.hunter_api_key is not None:
-        # Same rules as smtp_password, except that an API key is stripped:
-        # its surrounding spaces are never part of it.
+        # Stripped (its surrounding spaces are never part of it). A
+        # whitespace-only value is "not provided": whatever is stored stays.
+        # Only a true empty string ("") is an explicit request to clear it.
         if body.hunter_api_key.strip():
             try:
                 payload["hunter_api_key_encrypted"] = encryption_service.encrypt(body.hunter_api_key.strip())
@@ -301,25 +280,6 @@ async def update_config(
     await _get_or_create_doc(user.sub)
     doc = await pipeline_configs_repo.upsert_for_user(user.sub, payload)
     return _to_public(doc, user.sub)
-
-
-@router.post("/config/smtp/test")
-@limiter.limit("5/minute")
-async def test_smtp_connection(request: Request, user: CurrentUser = Depends(get_current_user)):
-    """Connect to the saved SMTP account, log in and NOOP — nothing is sent.
-    200 {"ok": true}; refusals in detail.code: 422 smtp_not_configured (+
-    missing) / smtp_host_blocked / smtp_host_unresolvable, 409
-    smtp_credentials_unreadable, 503 encryption_not_configured, 502
-    smtp_auth_failed / smtp_unavailable."""
-    doc = await pipeline_configs_repo.get_by_user(user.sub)
-    config = {**_default_config(), **(doc or {})}
-    try:
-        account = smtp_service.require_account(config)
-        password = smtp_service.decrypt_password(config)
-        await smtp_service.check_connection(account, password)
-    except smtp_service.SmtpError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from None
-    return {"ok": True}
 
 
 @router.put("/config/keywords")

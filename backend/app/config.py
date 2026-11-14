@@ -93,20 +93,16 @@ class Settings(BaseSettings):
     supabase_service_key: str = ""
     supabase_storage_bucket: str = "nd-assets"
 
-    # Fernet key encrypting pipeline secrets at rest (SMTP passwords, provider
-    # API keys) — see app/services/encryption_service.py. Deliberately not
-    # derived from app_secret_key: different blast radius and rotation needs.
+    # Fernet key encrypting pipeline secrets at rest (provider API keys, the
+    # mailbox OAuth tokens) — see app/services/encryption_service.py.
+    # Deliberately not derived from app_secret_key: different blast radius and
+    # rotation needs.
     pipeline_encryption_key: str = ""
 
-    # Real sending of prospecting emails by SMTP (RF-VTA-16). Master switch for
-    # the whole deployment: off by default, and each user must also switch it
-    # on in their pipeline config. Both are required to send.
+    # Real sending of prospecting emails from the platform (RF-VTA-16). Master
+    # switch for the whole deployment: off by default, and each user must also
+    # switch it on in their pipeline config. Both are required to send.
     outreach_real_send_enabled: bool = False
-    # Total time budget of one SMTP conversation (connect, login, send).
-    smtp_timeout_seconds: float = 20.0
-    # Development/test only: lets smtp_host resolve to a loopback, private or
-    # link-local address (e.g. a local aiosmtpd). Ignored when APP_ENV=production.
-    smtp_allow_private_hosts: bool = False
 
     # Sending from each user's own Microsoft 365 / Outlook mailbox (RF-VTA-16):
     # delegated OAuth (authorization code + PKCE) and Microsoft Graph. Its own

@@ -124,3 +124,43 @@ este script) cuando el respaldo ya no haga falta.
 `scripts/migrations/backups/` (contienen datos reales) y, en el mismo
 cambio, quita `_legacy_split_rss_title` / `_legacy_rss_fingerprint` y este
 script.
+
+## drop_smtp_fields.py
+
+Borra de `pipeline_configs` la configuración del envío por SMTP eliminado
+(RF-VTA-16, fase 2b): `smtp_host`, `smtp_port`, `smtp_user`,
+`smtp_password_encrypted` (la contraseña SMTP, cifrada), `sender_email` y
+`sender_name` (`RETIRED_SMTP_CONFIG_FIELDS`). La API ya los ignora; este
+script los saca de Firestore. **No toca ningún otro campo.** Detalle en el
+docstring del script.
+
+**Solo se corre contra el Firestore real con OK explícito.** Sus tests
+(`tests/test_drop_smtp_fields.py`) usan solo el Firestore en memoria.
+
+```
+# 1) Simulación (default): imprime solo conteos, no escribe nada
+python -u -m scripts.migrations.drop_smtp_fields
+
+# 2) Aplicar: primero guarda el respaldo en scripts/migrations/backups/
+#    (git-ignored; contiene la contraseña SMTP cifrada), imprime su ruta y
+#    su sha256, y pide confirmación 'yes'. Al final verifica.
+python -u -m scripts.migrations.drop_smtp_fields --apply
+
+# 3) Deshacer desde el respaldo (exige el sha256 impreso en el paso 2):
+#    simulación y luego aplicar
+python -u -m scripts.migrations.drop_smtp_fields --restore scripts/migrations/backups/<archivo>.json --sha256 <hex>
+python -u -m scripts.migrations.drop_smtp_fields --restore scripts/migrations/backups/<archivo>.json --sha256 <hex> --apply
+```
+
+Nunca imprime ids de documento, direcciones ni valores: solo conteos. Cada
+documento se escribe en una transacción que lo vuelve a leer y solo borra si
+los valores siguen siendo los del respaldo ("CAMBIÓ" si no; no se toca).
+`--restore` valida el respaldo (filas con exactamente `id` y `fields`, y
+solo campos SMTP retirados), devuelve los campos que faltan y deja como
+"CONFLICTO", sin tocar, un documento cuyo campo tiene otro valor.
+
+Código de salida: 0 bien, 1 si falló alguna escritura o la verificación, 2
+si se rechazó la corrida.
+
+**Al terminar:** cuando ya no haga falta restaurar, borra el respaldo (tiene
+la contraseña SMTP cifrada) y, en el mismo cambio, este script.

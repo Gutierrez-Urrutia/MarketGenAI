@@ -11,8 +11,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from email_validator import EmailNotValidError, validate_email
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field
 
 from app.core.pipeline_constants import OUTREACH_DAILY_SEND_LIMIT_DEFAULT, OUTREACH_DAILY_SEND_LIMIT_MAX
 
@@ -38,7 +37,7 @@ SOURCE_TYPE_REQUIRED_CONFIG_FIELDS: Dict[SourceType, List[str]] = {
 
 # Config fields that hold secrets (API keys, tokens) and must be encrypted at
 # rest with app.services.encryption_service before being persisted, same
-# treatment as PipelineConfig.smtp_password. Never returned in plaintext by
+# treatment as PipelineConfig.hunter_api_key. Never returned in plaintext by
 # the API — see routers/pipeline.py `_split_source_config` / `_public_source`.
 SOURCE_TYPE_SECRET_CONFIG_FIELDS: Dict[SourceType, List[str]] = {
     SourceType.API: ["api_key"],
@@ -106,28 +105,16 @@ class PipelineConfig(BaseModel):
     excluded_companies: List[str] = Field(default_factory=list)
     sources: List[JobSource] = Field(default_factory=list)
 
-    # Email settings. smtp_password is never returned by the API — see
-    # PipelineConfigOut / encryption_service.py.
-    smtp_host: str = ""
-    smtp_port: int = 587
-    smtp_user: str = ""
-    sender_email: str = ""
-    sender_name: str = ""
-    smtp_password_configured: bool = False
-    # The whole SMTP account (host, port, user, password, sender): computed by
-    # smtp_service.smtp_config_problems, the same rule the send applies.
-    smtp_configured: bool = False
-    smtp_missing_fields: List[str] = Field(default_factory=list)
-
     # Real sending of prospecting emails (RF-VTA-16): the user's switch (off by
     # default) and daily cap. Sending also needs the server's master switch
-    # (OUTREACH_REAL_SEND_ENABLED), reported read-only here.
+    # (OUTREACH_REAL_SEND_ENABLED), reported read-only here, and a connected
+    # mailbox (schemas/mail_connection.py).
     outreach_real_send_enabled: bool = False
     outreach_real_send_server_enabled: bool = False
     outreach_daily_send_limit: int = Field(OUTREACH_DAILY_SEND_LIMIT_DEFAULT, ge=1, le=OUTREACH_DAILY_SEND_LIMIT_MAX)
 
-    # Hunter.io API key (Agente 2). Same treatment as smtp_password: stored
-    # encrypted as hunter_api_key_encrypted, never returned by the API.
+    # Hunter.io API key (Agente 2): stored encrypted as
+    # hunter_api_key_encrypted, never returned by the API.
     hunter_api_key_configured: bool = False
 
     # Not shown in the UI and not used yet: kept for the scheduled scan of
@@ -145,19 +132,12 @@ class PipelineConfig(BaseModel):
 
 
 class PipelineConfigUpdate(BaseModel):
-    """PUT /pipeline/config — partial update, smtp_password and
-    hunter_api_key write-only."""
+    """PUT /pipeline/config — partial update, hunter_api_key write-only.
+    Fields not listed here (e.g. the retired SMTP settings) are ignored."""
 
     keywords: Optional[List[str]] = None
     industries: Optional[List[str]] = None
     excluded_companies: Optional[List[str]] = None
-
-    smtp_host: Optional[str] = None
-    smtp_port: Optional[int] = Field(None, ge=1, le=65535)
-    smtp_user: Optional[str] = None
-    smtp_password: Optional[str] = None
-    sender_email: Optional[str] = None
-    sender_name: Optional[str] = None
 
     outreach_real_send_enabled: Optional[bool] = None
     outreach_daily_send_limit: Optional[int] = Field(None, ge=1, le=OUTREACH_DAILY_SEND_LIMIT_MAX)
@@ -170,29 +150,6 @@ class PipelineConfigUpdate(BaseModel):
     scan_frequency_hours: Optional[int] = Field(None, ge=1)
     # Kept for RF-VTA-17 too; no UI control sends it today (see PipelineConfig).
     is_active: Optional[bool] = None
-
-    # smtp_host/smtp_user/sender_name: only strip incidental leading/
-    # trailing whitespace. smtp_password is intentionally NOT stripped here —
-    # a password's own spaces can be meaningful; see routers/pipeline.py for
-    # how a whitespace-only password is treated as "unchanged".
-    @field_validator("smtp_host", "smtp_user", "sender_name", mode="after")
-    @classmethod
-    def _strip_free_text(cls, value: Optional[str]) -> Optional[str]:
-        return value.strip() if value is not None else value
-
-    @field_validator("sender_email", mode="after")
-    @classmethod
-    def _strip_and_validate_sender_email(cls, value: Optional[str]) -> Optional[str]:
-        if value is None:
-            return value
-        value = value.strip()
-        if not value:
-            return value
-        try:
-            validate_email(value, check_deliverability=False)
-        except EmailNotValidError as exc:
-            raise ValueError(f"sender_email must be a valid email address: {exc}") from exc
-        return value
 
 
 class PipelineKeywordsUpdate(BaseModel):

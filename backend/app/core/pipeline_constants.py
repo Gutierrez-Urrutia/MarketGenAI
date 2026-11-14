@@ -232,6 +232,14 @@ OUTREACH_SEND_RATE_LIMIT = "10/minute"
 SEND_LOCK_STALE_FACTOR = 2
 MAIL_SEND_MAX_HTTP_CALLS = 3
 
+# Settings of the removed SMTP sending, still stored in older
+# pipeline_configs documents (with the SMTP password, encrypted). Never
+# returned nor accepted by the API (routers/pipeline.py RETIRED_CONFIG_FIELDS);
+# removed from Firestore only by scripts/migrations/drop_smtp_fields.py.
+RETIRED_SMTP_CONFIG_FIELDS = (
+    "smtp_host", "smtp_port", "smtp_user", "smtp_password_encrypted", "sender_email", "sender_name",
+)
+
 # ── Mailbox connection: Microsoft 365 / Outlook by OAuth (RF-VTA-16) ─────────
 # Delegated permissions asked for when a user connects their mailbox.
 # Mail.ReadWrite is needed to create the draft that is then sent (Mail.Send
