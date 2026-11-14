@@ -34,45 +34,37 @@ export function AssistantPage({ navigationState = {}, onNavigate = () => {}, cam
 
   const assistantLanguageCopy = {
     en: {
-      name: "English",
       noReply: "No response",
-      fallback: "I can help with existing proposals, opportunity prioritization, and marketing ideas. The live AI endpoint is not available right now, but this assistant area is ready for DeepSeek-backed responses.",
+      fallback: "Noa is not available right now. Please try again in a moment.",
     },
     es: {
-      name: "Spanish",
       noReply: "Sin respuesta",
-      fallback: "Puedo ayudarte con propuestas existentes, priorización de oportunidades e ideas de marketing. El endpoint de IA no está disponible en este momento, pero esta área está lista para respuestas respaldadas por DeepSeek.",
+      fallback: "Noa no está disponible en este momento. Inténtalo de nuevo en un momento.",
     },
     pt: {
-      name: "Portuguese",
       noReply: "Sem resposta",
-      fallback: "Posso ajudar com propostas existentes, priorização de oportunidades e ideias de marketing. O endpoint de IA não está disponível no momento, mas esta área está pronta para respostas com suporte do DeepSeek.",
+      fallback: "A Noa não está disponível no momento. Tente novamente em instantes.",
     },
   };
 
   const sendAssistantMessage = async (overrideMessage = "") => {
-    const message = (overrideMessage || assistantInput).trim();
+    const message = (typeof overrideMessage === "string" && overrideMessage ? overrideMessage : assistantInput).trim();
     if (!message) return;
-    const language = detectProposalLanguage(message);
-    const languageCopy = assistantLanguageCopy[language] || assistantLanguageCopy.en;
-    const responseInstruction = `Respond strictly in ${languageCopy.name}. Match the language used by the user's message. Do not switch languages unless the user asks you to.`;
+    const detected = detectProposalLanguage(message);
+    const language = assistantLanguageCopy[detected] ? detected : "en";
+    const languageCopy = assistantLanguageCopy[language];
+    // El historial lleva solo turnos reales: los mensajes de error local no se reenvían al modelo.
+    const history = assistantMessages
+      .filter((m) => !m.error && m.content)
+      .slice(-20)
+      .map(({ role, content }) => ({ role, content }));
 
     setAssistantInput("");
-    setAssistantMessages((prev) => [
-      ...prev,
-      { role: "user", content: message },
-    ]);
-
+    setAssistantMessages((prev) => [...prev, { role: "user", content: message }]);
     setAssistantLoading(true);
 
     try {
-      const { data } = await api.post("/assistant/chat", {
-        message: `${responseInstruction}\n\nUser message:\n${message}`,
-        originalMessage: message,
-        language,
-        responseLanguage: languageCopy.name,
-        instruction: responseInstruction,
-      });
+      const { data } = await api.post("/assistant/chat", { message, history, language });
 
       setAssistantMessages((prev) => [
         ...prev,
@@ -81,7 +73,7 @@ export function AssistantPage({ navigationState = {}, onNavigate = () => {}, cam
     } catch (error) {
       setAssistantMessages((prev) => [
         ...prev,
-        { role: "assistant", content: languageCopy.fallback },
+        { role: "assistant", content: languageCopy.fallback, error: true },
       ]);
     } finally {
       setAssistantLoading(false);
@@ -277,7 +269,7 @@ export function AssistantPage({ navigationState = {}, onNavigate = () => {}, cam
         <Btn
           icon={<SendIcon size={14} />}
           disabled={assistantLoading || !assistantInput.trim()}
-          onClick={sendAssistantMessage}
+          onClick={() => sendAssistantMessage()}
         >
           {t("chat.send")}
         </Btn>
