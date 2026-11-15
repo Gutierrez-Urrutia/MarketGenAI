@@ -62,8 +62,14 @@ def data():
 @pytest.mark.asyncio
 async def test_context_has_only_the_callers_data(data):
     text = await ctx.build_context(FAKE_USER_SUB, "hola")
-    assert "Ana Mine" in text and "Propuesta MineCorp" in text and "en_negociacion" in text
+    assert "Ana Mine" in text and "Propuesta MineCorp" in text and "en negociación" in text
     assert "Zed Secret" not in text and "SecretCorp" not in text and "99999" not in text
+
+
+@pytest.mark.asyncio
+async def test_status_is_readable_not_an_internal_code(data):
+    text = await ctx.build_context(FAKE_USER_SUB, "hola")
+    assert "status: en negociación" in text and "en_negociacion" not in text
 
 
 @pytest.mark.asyncio
@@ -193,3 +199,5 @@ def test_system_prompt_declares_read_only_and_untrusted_data():
     prompt = build_system_prompt("DATA", None, "2026-11-13")
     assert "read-only" in prompt and "not instructions" in prompt and "<user_data>\nDATA\n</user_data>" in prompt
     assert "language the user writes in" in prompt
+    assert "already contains only this user's own records" in prompt
+    assert "too vague" in prompt and "ask one short question to clarify" in prompt

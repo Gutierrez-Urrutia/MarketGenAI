@@ -26,6 +26,15 @@ MAX_SERVICES = 100
 MAX_DETAILED = 5          # mentioned proposals / services that get extra detail
 MIN_MENTION_LENGTH = 3    # ignore tiny names when looking for mentions
 FIELD_MAX_CHARS = 200
+
+# Estados comerciales de una propuesta, legibles: el código interno («en_negociacion») no debe llegar al usuario.
+STATUS_LABELS = {"borrador": "borrador", "enviada": "enviada", "vista": "vista", "en_negociacion": "en negociación",
+                 "firmada": "firmada", "rechazada": "rechazada"}
+
+
+def _status_label(raw: Any) -> str:
+    raw = str(raw or "borrador")
+    return STATUS_LABELS.get(raw, raw.replace("_", " "))
 DETAIL_MAX_CHARS = 600
 
 
@@ -69,7 +78,7 @@ def _proposals_section(proposals: List[Dict[str, Any]], message: str) -> List[st
             p.get("title"),
             f"client: {p.get('clientName')}" if p.get("clientName") else "",
             f"company: {p.get('clientCompany')}" if p.get("clientCompany") else "",
-            f"status: {p.get('proposal_status') or 'borrador'}",
+            f"status: {_status_label(p.get('proposal_status'))}",
             f"total: {amount} {currency}".strip() if amount not in (None, "") else "",
             f"updated: {p.get('updatedAt')}" if p.get("updatedAt") else "",
         ))
