@@ -20,7 +20,6 @@ import {
 /* ═══════════════════════════════════════════════════════════════ */
 export function ReportsPage({ onNavigate = () => {}, campaignFlow = null, setCampaignFlow = () => {} }) {
   const { t } = useI18n();
-  const [proposalStatusPeriod, setProposalStatusPeriod] = useState("30d");
   const [winRateData, setWinRateData] = useState({ rate: null, detail: "" });
   // RF-VTA-10: reporte de pipeline (conversión, tiempo de cierre, valor por moneda) y su período.
   const [pipelineDays, setPipelineDays] = useState(null);
@@ -67,8 +66,7 @@ export function ReportsPage({ onNavigate = () => {}, campaignFlow = null, setCam
     loadReports();
   }, []);
 
-  const fetchWinRate = async (period) => {
-    const days = period === "30d" ? 30 : period === "90d" ? 90 : null;
+  const fetchWinRate = async (days) => {
     const params = days ? `?days=${days}` : "";
     const res = await api.get(`/reports/overview${params}`).then((r) => r.data);
     setWinRateData({
@@ -77,9 +75,10 @@ export function ReportsPage({ onNavigate = () => {}, campaignFlow = null, setCam
     });
   };
 
-  const handlePeriodChange = (period) => {
-    setProposalStatusPeriod(period);
-    fetchWinRate(period);
+  // Un solo selector de período para toda la pantalla: el del reporte de Pipeline también recalcula el win rate de oportunidades.
+  const handlePeriodChange = (days) => {
+    setPipelineDays(days);
+    fetchWinRate(days);
   };
 
   useEffect(() => {
@@ -289,7 +288,7 @@ export function ReportsPage({ onNavigate = () => {}, campaignFlow = null, setCam
 
       {!reportsState.loading && !reportsState.error && (
         <>
-          <PipelineReport days={pipelineDays} onDaysChange={setPipelineDays} pipeline={pipeline} />
+          <PipelineReport days={pipelineDays} onDaysChange={handlePeriodChange} pipeline={pipeline} />
 
           <div className="grid grid-cols-1 gap-1.5 md:grid-cols-2 xl:grid-cols-4">
             <KpiCard icon={BriefIcon} label={t("reports.totalProposalsGenerated")} value={Number(overviewKpis.proposalsSent) || 0} sub={t("reports.backendData")} color="bg-indigo-50 text-indigo-600" onClick={() => onNavigate("content", { typeFilter: "Proposals" })} />
@@ -315,17 +314,6 @@ export function ReportsPage({ onNavigate = () => {}, campaignFlow = null, setCam
                       <Badge label={t("reports.live")} color="bg-green-100 text-green-700" />
                     </div>
                     <p className="mt-1 text-xs text-gray-400">{t("reports.distributionPipelineValue")}</p>
-                  </div>
-                  <div className="flex rounded-lg bg-gray-100 p-1">
-                    {["30d", "90d", "all"].map((period) => (
-                      <button
-                        key={period}
-                        onClick={() => handlePeriodChange(period)}
-                        className={`rounded-md px-3 py-1 text-xs font-medium transition-colors ${proposalStatusPeriod === period ? "bg-white text-indigo-700 shadow-sm" : "text-gray-500 hover:text-gray-700"}`}
-                      >
-                        {period === "all" ? t("reports.all") : period}
-                      </button>
-                    ))}
                   </div>
                 </div>
 
