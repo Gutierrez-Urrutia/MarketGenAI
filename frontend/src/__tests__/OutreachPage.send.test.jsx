@@ -34,8 +34,9 @@ const KP = "outreachPage.prospecting";
 const flush = () => act(async () => { for (let i = 0; i < 8; i += 1) await Promise.resolve(); });
 
 const READY = {
-  smtp_configured: true, smtp_missing_fields: [], server_send_enabled: true, user_send_enabled: true,
-  real_send_enabled: true, daily_limit: 50, sent_today: 0, sender_email: "ventas@example.com", sender_name: "",
+  oauth_configured: true, mailbox_connected: true, mailbox_needs_reconnect: false, mailbox_address: "ventas@example.com",
+  server_send_enabled: true, user_send_enabled: true, real_send_enabled: true, daily_limit: 50, sent_today: 0,
+  sender_email: "ventas@example.com", sender_name: "",
 };
 const approved = (overrides = {}) => ({
   id: "e1", user_id: "u", lead_id: "lead-1", contact_id: "c-1", status: "approved", language: "en",
@@ -81,10 +82,10 @@ describe("envío real desde Alcance", () => {
 
   it("un envío correcto reemplaza el correo, avisa y recarga el cupo", async () => {
     await renderPage();
-    outreachEmailsApi.send.mockResolvedValue({ data: approved({ status: "sent", send_method: "smtp", sent_by_name: "Usuaria Demo" }) });
+    outreachEmailsApi.send.mockResolvedValue({ data: approved({ status: "sent", send_method: "platform", sent_by_name: "Usuaria Demo" }) });
     await confirmSend();
     expect(outreachEmailsApi.send).toHaveBeenCalledWith("e1", { confirmToEmail: "ana@example.com", forceRetry: false });
-    expect(toast.success).toHaveBeenCalledWith(`${KP}.messages.smtpSent`);
+    expect(toast.success).toHaveBeenCalledWith(`${KP}.messages.sentBySystem`);
     expect(outreachEmailsApi.sendStatus).toHaveBeenCalledTimes(2);
   });
 
@@ -100,17 +101,40 @@ describe("envío real desde Alcance", () => {
     expect(busy.disabled).toBe(true);
     fireEvent.click(busy);
     expect(screen.queryByRole("dialog")).toBeNull();
-    await act(async () => { resolve({ data: approved({ status: "sent", send_method: "smtp" }) }); });
+    await act(async () => { resolve({ data: approved({ status: "sent", send_method: "platform" }) }); });
     await flush();
     expect(outreachEmailsApi.send).toHaveBeenCalledTimes(1);
   });
 
   it("un timeout incierto muestra el error y recarga la lista", async () => {
     await renderPage();
-    outreachEmailsApi.send.mockRejectedValue(apiError(504, "smtp_timeout"));
+    outreachEmailsApi.send.mockRejectedValue(apiError(504, "send_timeout"));
     await confirmSend();
-    expect(toast.error).toHaveBeenCalledWith(`${KP}.errors.smtp_timeout`);
+    expect(toast.error).toHaveBeenCalledWith(`${KP}.errors.send_timeout`);
     expect(outreachEmailsApi.list).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["mail_rejected", "mail_throttled", "mail_service_unavailable", "mail_service_timeout"])(
+    "un fallo del servicio (%s) muestra su texto, recarga la lista y el estado",
+    async (code) => {
+      await renderPage();
+      outreachEmailsApi.send.mockRejectedValue(apiError(502, code));
+      await confirmSend();
+      expect(toast.error).toHaveBeenCalledWith(`${KP}.errors.${code}`);
+      expect(outreachEmailsApi.list).toHaveBeenCalledTimes(2);
+      expect(outreachEmailsApi.sendStatus).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it("si el buzón pide reconexión al enviar, avisa y el estado nuevo bloquea «Enviar» con «Reconectar»", async () => {
+    await renderPage();
+    outreachEmailsApi.send.mockRejectedValue(apiError(409, "mailbox_reconnect_required"));
+    outreachEmailsApi.sendStatus.mockResolvedValue({ data: { ...READY, mailbox_needs_reconnect: true } });
+    await confirmSend();
+    expect(toast.error).toHaveBeenCalledWith(`${KP}.errors.mailbox_reconnect_required`);
+    expect(sendButton().disabled).toBe(true);
+    expect(within(detail()).getByTestId("send-block-note").textContent).toContain(`${KP}.send.blocked.mailbox_reconnect_required`);
+    expect(within(detail()).getByRole("button", { name: `${KP}.send.reconnectInSettings` })).toBeTruthy();
   });
 
   it("un corte de axios también recarga la lista (el correo pudo haber salido)", async () => {
@@ -128,11 +152,19 @@ describe("envío real desde Alcance", () => {
     expect(toast.error).not.toHaveBeenCalled();
   });
 
-  it("con la cuenta incompleta el aviso lleva a Configuración › Pipeline", async () => {
-    const { onNavigate } = await renderPage({ status: { ...READY, smtp_configured: false, smtp_missing_fields: ["smtp_host"] } });
+  it("sin buzón conectado el aviso lleva a Configuración › Pipeline", async () => {
+    const { onNavigate } = await renderPage({ status: { ...READY, mailbox_connected: false, mailbox_address: null } });
     expect(sendButton().disabled).toBe(true);
     fireEvent.click(within(detail()).getByRole("button", { name: `${KP}.send.openSettings` }));
     expect(onNavigate).toHaveBeenCalledWith("settings", { tab: "pipeline" });
+  });
+
+  it("con el buzón por reconectar, «Reconectar en Configuración» lleva a Configuración › Pipeline", async () => {
+    const { onNavigate } = await renderPage({ status: { ...READY, mailbox_needs_reconnect: true } });
+    expect(sendButton().disabled).toBe(true);
+    fireEvent.click(within(detail()).getByRole("button", { name: `${KP}.send.reconnectInSettings` }));
+    expect(onNavigate).toHaveBeenCalledWith("settings", { tab: "pipeline" });
+    expect(outreachEmailsApi.send).not.toHaveBeenCalled();
   });
 
   it("un destinatario de la lista desactiva «Enviar» y muestra la marca", async () => {
@@ -156,7 +188,7 @@ describe("envío real desde Alcance", () => {
 
   it("reintentar tras un envío incierto manda force_retry solo después de confirmar", async () => {
     await renderPage({ emails: [approved({ send_lock: { id: "l", at: "2026-11-12T15:00:00Z", uncertain: true } })] });
-    outreachEmailsApi.send.mockResolvedValue({ data: approved({ status: "sent", send_method: "smtp" }) });
+    outreachEmailsApi.send.mockResolvedValue({ data: approved({ status: "sent", send_method: "platform" }) });
     fireEvent.click(within(detail()).getByRole("button", { name: `${KP}.actions.retrySend` }));
     expect(outreachEmailsApi.send).not.toHaveBeenCalled();
     await act(async () => {

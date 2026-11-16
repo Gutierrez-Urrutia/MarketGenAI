@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 
 import { authApi, authTokenStore, outreachEmailsApi } from "./api/axios";
+import { peekMailConnectionResult } from "./features/mailConnection/redirectResult";
 import { isActive } from "./features/outreach/prospectingEmails";
 import { useI18n } from "./hooks/useI18n";
 
@@ -79,10 +80,19 @@ export default function App() {
     settings:   { label: t("sidebar.settings"),          icon: GearIcon,    component: SettingsPage },
   };
 
-  const [page, setPage] = useState(() => PATH_TO_PAGE[window.location.pathname] || "dashboard");
-  const [navigationState, setNavigationState] = useState({});
+  // Back from connecting the sending mailbox: open Settings › Pipeline, where
+  // the mailbox card shows the result (and removes it).
+  const [mailConnectionPending] = useState(() => Boolean(peekMailConnectionResult()));
+  const [page, setPage] = useState(() => (mailConnectionPending ? "settings" : PATH_TO_PAGE[window.location.pathname] || "dashboard"));
+  const [navigationState, setNavigationState] = useState(() => (mailConnectionPending ? { tab: "pipeline" } : {}));
   const [collapsed, setCollapsed] = useState(() => typeof window !== "undefined" && window.innerWidth < 1024);
   const PageComp = PAGES[page]?.visible === false ? DashboardPage : (PAGES[page]?.component || DashboardPage);
+
+  useEffect(() => {
+    if (mailConnectionPending && window.location.pathname !== "/settings") {
+      window.history.replaceState({}, "", "/settings");
+    }
+  }, [mailConnectionPending]);
 
   useEffect(() => {
     const onPopState = () => {

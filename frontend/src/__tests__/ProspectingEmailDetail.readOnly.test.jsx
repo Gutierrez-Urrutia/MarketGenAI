@@ -100,13 +100,50 @@ describe("ProspectingEmailDetail en solo lectura", () => {
       send_lock: { id: "lock-1", at: SENT_AT, uncertain: true },
       send_attempts: 3,
       last_send_error: { code: "send_timeout", at: SENT_AT },
-      smtp_message_id: "<id-sintetico@example.com>",
+      internet_message_id: "<id-sintetico@example.com>",
+      graph_message_id: "graph-id-sintetico",
+      conversation_id: "conv-sintetica",
     });
     expect(screen.queryByText(P.history.title)).toBeNull();
     expect(screen.queryByTestId("send-uncertain")).toBeNull();
     expect(screen.queryByTestId("send-last-error")).toBeNull();
     expect(screen.queryByTestId("sent-by")).toBeNull();
-    expect(document.body.textContent).not.toMatch(/lock-1|id-sintetico/);
+    expect(document.body.textContent).not.toMatch(/lock-1|id-sintetico|graph-id|conv-sintetica/);
+  });
+
+  describe("fila «From»", () => {
+    it("con el remitente guardado muestra nombre y dirección", () => {
+      renderReadOnly({ ...SYSTEM, sender_address: "ventas@example.com", sender_display_name: "Equipo Ventas" });
+      const row = screen.getByTestId("email-from");
+      expect(row.querySelector("dt").textContent).toBe(P.readOnly.from);
+      expect(screen.getByTestId("email-from-name").textContent).toBe("Equipo Ventas");
+      expect(screen.getByTestId("email-from-address").textContent).toBe("ventas@example.com");
+    });
+
+    it("sin nombre del remitente, solo la dirección", () => {
+      renderReadOnly({ ...SYSTEM, sender_address: "ventas@example.com" });
+      expect(screen.queryByTestId("email-from-name")).toBeNull();
+      expect(screen.getByTestId("email-from-address").textContent).toBe("ventas@example.com");
+    });
+
+    it.each([["un correo antiguo sin remitente", SYSTEM], ["marcado a mano", MANUAL], ["rechazado", REJECTED]])(
+      "no aparece en %s",
+      (_name, email) => {
+        renderReadOnly(email);
+        expect(screen.queryByTestId("email-from")).toBeNull();
+        expect(screen.queryByText(P.readOnly.from)).toBeNull();
+      },
+    );
+
+    it("con solo el nombre (sin dirección) no aparece", () => {
+      renderReadOnly({ ...SYSTEM, sender_display_name: "Equipo Ventas" });
+      expect(screen.queryByTestId("email-from")).toBeNull();
+    });
+
+    it("fuera de solo lectura no aparece", () => {
+      render(<ProspectingEmailDetail email={{ ...SYSTEM, sender_address: "ventas@example.com" }} t={t} />);
+      expect(screen.queryByTestId("email-from")).toBeNull();
+    });
   });
 
   it("control: sin readOnly, un correo aprobado sigue mostrando sus acciones", () => {

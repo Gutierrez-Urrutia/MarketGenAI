@@ -33,35 +33,35 @@ export const EMAIL_ERROR_CODES = [
   "invalid_email_transition",
   "email_not_found",
   "forbidden",
-  // Real send by SMTP (POST /outreach-emails/{id}/send) and its list.
+  // Real send from the connected mailbox (POST /outreach-emails/{id}/send,
+  // services/outreach_email_service.py) and the do-not-contact list.
   "real_send_disabled",
-  "smtp_not_configured",
-  "smtp_credentials_unreadable",
+  "mailbox_not_connected",
+  "mailbox_reconnect_required",
+  "missing_permissions",
+  "mailbox_auth_failed",
   "encryption_not_configured",
   "recipient_mismatch",
   "recipient_changed",
   "invalid_recipient",
   "do_not_contact",
-  "smtp_host_blocked",
-  "smtp_host_unresolvable",
   "send_in_progress",
   "send_uncertain",
   "send_state_changed",
   "daily_limit_reached",
-  "smtp_auth_failed",
-  "smtp_sender_refused",
-  "smtp_recipient_refused",
-  "smtp_message_refused",
-  "smtp_unavailable",
-  "smtp_timeout",
+  "mail_rejected",
+  "mail_throttled",
+  "mail_service_unavailable",
+  "mail_service_timeout",
+  "send_timeout",
   "invalid_do_not_contact",
   "do_not_contact_not_found",
 ];
 // Codes after which the email itself changed (send lock, last error): reload it.
 export const SEND_RELOAD_CODES = [
-  "smtp_timeout", "send_uncertain", "send_in_progress", "send_state_changed", "smtp_auth_failed",
-  "smtp_sender_refused", "smtp_recipient_refused", "smtp_message_refused", "smtp_unavailable",
-  "smtp_host_blocked", "smtp_host_unresolvable", "invalid_email_transition", "email_not_found",
+  "send_timeout", "send_uncertain", "send_in_progress", "send_state_changed", "mail_rejected",
+  "mail_throttled", "mail_service_unavailable", "mail_service_timeout", "mailbox_reconnect_required",
+  "missing_permissions", "invalid_email_transition", "email_not_found",
 ];
 // Client-side cases: the request timed out, was rate limited, or anything else.
 export const EMAIL_ERROR_EXTRA = ["timeout", "rateLimited", "generic"];
@@ -78,7 +78,7 @@ export function describeEmailError(error) {
   }
   const status = error?.response?.status;
   const code = error?.response?.data?.detail?.code;
-  // A code first: a 429 may be the daily SMTP quota, not the rate limiter.
+  // A code first: a 429 may be the daily sending quota, not the rate limiter.
   if (EMAIL_ERROR_CODES.includes(code)) return { key: `${ERRORS_KEY}.${code}`, code, timedOut: false };
   if (status === 429) return { key: `${ERRORS_KEY}.rateLimited`, code: "rateLimited", timedOut: false };
   if (status === 403) return { key: `${ERRORS_KEY}.forbidden`, code: "forbidden", timedOut: false };
@@ -134,7 +134,7 @@ export function decidedByName(email) {
   return text && text !== id ? text : null;
 }
 
-// ── Real send by SMTP (RF-VTA-16) ────────────────────────────────────────────
+// ── Real send from the connected mailbox (RF-VTA-16) ────────────────────────
 export const normalizeAddress = (value) => String(value || "").trim().toLowerCase();
 
 /** The do-not-contact entry blocking the email's recipient (address or domain), or null. */
@@ -149,14 +149,16 @@ export function blockingEntry(email, entries = []) {
 }
 export const isBlockedRecipient = (email, entries) => Boolean(blockingEntry(email, entries));
 
-/** True when the last SMTP send may have gone out (timeout during DATA). */
+/** True when the last send may have gone out (no answer once it was requested). */
 export const isUncertain = (email) => Boolean(email?.send_lock?.uncertain);
 
 // Why «Enviar» is disabled, in this order (the first that applies wins).
 export const SEND_BLOCK_REASONS = [
-  "loading", "smtp_not_configured", "server_disabled", "user_disabled",
+  "loading", "mailbox_not_connected", "mailbox_reconnect_required", "server_disabled", "user_disabled",
   "contact_not_reviewed", "do_not_contact", "daily_limit",
 ];
+// Reasons fixed in Settings › Pipeline: the note links there.
+export const SETTINGS_BLOCK_REASONS = ["mailbox_not_connected", "mailbox_reconnect_required", "user_disabled"];
 
 /**
  * Why the approved `email` cannot be sent now, or null. `status` is GET
@@ -165,7 +167,8 @@ export const SEND_BLOCK_REASONS = [
  */
 export function sendBlockReason(status, email, blocked = false) {
   if (!status) return "loading";
-  if (!status.smtp_configured) return "smtp_not_configured";
+  if (!status.mailbox_connected) return "mailbox_not_connected";
+  if (status.mailbox_needs_reconnect) return "mailbox_reconnect_required";
   if (!status.server_send_enabled) return "server_disabled";
   if (!status.user_send_enabled) return "user_disabled";
   if (["pending", "rejected"].includes(email?.contact_review_status)) return "contact_not_reviewed";

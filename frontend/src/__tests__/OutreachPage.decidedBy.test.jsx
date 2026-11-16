@@ -1,8 +1,8 @@
 /**
  * RF-VTA-16, envío real — Historial › «Correos de prospección»: la columna
  * «Decidido por» muestra quién cerró el correo según cómo se cerró (enviado
- * por SMTP, marcado a mano, rechazado) y nunca un id técnico. API mockeada;
- * datos sintéticos.
+ * desde la plataforma, marcado a mano, rechazado) y nunca un id técnico. API
+ * mockeada; datos sintéticos.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, act, fireEvent, within } from "@testing-library/react";
@@ -54,9 +54,9 @@ beforeEach(() => {
 });
 
 describe("«Decidido por» en el historial de correos de prospección", () => {
-  it("enviado por SMTP: quien lo envió (sent_by_name)", async () => {
-    expect(await decidedByOf(closed("smtp", {
-      status: "sent", send_method: "smtp", sent_by: "u-1", sent_by_name: "Usuaria Envío", sent_at: "2026-11-13T03:43:50Z",
+  it("enviado desde la plataforma: quien lo envió (sent_by_name)", async () => {
+    expect(await decidedByOf(closed("plataforma", {
+      status: "sent", send_method: "platform", sent_by: "u-1", sent_by_name: "Usuaria Envío", sent_at: "2026-11-13T03:43:50Z",
     }))).toBe("Usuaria Envío");
   });
 
@@ -81,7 +81,7 @@ describe("«Decidido por» en el historial de correos de prospección", () => {
 
   it("sin nombre legible (vacío o igual al id) muestra un texto, no el id", async () => {
     expect(await decidedByOf(closed("sin-nombre", {
-      status: "sent", send_method: "smtp", sent_by: "local-dev-admin", sent_by_name: "local-dev-admin",
+      status: "sent", send_method: "platform", sent_by: "local-dev-admin", sent_by_name: "local-dev-admin",
       sent_at: "2026-11-13T03:43:50Z",
     }))).toBe("outreachPage.prospecting.table.unknownUser");
   });

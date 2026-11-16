@@ -34,20 +34,25 @@ export const CONTACT_SEARCH_TIMEOUT_MS = 90_000
 // request; the backend sets no LLM timeout, so this is the only bound. A
 // generation cut here may still finish on the server (the UI says so).
 export const GENERATION_TIMEOUT_MS = 120_000
-// POST /outreach-emails/{id}/send and POST /pipeline/config/smtp/test talk to
-// the SMTP server inside the request; the backend bounds that conversation at
-// SMTP_TIMEOUT_SECONDS = 20 s. 45 s leaves margin for the network and the
-// Firestore writes around it. A send cut here may still have gone out: the UI
-// reloads the email to see its real state.
-export const SEND_TIMEOUT_MS = 45_000
+// POST /outreach-emails/{id}/send talks to Microsoft Graph inside the request:
+// renewing the token, creating the draft, sending it and, when the send is
+// uncertain, reading it once — each call bounded by the backend's
+// MAIL_HTTP_TIMEOUT_SECONDS = 20 s. 90 s leaves margin for those calls and the
+// Firestore writes around them. A send cut here may still have gone out: the
+// UI reloads the email to see its real state.
+export const SEND_TIMEOUT_MS = 90_000
+// POST /mail-connection/start and /test: at most a token renewal and a read
+// of the mailbox (20 s each on the backend).
+export const MAILBOX_TIMEOUT_MS = 60_000
 // Per-call flag: keep this call's own timeout even when its URL matches a
 // generative keyword below (e.g. /outreach-emails contains "outreach").
 const EXPLICIT_TIMEOUT = { explicitTimeout: true }
 
 // Requests marked `logBody: false` are logged without their request or
 // response body (method, URL, status and duration only): passwords and tokens
-// (auth), API keys and secrets (CRM, social, JSearch sources, SMTP, Hunter) and
-// contacts' personal data. These logs run in production builds too.
+// (auth), API keys and secrets (CRM, social, JSearch sources, Hunter), the
+// mailbox connection (its authorization URL and address) and contacts'
+// personal data. These logs run in production builds too.
 const NO_BODY_LOG = { logBody: false }
 const logsBody = (config) => config?.logBody !== false
 
@@ -555,7 +560,7 @@ export const analysisApi = {
 
 export const pipelineApi = {
   getConfig: () => api.get('/pipeline/config'),
-  // smtp_password / hunter_api_key travel in this body: never logged.
+  // hunter_api_key travels in this body: never logged.
   updateConfig: (data) => api.put('/pipeline/config', data, NO_BODY_LOG),
   updateKeywords: (data) => api.put('/pipeline/config/keywords', data),
   // Source config may carry an api_key (JSearch): never logged.
@@ -563,10 +568,6 @@ export const pipelineApi = {
   updateSource: (id, data) => api.put(`/pipeline/config/sources/${id}`, data, NO_BODY_LOG),
   deleteSource: (id) => api.delete(`/pipeline/config/sources/${id}`),
   testSource: (id) => api.post(`/pipeline/config/sources/${id}/test`),
-  // Logs in to the saved SMTP account and NOOPs; nothing is sent.
-  testSmtp: () => api.post('/pipeline/config/smtp/test', undefined, {
-    ...NO_BODY_LOG, ...EXPLICIT_TIMEOUT, timeout: SEND_TIMEOUT_MS, suppressServerErrorToast: true,
-  }),
   // Fase 2 — Agente 1, siempre disparado a mano (ver job_scout_service.py)
   runScan: (data) => api.post('/pipeline/runs', data, { timeout: SCAN_REQUEST_TIMEOUT_MS }),
   listRuns: (params) => api.get('/pipeline/runs', { params, timeout: READ_TIMEOUT_MS }),
@@ -618,7 +619,7 @@ export const outreachEmailsApi = {
     language ? { language } : undefined,
     { ...OUTREACH_EMAIL_OPTIONS, timeout: GENERATION_TIMEOUT_MS },
   ),
-  // Real send by SMTP. `force_retry` is sent only for an explicit retry of a
+  // Real send from the connected mailbox. `force_retry` is sent only for an explicit retry of a
   // send whose outcome is unknown (the user confirmed it twice).
   send: (id, { confirmToEmail, forceRetry = false } = {}) => api.post(
     `/outreach-emails/${id}/send`,
@@ -634,6 +635,20 @@ export const outreachEmailsApi = {
     { ...OUTREACH_EMAIL_OPTIONS, timeout: READ_TIMEOUT_MS },
   ),
   removeDoNotContact: (id) => api.delete(`/outreach-emails/do-not-contact/${id}`, { ...OUTREACH_EMAIL_OPTIONS, timeout: READ_TIMEOUT_MS }),
+}
+
+// RF-VTA-16 — the user's Microsoft 365 / Outlook mailbox, connected by OAuth.
+// start returns Microsoft's authorization URL (it carries the OAuth state) and
+// status / test the mailbox address: bodies never logged. The callback is not
+// called from here: Microsoft posts it to the backend, which redirects the
+// browser back with ?mail_connection=connected or ?mail_connection_error=<code>.
+const MAILBOX_OPTIONS = { ...NO_BODY_LOG, ...EXPLICIT_TIMEOUT, suppressPermissionToast: true, suppressServerErrorToast: true }
+export const mailConnectionApi = {
+  start: () => api.post('/mail-connection/start', undefined, { ...MAILBOX_OPTIONS, timeout: MAILBOX_TIMEOUT_MS }),
+  status: () => api.get('/mail-connection/status', { ...MAILBOX_OPTIONS, timeout: READ_TIMEOUT_MS }),
+  // Reads the mailbox (GET /me on Microsoft's side); nothing is sent.
+  test: () => api.post('/mail-connection/test', undefined, { ...MAILBOX_OPTIONS, timeout: MAILBOX_TIMEOUT_MS }),
+  delete: () => api.delete('/mail-connection', { ...MAILBOX_OPTIONS, timeout: READ_TIMEOUT_MS }),
 }
 
 export const publishingApi = {

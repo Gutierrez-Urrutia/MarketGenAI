@@ -6,7 +6,8 @@
  *   outreachTranslations no los ve);
  * - toda clave `${KP}.…` literal de ProspectingEmailDetail.jsx existe;
  * - las claves nuevas de settings.pipelineTab existen y no están rotas;
- * - los marcadores ({to}, {fields}…) son los mismos en los tres idiomas.
+ * - los marcadores ({to}, {reason}…) son los mismos en los tres idiomas;
+ * - ningún texto de la interfaz dice «SMTP» (el envío es por Microsoft 365).
  */
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
@@ -14,6 +15,7 @@ import path from "node:path";
 
 import { translations } from "@/i18n/translations";
 import { EMAIL_ERROR_CODES, SEND_BLOCK_REASONS } from "@/features/outreach/prospectingEmails";
+import { MAILBOX_ERROR_CODES } from "@/pages/settings/PipelineSettingsTab";
 
 const LANGS = ["en", "es", "pt"];
 const KP = "outreachPage.prospecting";
@@ -21,27 +23,34 @@ const lookup = (lang, dotted) => dotted.split(".").reduce((node, part) => node?.
 const detailSource = readFileSync(path.resolve(__dirname, "../features/outreach/ProspectingEmailDetail.jsx"), "utf8");
 const settingsSource = readFileSync(path.resolve(__dirname, "../pages/settings/PipelineSettingsTab.jsx"), "utf8");
 
-const SMTP_FIELDS = ["smtp_host", "smtp_port", "smtp_user", "smtp_password", "sender_email"];
 const SEND_KEYS = [
   ...EMAIL_ERROR_CODES.map((code) => `${KP}.errors.${code}`),
   ...SEND_BLOCK_REASONS.map((reason) => `${KP}.send.blocked.${reason}`),
-  ...SMTP_FIELDS.map((field) => `${KP}.send.fields.${field}`),
   ...["send", "retrySend", "sending", "doNotContact"].map((key) => `${KP}.actions.${key}`),
   ...["confirmTitle", "toLabel", "fromLabel", "subjectLabel", "confirmWarning", "confirmButton", "retryTitle", "retryWarning", "retryButton",
-    "cancel", "uncertain", "lastError", "openSettings", "sentBySmtp", "markedSent"].map((key) => `${KP}.send.${key}`),
+    "cancel", "uncertain", "lastError", "openSettings", "reconnectInSettings", "sentBySystem", "markedSent"].map((key) => `${KP}.send.${key}`),
   ...["confirmTitle", "confirmMessage", "confirmButton"].map((key) => `${KP}.doNotContact.${key}`),
   `${KP}.detail.unsubscribeLabel`, `${KP}.detail.onDoNotContactList`,
-  `${KP}.messages.smtpSent`, `${KP}.messages.doNotContactAdded`,
+  `${KP}.messages.sentBySystem`, `${KP}.messages.doNotContactAdded`,
   `${KP}.history.actions.send`, `${KP}.history.sendError`,
 ];
 const SETTINGS_KEYS = [
-  "smtpConfigured", "smtpIncomplete", "smtpMissing", "realSendLabel", "realSendHint", "realSendServerOff",
-  "realSendSaved", "realSendSaveError", "dailyLimitLabel", "dailyLimitHint", "dailyLimitInvalid",
-  "testConnectionButton", "testingConnection", "testConnectionOk",
-  ...SMTP_FIELDS.map((field) => `smtpFields.${field}`),
-  ...["smtp_not_configured", "smtp_auth_failed", "smtp_unavailable", "smtp_host_blocked", "smtp_host_unresolvable",
-    "smtp_credentials_unreadable", "encryption_not_configured", "generic"].map((code) => `testConnectionErrors.${code}`),
+  "mailboxTitle", "mailboxDesc", "mailboxStatusLoading", "mailboxStatusUnknown", "mailboxNotConnected",
+  "mailboxNeedsReconnect", "mailboxConnected", "mailboxLoadError", "mailboxOauthNotConfigured", "mailboxAccountLabel",
+  "mailboxReconnectNote", "mailboxConsent", "mailboxConnectButton", "mailboxReconnectButton", "mailboxTestButton",
+  "mailboxTesting", "mailboxTestOk", "mailboxDisconnectButton", "mailboxDisconnectTitle", "mailboxDisconnectMessage",
+  "mailboxDisconnected", "mailboxDisconnectError", "mailboxConnectedNotice", "mailboxConnectFailed",
+  "realSendLabel", "realSendHint", "realSendServerOff", "realSendSaved", "realSendSaveError",
+  "dailyLimitLabel", "dailyLimitHint", "dailyLimitInvalid", "dailyLimitSaveButton", "dailyLimitSaved", "dailyLimitSaveError",
+  ...MAILBOX_ERROR_CODES.map((code) => `mailboxErrors.${code}`),
 ].map((key) => `settings.pipelineTab.${key}`);
+
+// Every string of one language, with its dotted path.
+const allTexts = (node, prefix = "") => Object.entries(node || {}).flatMap(([key, value]) => {
+  const at = prefix ? `${prefix}.${key}` : key;
+  if (typeof value === "string") return [[at, value]];
+  return value && typeof value === "object" ? allTexts(value, at) : [];
+});
 
 const placeholders = (text) => [...String(text).matchAll(/\{(\w+)\}/g)].map((m) => m[1]).sort();
 
@@ -80,7 +89,7 @@ describe("textos del envío real", () => {
   });
 
   // Detalle en solo lectura (Historial): textos neutros respecto del transporte.
-  const READ_ONLY_KEYS = ["title", "openAria", "sentBySystem", "markedSent", "rejected"].map((key) => `${KP}.readOnly.${key}`);
+  const READ_ONLY_KEYS = ["title", "openAria", "sentBySystem", "markedSent", "rejected", "from"].map((key) => `${KP}.readOnly.${key}`);
 
   it.each(LANGS)("los textos del detalle en solo lectura existen en %s, sin vacíos ni «SMTP»", (lang) => {
     for (const key of READ_ONLY_KEYS) {
@@ -104,9 +113,35 @@ describe("textos del envío real", () => {
     }
   });
 
-  it("el estado «sent» dice «Enviado» (también cubre el envío por SMTP), no «Marcado»", () => {
+  it("el estado «sent» dice «Enviado» (también cubre el envío desde la plataforma), no «Marcado»", () => {
     for (const lang of LANGS) {
       expect(lookup(lang, `${KP}.status.sent`)).not.toMatch(/marcad|marked/i);
+    }
+  });
+
+  it.each(LANGS)("ningún texto de la interfaz en %s contiene «SMTP»", (lang) => {
+    const texts = allTexts(translations[lang]);
+    expect(texts.length).toBeGreaterThan(100);
+    const withSmtp = texts.filter(([, value]) => /smtp/i.test(value)).map(([at]) => at);
+    expect(withSmtp).toEqual([]);
+  });
+
+  it("ni las claves de texto ni el código de la pestaña ni del detalle mencionan SMTP", () => {
+    for (const lang of LANGS) {
+      expect(allTexts(translations[lang]).map(([at]) => at).filter((at) => /smtp/i.test(at))).toEqual([]);
+    }
+    expect(settingsSource).not.toMatch(/smtp/i);
+    expect(detailSource).not.toMatch(/smtp/i);
+  });
+
+  it("los textos retirados ya no existen", () => {
+    for (const lang of LANGS) {
+      expect(lookup(lang, `${KP}.send.sentBySmtp`)).toBeUndefined();
+      expect(lookup(lang, `${KP}.send.fields`)).toBeUndefined();
+      expect(lookup(lang, `${KP}.messages.smtpSent`)).toBeUndefined();
+      expect(lookup(lang, "settings.pipelineTab.testConnectionErrors")).toBeUndefined();
+      // «Marcar como enviado» conserva su propio texto.
+      expect(typeof lookup(lang, `${KP}.messages.sent`)).toBe("string");
     }
   });
 });

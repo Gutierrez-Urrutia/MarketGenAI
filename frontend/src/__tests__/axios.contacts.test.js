@@ -14,7 +14,7 @@ import api, {
 } from "@/api/axios";
 
 const CONTACT = { id: "c-1", full_name: "Ana Ficticia", email: "ana.ficticia@example.com" };
-const SECRETS = { smtp_password: "pw-sintetica", hunter_api_key: "hk-sintetica" };
+const SECRETS = { hunter_api_key: "hk-sintetica" };
 
 let captured;
 let respond;
@@ -104,11 +104,10 @@ describe("logBody: false", () => {
     expect(logged()).not.toMatch(/Ficticia|@example\.com|cooldown/);
   });
 
-  it("updateConfig never logs smtp_password nor hunter_api_key (also on failure)", async () => {
-    respond = (config) => ({ data: { ...JSON.parse(config.data), smtp_password_configured: true }, status: 200, statusText: "OK", headers: {}, config });
-    await pipelineApi.updateConfig({ smtp_user: "ventas@example.com", ...SECRETS });
+  it("updateConfig never logs hunter_api_key (also on failure)", async () => {
+    respond = (config) => ({ data: { ...JSON.parse(config.data), hunter_api_key_configured: true }, status: 200, statusText: "OK", headers: {}, config });
+    await pipelineApi.updateConfig({ outreach_daily_send_limit: 20, ...SECRETS });
     expect(logged()).toContain("/pipeline/config");
-    expect(logged()).not.toContain(SECRETS.smtp_password);
     expect(logged()).not.toContain(SECRETS.hunter_api_key);
 
     respond = (config) => {
@@ -117,7 +116,6 @@ describe("logBody: false", () => {
       });
     };
     await expect(pipelineApi.updateConfig({ ...SECRETS })).rejects.toBeTruthy();
-    expect(logged()).not.toContain(SECRETS.smtp_password);
     expect(logged()).not.toContain(SECRETS.hunter_api_key);
   });
 

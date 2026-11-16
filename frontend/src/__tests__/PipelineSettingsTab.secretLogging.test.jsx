@@ -11,6 +11,10 @@ vi.mock("@/api/axios", () => ({
     getConfig: vi.fn(), updateConfig: vi.fn(), createSource: vi.fn(), updateSource: vi.fn(),
     deleteSource: vi.fn(), testSource: vi.fn(),
   },
+  mailConnectionApi: {
+    status: vi.fn(async () => ({ data: { oauth_configured: true, connected: false, needs_reconnect: false } })),
+    start: vi.fn(), test: vi.fn(), delete: vi.fn(),
+  },
 }));
 vi.mock("@/hooks/useI18n", () => ({ useI18n: () => ({ t: (key) => key }) }));
 vi.mock("react-hot-toast", () => {

@@ -10,6 +10,10 @@ vi.mock("@/api/axios", () => ({
     deleteSource: vi.fn(),
     testSource: vi.fn(),
   },
+  mailConnectionApi: {
+    status: vi.fn(async () => ({ data: { oauth_configured: true, connected: false, needs_reconnect: false } })),
+    start: vi.fn(), test: vi.fn(), delete: vi.fn(),
+  },
 }));
 vi.mock("@/hooks/useI18n", () => ({ useI18n: () => ({ t: (key) => key }) }));
 vi.mock("react-hot-toast", () => {
@@ -85,7 +89,7 @@ describe("PipelineSettingsTab without the automation thresholds section", () => 
     render(<PipelineSettingsTab />);
     await flush();
 
-    await act(async () => { fireEvent.click(screen.getByText("settings.pipelineTab.smtpSaveButton")); });
+    await act(async () => { fireEvent.click(screen.getByText("settings.pipelineTab.dailyLimitSaveButton")); });
     const payload = pipelineApi.updateConfig.mock.calls[0][0];
     expect(payload).not.toHaveProperty("auto_send_threshold");
     expect(payload).not.toHaveProperty("max_emails_per_day");
@@ -108,7 +112,7 @@ describe("PipelineSettingsTab without a global save button", () => {
     await flush();
 
     expect(screen.queryByText("settings.pipelineTab.saveButton")).toBeNull();
-    expect(screen.getByRole("button", { name: "settings.pipelineTab.smtpSaveButton" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "settings.pipelineTab.dailyLimitSaveButton" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "settings.pipelineTab.hunterSaveButton" })).toBeTruthy();
     expect(screen.getByRole("button", { name: /settings\.pipelineTab\.addSourceButton/ })).toBeTruthy();
   });

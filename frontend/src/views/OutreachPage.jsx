@@ -41,7 +41,7 @@ export function OutreachPage({ navigationState = {}, onNavigate = () => {}, onOu
   const [selectedProspectingId, setSelectedProspectingId] = useState(null);
   const [prospectingBusy, setProspectingBusy] = useState(false);
   const [regeneratingId, setRegeneratingId] = useState(null);
-  // Real send by SMTP: whether «Enviar» can be used (null until loaded, or if
+  // Real send from the connected mailbox: whether «Enviar» can be used (null until loaded, or if
   // it failed: «Enviar» stays disabled) and the do-not-contact list.
   const [sendStatus, setSendStatus] = useState(null);
   const [doNotContact, setDoNotContact] = useState([]);
@@ -169,7 +169,7 @@ export function OutreachPage({ navigationState = {}, onNavigate = () => {}, onOu
     try {
       const { data } = await outreachEmailsApi.send(email.id, { confirmToEmail: email.to_email, forceRetry });
       replaceProspecting(data);
-      toast.success(t("outreachPage.prospecting.messages.smtpSent"));
+      toast.success(t("outreachPage.prospecting.messages.sentBySystem"));
       loadSendStatus();
     } catch (error) {
       const described = describeEmailError(error);

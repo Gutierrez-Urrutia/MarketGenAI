@@ -4,7 +4,9 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
-import api, { outreachEmailsApi, pipelineApi, READ_TIMEOUT_MS, SEND_TIMEOUT_MS } from "@/api/axios";
+import api, {
+  MAILBOX_TIMEOUT_MS, READ_TIMEOUT_MS, SEND_TIMEOUT_MS, mailConnectionApi, outreachEmailsApi, pipelineApi,
+} from "@/api/axios";
 
 let captured;
 const originalAdapter = api.defaults.adapter;
@@ -24,8 +26,23 @@ afterEach(() => {
 });
 
 describe("envío real de correos (API)", () => {
-  it("el límite del envío es 45 s, sobre los 20 s del backend", () => {
-    expect(SEND_TIMEOUT_MS).toBe(45_000);
+  it("el límite del envío es 90 s (varias llamadas a Graph de 20 s); el del buzón, 60 s", () => {
+    expect(SEND_TIMEOUT_MS).toBe(90_000);
+    expect(MAILBOX_TIMEOUT_MS).toBe(60_000);
+  });
+
+  it("ya no existe la prueba de conexión SMTP", () => {
+    expect(pipelineApi.testSmtp).toBeUndefined();
+  });
+
+  it("las llamadas del buzón: rutas exactas, sin cuerpo y sin avisos genéricos de error", async () => {
+    await mailConnectionApi.start();
+    expect(captured.data).toBeUndefined();
+    expect(captured.suppressServerErrorToast).toBe(true);
+    expect(captured.suppressPermissionToast).toBe(true);
+    await mailConnectionApi.delete();
+    expect(captured.method).toBe("delete");
+    expect(captured.url).toBe("/mail-connection");
   });
 
   it.each([
@@ -34,7 +51,10 @@ describe("envío real de correos (API)", () => {
     ["GET /do-not-contact", () => outreachEmailsApi.listDoNotContact(), "get", "/outreach-emails/do-not-contact", READ_TIMEOUT_MS],
     ["POST /do-not-contact", () => outreachEmailsApi.addDoNotContact({ emailId: "e1" }), "post", "/outreach-emails/do-not-contact", READ_TIMEOUT_MS],
     ["DELETE /do-not-contact/:id", () => outreachEmailsApi.removeDoNotContact("d1"), "delete", "/outreach-emails/do-not-contact/d1", READ_TIMEOUT_MS],
-    ["POST /pipeline/config/smtp/test", () => pipelineApi.testSmtp(), "post", "/pipeline/config/smtp/test", SEND_TIMEOUT_MS],
+    ["POST /mail-connection/start", () => mailConnectionApi.start(), "post", "/mail-connection/start", MAILBOX_TIMEOUT_MS],
+    ["GET /mail-connection/status", () => mailConnectionApi.status(), "get", "/mail-connection/status", READ_TIMEOUT_MS],
+    ["POST /mail-connection/test", () => mailConnectionApi.test(), "post", "/mail-connection/test", MAILBOX_TIMEOUT_MS],
+    ["DELETE /mail-connection", () => mailConnectionApi.delete(), "delete", "/mail-connection", READ_TIMEOUT_MS],
   ])("%s conserva su timeout (no 0) y no registra el cuerpo", async (_name, call, method, url, timeout) => {
     await call();
     expect(captured.method).toBe(method);

@@ -11,7 +11,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import axios, { AxiosError } from "axios";
 
 import api, {
-  authApi, authTokenStore, booksApi, crmApi, pipelineApi, settingsApi, socialApi,
+  authApi, authTokenStore, booksApi, crmApi, mailConnectionApi, pipelineApi, settingsApi, socialApi,
 } from "@/api/axios";
 import { describeApiError, logApiError, redactSecrets } from "@/api/apiLogging";
 
@@ -120,8 +120,18 @@ const SECRET_ENDPOINTS = [
     () => pipelineApi.updateSource("src-1", { name: "JSearch", source_type: "jsearch", config: { api_key: SECRET } }),
     { sources: [{ id: "src-1", config: { api_key: SECRET } }] }],
   ["pipelineApi.updateConfig", "/pipeline/config", "hunter_api_key",
-    () => pipelineApi.updateConfig({ smtp_password: SECRET, hunter_api_key: SECRET }),
-    { smtp_password_configured: true, hunter_api_key_configured: true }],
+    () => pipelineApi.updateConfig({ hunter_api_key: SECRET }),
+    { hunter_api_key_configured: true }],
+  // The authorization URL carries the OAuth state; status and test, the mailbox address.
+  ["mailConnectionApi.start", "/mail-connection/start", "state",
+    () => mailConnectionApi.start(),
+    { authorize_url: `https://login.example.com/authorize?state=${SECRET}` }],
+  ["mailConnectionApi.status", "/mail-connection/status", "address",
+    () => mailConnectionApi.status(),
+    { oauth_configured: true, connected: true, address: `${SECRET}@example.com`, display_name: SECRET }],
+  ["mailConnectionApi.test", "/mail-connection/test", "address",
+    () => mailConnectionApi.test(),
+    { ok: true, address: `${SECRET}@example.com`, display_name: SECRET }],
 ];
 
 // The interceptor's own lines for `url`: [label, body] pairs.

@@ -1,6 +1,6 @@
 /**
- * RF15 — Hunter API key in Settings → Pipeline: write-only, like the SMTP
- * password. Synthetic values only; the API is mocked.
+ * RF15 — Hunter API key in Settings → Pipeline: write-only. Synthetic values
+ * only; the API is mocked.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, act, fireEvent } from "@testing-library/react";
@@ -9,6 +9,10 @@ vi.mock("@/api/axios", () => ({
   pipelineApi: {
     getConfig: vi.fn(), updateConfig: vi.fn(), createSource: vi.fn(), updateSource: vi.fn(),
     deleteSource: vi.fn(), testSource: vi.fn(),
+  },
+  mailConnectionApi: {
+    status: vi.fn(async () => ({ data: { oauth_configured: true, connected: false, needs_reconnect: false } })),
+    start: vi.fn(), test: vi.fn(), delete: vi.fn(),
   },
 }));
 vi.mock("@/hooks/useI18n", () => ({ useI18n: () => ({ t: (key) => key }) }));
@@ -26,8 +30,7 @@ const KEY = "hk-sintetica-0000";
 
 const config = (overrides = {}) => ({
   id: "user-1", keywords: ["BPO"], industries: [], excluded_companies: [], sources: [],
-  smtp_host: "", smtp_port: 587, smtp_user: "", sender_email: "", sender_name: "",
-  smtp_password_configured: false, hunter_api_key_configured: false, is_active: true, ...overrides,
+  outreach_daily_send_limit: 20, hunter_api_key_configured: false, is_active: true, ...overrides,
 });
 
 const keyInput = () => screen.getByLabelText("settings.pipelineTab.hunterKeyLabel");
@@ -36,8 +39,9 @@ const save = async () => {
   fireEvent.click(saveButton());
   await flush();
 };
-const saveSmtpCard = async () => {
-  fireEvent.click(screen.getByRole("button", { name: "settings.pipelineTab.smtpSaveButton" }));
+const limitInput = () => screen.getByLabelText("settings.pipelineTab.dailyLimitLabel");
+const saveLimit = async () => {
+  fireEvent.click(screen.getByRole("button", { name: "settings.pipelineTab.dailyLimitSaveButton" }));
   await flush();
 };
 const sentPayload = () => pipelineApi.updateConfig.mock.calls.at(-1)[0];
@@ -159,50 +163,39 @@ describe("Hunter key field", () => {
     expect(saveButton().disabled).toBe(false);
   });
 
-  it.each([
-    ["the Hunter key", "hunter"],
-    ["the SMTP password", "smtp"],
-  ])("a failed save does not log %s", async (_what, card) => {
+  it("a failed save does not log the Hunter key", async () => {
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
     const err = vi.spyOn(console, "error").mockImplementation(() => {});
     const failure = Object.assign(new Error("HTTP 400"), {
-      config: { data: JSON.stringify({ hunter_api_key: KEY, smtp_password: "pw-sintetica" }) },
+      config: { data: JSON.stringify({ hunter_api_key: KEY }) },
       response: { status: 400, data: { detail: "Bad request" } },
     });
     pipelineApi.updateConfig.mockRejectedValue(failure);
     await renderTab();
-    if (card === "hunter") {
-      fireEvent.change(keyInput(), { target: { value: KEY } });
-      await save();
-    } else {
-      fireEvent.change(document.querySelector('input[autocomplete="new-password"]:not([aria-label])'), {
-        target: { value: "pw-sintetica" },
-      });
-      await saveSmtpCard();
-    }
+    fireEvent.change(keyInput(), { target: { value: KEY } });
+    await save();
     expect(pipelineApi.updateConfig).toHaveBeenCalledTimes(1);
     const logged = JSON.stringify([...log.mock.calls, ...err.mock.calls], (k, v) => (v instanceof Error ? { ...v, message: v.message } : v));
     expect(logged).not.toContain(KEY);
-    expect(logged).not.toContain("pw-sintetica");
     expect(err).not.toHaveBeenCalled();
     log.mockRestore(); err.mockRestore();
   });
 
-  it("«Save account» does not send the key, and a typed key survives it", async () => {
+  it("«Save limit» does not send the key, and a typed key survives it", async () => {
     await renderTab(config({ hunter_api_key_configured: true }));
     fireEvent.change(keyInput(), { target: { value: KEY } });
-    await saveSmtpCard();
-    expect("hunter_api_key" in sentPayload()).toBe(false);
+    await saveLimit();
+    expect(sentPayload()).toEqual({ outreach_daily_send_limit: 20 });
     expect(keyInput().value).toBe(KEY);
     expect(saveButton().disabled).toBe(false);
   });
 
   it("«Save key» sends nothing from the other cards", async () => {
-    await renderTab(config({ smtp_host: "smtp.ejemplo.test" }));
-    fireEvent.change(screen.getByDisplayValue("smtp.ejemplo.test"), { target: { value: "smtp.otro.test" } });
+    await renderTab();
+    fireEvent.change(limitInput(), { target: { value: "35" } });
     fireEvent.change(keyInput(), { target: { value: KEY } });
     await save();
     expect(sentPayload()).toEqual({ hunter_api_key: KEY });
-    expect(screen.getByDisplayValue("smtp.otro.test")).toBeTruthy();
+    expect(limitInput().value).toBe("35");
   });
 });

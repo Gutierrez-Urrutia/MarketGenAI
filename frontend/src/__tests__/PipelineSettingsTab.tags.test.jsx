@@ -10,6 +10,10 @@ vi.mock("@/api/axios", () => ({
     deleteSource: vi.fn(),
     testSource: vi.fn(),
   },
+  mailConnectionApi: {
+    status: vi.fn(async () => ({ data: { oauth_configured: true, connected: false, needs_reconnect: false } })),
+    start: vi.fn(), test: vi.fn(), delete: vi.fn(),
+  },
 }));
 vi.mock("@/hooks/useI18n", () => ({ useI18n: () => ({ t: (key) => key }) }));
 vi.mock("react-hot-toast", () => {
@@ -30,8 +34,7 @@ const BASE = {
   keywords: ["BPO"],
   industries: ["finance"],
   excluded_companies: ["Acme Rival"],
-  smtp_host: "smtp.ejemplo.test",
-  smtp_port: 587,
+  outreach_daily_send_limit: 20,
 };
 
 const LISTS = [
@@ -111,7 +114,7 @@ describe("PipelineSettingsTab tag lists save on their own", () => {
 
   it("does not send anything when other fields are edited", async () => {
     await renderTab();
-    fireEvent.change(screen.getByDisplayValue("smtp.ejemplo.test"), { target: { value: "smtp.otro.test" } });
+    fireEvent.change(screen.getByLabelText("settings.pipelineTab.dailyLimitLabel"), { target: { value: "35" } });
     await flush();
 
     expect(pipelineApi.updateConfig).not.toHaveBeenCalled();
@@ -173,15 +176,15 @@ describe("PipelineSettingsTab tag lists save on their own", () => {
     expect(pipelineApi.updateConfig.mock.calls[0][0]).toEqual({ keywords: [...nine, "kw10"] });
   });
 
-  it("«Save account» saves SMTP without the three lists", async () => {
+  it("«Save limit» saves the daily limit without the three lists", async () => {
     await renderTab();
-    fireEvent.change(screen.getByDisplayValue("smtp.ejemplo.test"), { target: { value: "smtp.otro.test" } });
-    await act(async () => { fireEvent.click(screen.getByText("settings.pipelineTab.smtpSaveButton")); });
+    fireEvent.change(screen.getByLabelText("settings.pipelineTab.dailyLimitLabel"), { target: { value: "35" } });
+    await act(async () => { fireEvent.click(screen.getByText("settings.pipelineTab.dailyLimitSaveButton")); });
     await flush();
 
     expect(pipelineApi.updateConfig).toHaveBeenCalledTimes(1);
     const payload = pipelineApi.updateConfig.mock.calls[0][0];
-    expect(payload.smtp_host).toBe("smtp.otro.test");
+    expect(payload).toEqual({ outreach_daily_send_limit: 35 });
     for (const field of ["keywords", "industries", "excluded_companies"]) {
       expect(payload).not.toHaveProperty(field);
     }

@@ -1,30 +1,35 @@
 /**
  * PipelineSettingsTab — configuration UI for the 3-agent prospecting pipeline
- * (keywords/industries, job sources CRUD, SMTP and the Hunter key). Mounted by
- * Dashboard.jsx's Settings page as the "pipeline" tab. The former "automation
- * thresholds" section and the "Prospecting Pipeline" on/off toggle were
- * removed: none of them had any effect (scanning is manual; the scheduled
- * scan is RF-VTA-17, deferred).
+ * (keywords/industries, job sources CRUD, the sending mailbox and the Hunter
+ * key). Mounted by Dashboard.jsx's Settings page as the "pipeline" tab. The
+ * former "automation thresholds" section and the "Prospecting Pipeline" on/off
+ * toggle were removed: none of them had any effect (scanning is manual; the
+ * scheduled scan is RF-VTA-17, deferred).
  *
  * Each card saves on its own (there is no global save button): the tag lists
- * right away, SMTP with «Save account», Hunter with «Save key» and each source
- * with its own form button.
+ * right away, the daily limit with «Save limit», Hunter with «Save key» and
+ * each source with its own form button.
  *
- * SMTP card (RF-VTA-16, real send): a badge says whether the account is
- * complete (smtp_configured / smtp_missing_fields, the same rule the backend
- * applies before sending); «Real email sending» is a switch saved right away
- * (off by default; the server's own switch is shown read-only); the daily
- * limit is saved with the account; «Test connection» logs in without sending.
+ * Sending mailbox card (RF-VTA-16, real send): the user's own Microsoft 365 /
+ * Outlook mailbox, connected by OAuth (GET /mail-connection/status). «Connect»
+ * / «Reconnect» go to Microsoft's consent page (POST /mail-connection/start);
+ * Microsoft answers to the backend, which sends the browser back with the
+ * result (features/mailConnection/redirectResult.js), shown here once.
+ * «Test» reads the mailbox without sending; «Disconnect» forgets it. No token
+ * ever reaches the frontend. «Real email sending» is a switch saved right
+ * away (off by default; the server's own switch is shown read-only).
  */
 import { useEffect, useId, useRef, useState } from "react";
 import toast from "react-hot-toast";
 import {
   Search, Globe, Mail, Code, Rss, Plug, Briefcase,
-  Pencil, Trash2, Plus, Save, Loader2, KeyRound, Undo2,
+  Pencil, Trash2, Plus, Save, Loader2, KeyRound, Undo2, RefreshCw,
 } from "lucide-react";
 
-import { pipelineApi } from "@/api/axios";
+import { mailConnectionApi, pipelineApi } from "@/api/axios";
 import { logApiError } from "@/api/apiLogging";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
+import { MAIL_CONNECTION_CONNECTED, openAuthorizeUrl, takeMailConnectionResult } from "@/features/mailConnection/redirectResult";
 import { useI18n } from "@/hooks/useI18n";
 
 const SOURCE_TYPE_FIELD_KEYS = {
@@ -61,8 +66,6 @@ const SOURCE_TYPE_FIELD_KEYS = {
 };
 
 const SOURCE_TYPE_ICON = { api: Code, rss: Rss, scraper: Globe, webhook: Plug, jsearch: Briefcase };
-
-const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 function getApiErrorMessage(error, fallback) {
   const detail = error?.response?.data?.detail;
@@ -207,13 +210,29 @@ function useAutoSaveQueue() {
   return { queue, status, enqueue };
 }
 
-const DEFAULT_SMTP ={ smtp_host: "", smtp_port: 587, smtp_user: "", sender_email: "", sender_name: "" };
 const DAILY_LIMIT_DEFAULT = 50;
 const DAILY_LIMIT_MAX = 100;
-const SMTP_TEST_ERROR_CODES = [
-  "smtp_not_configured", "smtp_auth_failed", "smtp_unavailable", "smtp_host_blocked",
-  "smtp_host_unresolvable", "smtp_credentials_unreadable", "encryption_not_configured",
+// Codes of the mailbox connection (routers/mail_connection.py): refusals of
+// start and test (detail.code) and the callback's mail_connection_error.
+// rateLimited and generic are client-side.
+export const MAILBOX_ERROR_CODES = [
+  // start
+  "mail_oauth_not_configured", "mail_endpoints_not_allowed", "encryption_not_configured",
+  // test
+  "mailbox_not_connected", "mailbox_reconnect_required", "missing_permissions", "mailbox_auth_failed",
+  "mail_service_unavailable", "mail_throttled", "mail_service_timeout", "mailbox_without_address",
+  // callback
+  "invalid_state", "consent_denied", "admin_consent_required", "authorization_failed", "server_error",
+  // client
+  "rateLimited", "generic",
 ];
+const mailboxErrorKey = (code) => `settings.pipelineTab.mailboxErrors.${MAILBOX_ERROR_CODES.includes(code) ? code : "generic"}`;
+const mailboxErrorCode = (error) => {
+  const code = error?.response?.data?.detail?.code;
+  if (MAILBOX_ERROR_CODES.includes(code)) return code;
+  if (error?.code === "ECONNABORTED" || error?.code === "ETIMEDOUT") return "mail_service_timeout";
+  return error?.response?.status === 429 ? "rateLimited" : "generic";
+};
 const fillText = (text, params) => Object.entries(params).reduce((out, [k, v]) => out.split(`{${k}}`).join(String(v)), text);
 
 /** The daily limit typed by the user, or null when it is not an integer 1..100. */
@@ -224,10 +243,8 @@ export function parseDailyLimit(raw) {
   return value >= 1 && value <= DAILY_LIMIT_MAX ? value : null;
 }
 
-// What the SMTP card shows about real sending, from a /pipeline/config response.
+// What the mailbox card shows about real sending, from a /pipeline/config response.
 const realSendStateOf = (data) => ({
-  configured: Boolean(data?.smtp_configured),
-  missing: Array.isArray(data?.smtp_missing_fields) ? data.smtp_missing_fields : [],
   enabled: Boolean(data?.outreach_real_send_enabled),
   serverEnabled: Boolean(data?.outreach_real_send_server_enabled),
 });
@@ -246,22 +263,26 @@ export default function PipelineSettingsTab({ isDark = false }) {
   const latestTags = useRef({ keywords: [], industries: [], excluded_companies: [] });
   const tagSaves = useAutoSaveQueue();
   const [sources, setSources] = useState([]);
-  const [smtp, setSmtp] = useState(DEFAULT_SMTP);
-  const [smtpPasswordConfigured, setSmtpPasswordConfigured] = useState(false);
-  const [smtpPasswordInput, setSmtpPasswordInput] = useState("");
-  const smtpPasswordHintId = useId();
-  // Hunter API key (RF15): write-only like smtp_password. The field always
+  // Sending mailbox: GET /mail-connection/status (null while loading),
+  // whether that read failed, the action in flight (connect | test |
+  // disconnect) and the result of a connection just made (shown once).
+  const [mailbox, setMailbox] = useState(null);
+  const [mailboxLoadFailed, setMailboxLoadFailed] = useState(false);
+  const [mailboxBusy, setMailboxBusy] = useState(null);
+  const [mailboxResult, setMailboxResult] = useState(null);
+  const [confirmDisconnect, setConfirmDisconnect] = useState(false);
+  // Hunter API key (RF15): write-only. The field always
   // starts empty — the API never returns the key, only whether one is set.
   // "Borrar clave" only marks it; "" is sent when the user presses Save.
   const [hunterKeyConfigured, setHunterKeyConfigured] = useState(false);
   const [hunterKeyInput, setHunterKeyInput] = useState("");
   const [hunterKeyClearPending, setHunterKeyClearPending] = useState(false);
   const [hunterSaving, setHunterSaving] = useState(false);
-  const [smtpSaving, setSmtpSaving] = useState(false);
   const [realSend, setRealSend] = useState(realSendStateOf(null));
   const [realSendSaving, setRealSendSaving] = useState(false);
   const [dailyLimit, setDailyLimit] = useState(String(DAILY_LIMIT_DEFAULT));
-  const [smtpTesting, setSmtpTesting] = useState(false);
+  const [dailyLimitSaving, setDailyLimitSaving] = useState(false);
+  const mailboxConsentId = useId();
   const realSendHintId = useId();
   const dailyLimitHintId = useId();
   const [sourceFormOpen, setSourceFormOpen] = useState(false);
@@ -283,15 +304,6 @@ export default function PipelineSettingsTab({ isDark = false }) {
       setIndustries(loadedTags.industries);
       setExcludedCompanies(loadedTags.excluded_companies);
       setSources(data?.sources || []);
-      setSmtp({
-        smtp_host: data?.smtp_host || "",
-        smtp_port: data?.smtp_port || 587,
-        smtp_user: data?.smtp_user || "",
-        sender_email: data?.sender_email || "",
-        sender_name: data?.sender_name || "",
-      });
-      setSmtpPasswordConfigured(Boolean(data?.smtp_password_configured));
-      setSmtpPasswordInput("");
       setRealSend(realSendStateOf(data));
       setDailyLimit(String(data?.outreach_daily_send_limit || DAILY_LIMIT_DEFAULT));
       setHunterKeyConfigured(Boolean(data?.hunter_api_key_configured));
@@ -305,65 +317,91 @@ export default function PipelineSettingsTab({ isDark = false }) {
     }
   };
 
+  const loadMailbox = async () => {
+    try {
+      const { data } = await mailConnectionApi.status();
+      setMailbox(data || null);
+      setMailboxLoadFailed(!data);
+    } catch {
+      // Not logged: the answer carries the mailbox address.
+      setMailbox(null);
+      setMailboxLoadFailed(true);
+    }
+  };
+
   useEffect(() => {
     loadConfig();
+    loadMailbox();
+    // Back from Microsoft's consent page: the result is shown once.
+    const result = takeMailConnectionResult();
+    if (result) setMailboxResult(result);
   }, []);
 
-  // SMTP card's own save: sends only the SMTP fields and resets only this
-  // card, so unsaved edits in other cards are neither sent nor lost.
-  const saveSmtp = async () => {
-    // Trim incidental leading/trailing whitespace on free-text fields.
-    // smtp_password is intentionally left untouched below — a password's
-    // own spaces can be meaningful.
-    const trimmedUser = smtp.smtp_user.trim();
-    const trimmedSenderEmail = smtp.sender_email.trim();
-    const trimmedSenderName = smtp.sender_name.trim();
-
-    if (trimmedSenderEmail && !EMAIL_REGEX.test(trimmedSenderEmail)) {
-      toast.error(t("settings.pipelineTab.toastInvalidEmail"));
-      return;
+  // «Connect» / «Reconnect»: Microsoft's consent page, in this tab.
+  const connectMailbox = async () => {
+    if (mailboxBusy) return;
+    setMailboxBusy("connect");
+    setMailboxResult(null);
+    try {
+      const { data } = await mailConnectionApi.start();
+      if (!openAuthorizeUrl(data?.authorize_url)) throw new Error("no authorize_url");
+      // The page is leaving: the button stays busy.
+    } catch (error) {
+      toast.error(t(mailboxErrorKey(mailboxErrorCode(error))));
+      setMailboxBusy(null);
     }
+  };
+
+  // «Test»: reads the mailbox on Microsoft's side; nothing is sent.
+  const testMailbox = async () => {
+    if (mailboxBusy) return;
+    setMailboxBusy("test");
+    try {
+      const { data } = await mailConnectionApi.test();
+      toast.success(fillText(t("settings.pipelineTab.mailboxTestOk"), { address: data?.address || "" }));
+    } catch (error) {
+      const code = mailboxErrorCode(error);
+      toast.error(t(mailboxErrorKey(code)));
+      // The connection itself may have changed (flagged to reconnect, or gone).
+      if (["mailbox_reconnect_required", "mailbox_not_connected"].includes(code)) loadMailbox();
+    } finally {
+      setMailboxBusy(null);
+    }
+  };
+
+  // «Disconnect»: the stored tokens are deleted on the server.
+  const disconnectMailbox = async () => {
+    setConfirmDisconnect(false);
+    if (mailboxBusy) return;
+    setMailboxBusy("disconnect");
+    setMailboxResult(null);
+    try {
+      await mailConnectionApi.delete();
+      toast.success(t("settings.pipelineTab.mailboxDisconnected"));
+    } catch {
+      toast.error(t("settings.pipelineTab.mailboxDisconnectError"));
+    } finally {
+      await loadMailbox();
+      setMailboxBusy(null);
+    }
+  };
+
+  // «Save limit»: sends only the daily limit.
+  const saveDailyLimit = async () => {
     const limit = parseDailyLimit(dailyLimit);
     if (limit === null) {
       toast.error(t("settings.pipelineTab.dailyLimitInvalid"));
       return;
     }
-
-    setSmtpSaving(true);
+    setDailyLimitSaving(true);
     try {
-      const payload = {
-        smtp_host: smtp.smtp_host,
-        smtp_port: smtp.smtp_port,
-        smtp_user: trimmedUser,
-        sender_email: trimmedSenderEmail,
-        sender_name: trimmedSenderName,
-        outreach_daily_send_limit: limit,
-      };
-      // A whitespace-only password is treated as "not provided" (keeps the
-      // saved password) — only a non-blank value is sent.
-      if (smtpPasswordInput.trim()) {
-        payload.smtp_password = smtpPasswordInput;
-      }
-      const { data } = await pipelineApi.updateConfig(payload);
-      setSmtp({
-        smtp_host: data?.smtp_host || "",
-        smtp_port: data?.smtp_port || 587,
-        smtp_user: data?.smtp_user || "",
-        sender_email: data?.sender_email || "",
-        sender_name: data?.sender_name || "",
-      });
-      setSmtpPasswordConfigured(Boolean(data?.smtp_password_configured));
-      setSmtpPasswordInput("");
-      setRealSend(realSendStateOf(data));
+      const { data } = await pipelineApi.updateConfig({ outreach_daily_send_limit: limit });
       setDailyLimit(String(data?.outreach_daily_send_limit || limit));
-      toast.success(t("settings.pipelineTab.smtpSaved"));
+      toast.success(t("settings.pipelineTab.dailyLimitSaved"));
     } catch (error) {
-      // Not logged: the request may carry smtp_password.
-      toast.error(error?.response?.status === 503
-        ? t("settings.pipelineTab.toastEncryptionUnavailable")
-        : getApiErrorMessage(error, t("settings.pipelineTab.smtpSaveError")));
+      toast.error(getApiErrorMessage(error, t("settings.pipelineTab.dailyLimitSaveError")));
     } finally {
-      setSmtpSaving(false);
+      setDailyLimitSaving(false);
     }
   };
 
@@ -380,21 +418,6 @@ export default function PipelineSettingsTab({ isDark = false }) {
       toast.error(getApiErrorMessage(error, t("settings.pipelineTab.realSendSaveError")));
     } finally {
       setRealSendSaving(false);
-    }
-  };
-
-  // «Test connection»: logs in with the saved account; nothing is sent.
-  const testSmtpConnection = async () => {
-    if (smtpTesting) return;
-    setSmtpTesting(true);
-    try {
-      await pipelineApi.testSmtp();
-      toast.success(t("settings.pipelineTab.testConnectionOk"));
-    } catch (error) {
-      const code = error?.response?.data?.detail?.code;
-      toast.error(t(`settings.pipelineTab.testConnectionErrors.${SMTP_TEST_ERROR_CODES.includes(code) ? code : "generic"}`));
-    } finally {
-      setSmtpTesting(false);
     }
   };
 
@@ -546,9 +569,22 @@ export default function PipelineSettingsTab({ isDark = false }) {
     saved: t("settings.pipelineTab.autoSaved"),
   }[status] || "");
 
-  const smtpPasswordHint = t(smtpPasswordConfigured
-    ? "settings.pipelineTab.passwordConfiguredHint"
-    : "settings.pipelineTab.passwordNotConfiguredHint");
+  // What the mailbox card shows: loading | error | not_connected | reconnect | connected.
+  const mailboxState = mailboxLoadFailed
+    ? "error"
+    : !mailbox ? "loading"
+      : !mailbox.connected ? "not_connected"
+        : mailbox.needs_reconnect ? "reconnect" : "connected";
+  const MAILBOX_BADGE = {
+    loading: ["mailboxStatusLoading", "bg-gray-100 text-gray-600"],
+    error: ["mailboxStatusUnknown", "bg-gray-100 text-gray-600"],
+    not_connected: ["mailboxNotConnected", "bg-amber-100 text-amber-800"],
+    reconnect: ["mailboxNeedsReconnect", "bg-red-100 text-red-800"],
+    connected: ["mailboxConnected", "bg-emerald-100 text-emerald-800"],
+  };
+  const [mailboxBadgeKey, mailboxBadgeClass] = MAILBOX_BADGE[mailboxState];
+  const oauthConfigured = mailbox?.oauth_configured !== false;
+  const busyIcon = (action, Icon) => (mailboxBusy === action ? <Loader2 size={12} className="animate-spin" /> : <Icon size={12} />);
 
   return (
     <>
@@ -661,60 +697,125 @@ export default function PipelineSettingsTab({ isDark = false }) {
 
           <SettingsSection
             isDark={isDark}
-            title={t("settings.pipelineTab.smtpTitle")}
+            title={t("settings.pipelineTab.mailboxTitle")}
             IconComp={Mail}
-            desc={t("settings.pipelineTab.smtpDesc")}
+            desc={t("settings.pipelineTab.mailboxDesc")}
             badge={(
-              <span data-testid="smtp-account-badge" className={`px-2 py-0.5 rounded-full text-xs font-medium ${realSend.configured ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"}`}>
-                {t(realSend.configured ? "settings.pipelineTab.smtpConfigured" : "settings.pipelineTab.smtpIncomplete")}
+              <span data-testid="mailbox-badge" className={`px-2 py-0.5 rounded-full text-xs font-medium ${mailboxBadgeClass}`}>
+                {t(`settings.pipelineTab.${mailboxBadgeKey}`)}
               </span>
             )}
           >
-            {!realSend.configured && realSend.missing.length > 0 && (
-              <p className="mb-2 text-xs text-amber-800" data-testid="smtp-missing-fields">
-                {fillText(t("settings.pipelineTab.smtpMissing"), {
-                  fields: realSend.missing.map((field) => t(`settings.pipelineTab.smtpFields.${field}`)).join(", "),
-                })}
+            {mailboxResult && (
+              mailboxResult === MAIL_CONNECTION_CONNECTED ? (
+                <p role="status" className="mb-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800" data-testid="mailbox-result">
+                  {t("settings.pipelineTab.mailboxConnectedNotice")}
+                </p>
+              ) : (
+                <p role="alert" className="mb-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800" data-testid="mailbox-result">
+                  {fillText(t("settings.pipelineTab.mailboxConnectFailed"), { reason: t(mailboxErrorKey(mailboxResult)) })}
+                </p>
+              )
+            )}
+            {mailboxState === "error" && (
+              <p role="alert" className="mb-2 text-xs text-red-800" data-testid="mailbox-load-error">{t("settings.pipelineTab.mailboxLoadError")}</p>
+            )}
+            {mailbox && !oauthConfigured && (
+              <p role="note" className="mb-2 text-xs text-amber-800" data-testid="mailbox-oauth-off">{t("settings.pipelineTab.mailboxOauthNotConfigured")}</p>
+            )}
+            {(mailboxState === "connected" || mailboxState === "reconnect") && (
+              <div className="mb-2 text-xs" data-testid="mailbox-account">
+                <p className="text-gray-500">{t("settings.pipelineTab.mailboxAccountLabel")}</p>
+                {mailbox.display_name && <p className="font-medium text-gray-800" data-testid="mailbox-display-name">{mailbox.display_name}</p>}
+                <p className="text-gray-700 [overflow-wrap:anywhere]" data-testid="mailbox-address">{mailbox.address || "—"}</p>
+              </div>
+            )}
+            {mailboxState === "reconnect" && (
+              <p role="alert" className="mb-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800" data-testid="mailbox-reconnect-note">
+                {t("settings.pipelineTab.mailboxReconnectNote")}
               </p>
             )}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-1.5">
-              <Field label={t("settings.pipelineTab.smtpServerLabel")}><Input value={smtp.smtp_host} onChange={(event) => setSmtp((s) => ({ ...s, smtp_host: event.target.value }))} placeholder="smtp.gmail.com" /></Field>
-              <Field label={t("settings.pipelineTab.portLabel")}><Input type="number" value={smtp.smtp_port} onChange={(event) => setSmtp((s) => ({ ...s, smtp_port: Number(event.target.value) || 587 }))} /></Field>
+            <p id={mailboxConsentId} className="mb-2 text-xs text-gray-500" data-testid="mailbox-consent">{t("settings.pipelineTab.mailboxConsent")}</p>
+            <div className="mb-[18px] flex flex-wrap justify-end gap-1.5">
+              {mailboxState === "not_connected" && (
+                <Btn
+                  small
+                  className="disabled:opacity-50 disabled:cursor-not-allowed"
+                  icon={busyIcon("connect", Mail)}
+                  onClick={connectMailbox}
+                  disabled={Boolean(mailboxBusy) || !oauthConfigured}
+                  aria-busy={mailboxBusy === "connect" || undefined}
+                  aria-describedby={mailboxConsentId}
+                >
+                  {t("settings.pipelineTab.mailboxConnectButton")}
+                </Btn>
+              )}
+              {mailboxState === "reconnect" && (
+                <Btn
+                  small
+                  className="disabled:opacity-50 disabled:cursor-not-allowed"
+                  icon={busyIcon("connect", RefreshCw)}
+                  onClick={connectMailbox}
+                  disabled={Boolean(mailboxBusy) || !oauthConfigured}
+                  aria-busy={mailboxBusy === "connect" || undefined}
+                  aria-describedby={mailboxConsentId}
+                >
+                  {t("settings.pipelineTab.mailboxReconnectButton")}
+                </Btn>
+              )}
+              {mailboxState === "connected" && (
+                <Btn
+                  variant="secondary"
+                  small
+                  className="disabled:opacity-50 disabled:cursor-not-allowed"
+                  icon={busyIcon("test", Plug)}
+                  onClick={testMailbox}
+                  disabled={Boolean(mailboxBusy)}
+                  aria-busy={mailboxBusy === "test" || undefined}
+                >
+                  {mailboxBusy === "test" ? t("settings.pipelineTab.mailboxTesting") : t("settings.pipelineTab.mailboxTestButton")}
+                </Btn>
+              )}
+              {(mailboxState === "connected" || mailboxState === "reconnect") && (
+                <Btn
+                  variant="secondary"
+                  small
+                  className="disabled:opacity-50 disabled:cursor-not-allowed"
+                  icon={busyIcon("disconnect", Trash2)}
+                  onClick={() => setConfirmDisconnect(true)}
+                  disabled={Boolean(mailboxBusy)}
+                  aria-busy={mailboxBusy === "disconnect" || undefined}
+                >
+                  {t("settings.pipelineTab.mailboxDisconnectButton")}
+                </Btn>
+              )}
             </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-1.5">
-              <Field label={t("settings.pipelineTab.usernameLabel")}><Input value={smtp.smtp_user} onChange={(event) => setSmtp((s) => ({ ...s, smtp_user: event.target.value }))} placeholder="sales@noondalton.com" /></Field>
-              <Field
-                label={t("settings.pipelineTab.passwordLabel")}
-                hint={smtpPasswordHint}
-                hintBelow
-                hintId={smtpPasswordHintId}
-              >
-                <Input
-                  type="password"
-                  aria-describedby={smtpPasswordHint ? smtpPasswordHintId : undefined}
-                  value={smtpPasswordInput}
-                  onChange={(event) => setSmtpPasswordInput(event.target.value)}
-                  placeholder={smtpPasswordConfigured ? "••••••••" : t("settings.pipelineTab.enterPasswordPlaceholder")}
-                  autoComplete="new-password"
-                />
-              </Field>
-            </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-1.5">
-              <Field label={t("settings.pipelineTab.senderEmailLabel")}><Input value={smtp.sender_email} onChange={(event) => setSmtp((s) => ({ ...s, sender_email: event.target.value }))} placeholder="sales@noondalton.com" /></Field>
-              <Field label={t("settings.pipelineTab.senderNameLabel")}><Input value={smtp.sender_name} onChange={(event) => setSmtp((s) => ({ ...s, sender_name: event.target.value }))} placeholder="NoonDalton Sales" /></Field>
-            </div>
+            <ConfirmDialog
+              open={confirmDisconnect}
+              title={t("settings.pipelineTab.mailboxDisconnectTitle")}
+              message={t("settings.pipelineTab.mailboxDisconnectMessage")}
+              cancelLabel={t("settings.pipelineTab.cancelButton")}
+              confirmLabel={t("settings.pipelineTab.mailboxDisconnectButton")}
+              onCancel={() => setConfirmDisconnect(false)}
+              onConfirm={disconnectMailbox}
+            />
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-1.5">
               <Field label={t("settings.pipelineTab.dailyLimitLabel")} hint={t("settings.pipelineTab.dailyLimitHint")} hintBelow hintId={dailyLimitHintId}>
-                <Input
-                  type="number"
-                  min={1}
-                  max={DAILY_LIMIT_MAX}
-                  step={1}
-                  aria-label={t("settings.pipelineTab.dailyLimitLabel")}
-                  aria-describedby={dailyLimitHintId}
-                  value={dailyLimit}
-                  onChange={(event) => setDailyLimit(event.target.value)}
-                />
+                <div className="flex gap-1.5">
+                  <Input
+                    type="number"
+                    min={1}
+                    max={DAILY_LIMIT_MAX}
+                    step={1}
+                    aria-label={t("settings.pipelineTab.dailyLimitLabel")}
+                    aria-describedby={dailyLimitHintId}
+                    value={dailyLimit}
+                    onChange={(event) => setDailyLimit(event.target.value)}
+                  />
+                  <Btn small className="shrink-0 disabled:opacity-50 disabled:cursor-not-allowed" icon={<Save size={12} />} onClick={saveDailyLimit} disabled={dailyLimitSaving}>
+                    {dailyLimitSaving ? t("settings.pipelineTab.savingButton") : t("settings.pipelineTab.dailyLimitSaveButton")}
+                  </Btn>
+                </div>
               </Field>
               <div className="mb-[18px]">
                 <div className="flex items-center gap-2">
@@ -737,22 +838,6 @@ export default function PipelineSettingsTab({ isDark = false }) {
                   <p role="note" className="mt-1 text-xs text-amber-800" data-testid="real-send-server-off">{t("settings.pipelineTab.realSendServerOff")}</p>
                 )}
               </div>
-            </div>
-            <div className="flex flex-wrap justify-end gap-1.5">
-              <Btn
-                variant="secondary"
-                small
-                className="disabled:opacity-50 disabled:cursor-not-allowed"
-                icon={smtpTesting ? <Loader2 size={12} className="animate-spin" /> : <Plug size={12} />}
-                onClick={testSmtpConnection}
-                disabled={smtpTesting}
-                aria-busy={smtpTesting || undefined}
-              >
-                {smtpTesting ? t("settings.pipelineTab.testingConnection") : t("settings.pipelineTab.testConnectionButton")}
-              </Btn>
-              <Btn small className="disabled:opacity-50 disabled:cursor-not-allowed" icon={<Save size={12} />} onClick={saveSmtp} disabled={smtpSaving}>
-                {smtpSaving ? t("settings.pipelineTab.savingButton") : t("settings.pipelineTab.smtpSaveButton")}
-              </Btn>
             </div>
           </SettingsSection>
 

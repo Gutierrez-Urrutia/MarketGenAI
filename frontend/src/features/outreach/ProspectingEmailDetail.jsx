@@ -4,28 +4,33 @@
  * Subject and body are model output: they are rendered as plain text only
  * (text nodes inside <pre>), never as HTML. The actions depend on the status:
  * pending_review → regenerate (optionally in another language), reject,
- * approve; approved → copy, send (real SMTP), mark as sent, reject; sent /
- * rejected → none. «Copiar» never calls the API nor changes the email.
+ * approve; approved → copy, send (real send from the connected mailbox), mark
+ * as sent, reject; sent / rejected → none. «Copiar» never calls the API nor
+ * changes the email.
  *
  * Real send: «Enviar» is disabled, with a short note saying why, unless the
- * SMTP account is complete, both real-send switches are on, the contact is
- * reviewed, the recipient is not on the do-not-contact list and today's quota
- * is not used up (sendBlockReason). It always asks for confirmation showing
- * the recipient and the sender. After a send of unknown outcome (timeout
- * during DATA) it becomes «Reintentar envío», behind a second, stronger
- * confirmation; only that one sends `forceRetry`. The opt-out line the server
- * appends when sending is shown apart from the body, so the reviewer sees
- * exactly what goes out.
+ * user's Microsoft 365 / Outlook mailbox is connected and does not need to be
+ * reconnected, both real-send switches are on, the contact is reviewed, the
+ * recipient is not on the do-not-contact list and today's quota is not used
+ * up (sendBlockReason). The mailbox notes link to Settings (onOpenSettings),
+ * where it is connected again; nothing starts from here. It always asks for
+ * confirmation showing the recipient and the sender (the mailbox's). After a
+ * send of unknown outcome it becomes «Reintentar envío», behind a second,
+ * stronger confirmation; only that one sends `forceRetry`. The opt-out line
+ * the server appends when sending is shown apart from the body, so the
+ * reviewer sees exactly what goes out.
  *
  * `readOnly` (Historial): the same email, with no action of any kind — no
- * buttons, block notes, send warnings, decision history nor dialogs — and one
- * line saying how and when it was closed and by whom.
+ * buttons, block notes, send warnings, decision history nor dialogs — one
+ * line saying how and when it was closed and by whom, and «From» when the
+ * email stored the mailbox it went out from (older ones did not).
  */
 import { useEffect, useId, useState } from "react";
 
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import {
-  DEFAULT_EMAIL_LANGUAGE, EMAIL_LANGUAGES, decidedByName, isSystemSend, isUncertain, languageLabel, sendBlockReason,
+  DEFAULT_EMAIL_LANGUAGE, EMAIL_LANGUAGES, SETTINGS_BLOCK_REASONS, decidedByName, isSystemSend, isUncertain,
+  languageLabel, sendBlockReason,
 } from "./prospectingEmails";
 import { formatDateTime } from "@/utils/dates";
 
@@ -126,20 +131,40 @@ function SendSummary({ email, sendStatus, t }) {
   );
 }
 
-function BlockNote({ id, reason, sendStatus, t, onOpenSettings }) {
-  const fields = (sendStatus?.smtp_missing_fields || []).map((field) => t(`${KP}.send.fields.${field}`)).join(", ");
+// Why «Enviar» is disabled. For the mailbox and the user's switch, a link to
+// Settings › Pipeline («Reconectar» when the mailbox must be connected again).
+function BlockNote({ id, reason, t, onOpenSettings }) {
   return (
     <p id={id} role="note" className="text-right text-xs text-gray-500" data-testid="send-block-note">
-      {fill(t(`${KP}.send.blocked.${reason}`), { fields })}
-      {["smtp_not_configured", "user_disabled"].includes(reason) && onOpenSettings && (
+      {t(`${KP}.send.blocked.${reason}`)}
+      {SETTINGS_BLOCK_REASONS.includes(reason) && onOpenSettings && (
         <>
           {" "}
-          <button type="button" className="font-medium text-indigo-600 underline" onClick={() => onOpenSettings()}>
-            {t(`${KP}.send.openSettings`)}
+          <button
+            type="button"
+            className="font-medium text-indigo-600 underline"
+            data-testid="send-block-settings-link"
+            onClick={() => onOpenSettings()}
+          >
+            {reason === "mailbox_reconnect_required" ? t(`${KP}.send.reconnectInSettings`) : t(`${KP}.send.openSettings`)}
           </button>
         </>
       )}
     </p>
+  );
+}
+
+// Read-only: the mailbox the email went out from, when it was stored.
+function SentFrom({ email, t }) {
+  if (!email.sender_address) return null;
+  return (
+    <div className="sm:col-span-2" data-testid="email-from">
+      <dt className="text-gray-500">{t(`${KP}.readOnly.from`)}</dt>
+      <dd className="font-medium text-gray-800 [overflow-wrap:anywhere]">
+        {email.sender_display_name && <span className="block" data-testid="email-from-name">{email.sender_display_name}</span>}
+        <span className="block" data-testid="email-from-address">{email.sender_address}</span>
+      </dd>
+    </div>
   );
 }
 
@@ -214,6 +239,7 @@ export default function ProspectingEmailDetail({
           <dt className="text-gray-500">{t(`${KP}.detail.language`)}</dt>
           <dd className="font-medium text-gray-800" data-testid="email-language">{languageLabel(email.language || DEFAULT_EMAIL_LANGUAGE)}</dd>
         </div>
+        {readOnly && <SentFrom email={email} t={t} />}
       </dl>
 
       {email.contact_review_status === "pending" && ["pending_review", "approved"].includes(email.status) && (
@@ -289,15 +315,15 @@ export default function ProspectingEmailDetail({
             )}
           </div>
           {blockReason && (
-            <BlockNote id={blockNoteId} reason={blockReason} sendStatus={sendStatus} t={t} onOpenSettings={onOpenSettings} />
+            <BlockNote id={blockNoteId} reason={blockReason} t={t} onOpenSettings={onOpenSettings} />
           )}
           <p className="text-right text-xs text-gray-500">{t(`${KP}.actions.markSentHint`)}</p>
         </div>
       )}
       {!readOnly && email.status === "sent" && (
         <p className="text-xs text-gray-600" data-testid="sent-by">
-          {email.send_method === "smtp"
-            ? fill(t(`${KP}.send.sentBySmtp`), { name: email.sent_by_name || email.sent_by || "—", date: formatDateTime(email.sent_at) })
+          {isSystemSend(email)
+            ? fill(t(`${KP}.send.sentBySystem`), { name: email.sent_by_name || email.sent_by || "—", date: formatDateTime(email.sent_at) })
             : fill(t(`${KP}.send.markedSent`), { name: email.sent_marked_by_name || email.sent_marked_by || "—", date: formatDateTime(email.sent_at) })}
         </p>
       )}
