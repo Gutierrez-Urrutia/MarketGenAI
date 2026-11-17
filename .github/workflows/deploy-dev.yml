@@ -71,17 +71,14 @@ jobs:
           service_account: ${{ env.DEPLOYER }}
       - uses: google-github-actions/setup-gcloud@v2
 
-      - name: DIAGNOSTICO TEMPORAL (acceso al bucket de Cloud Build)
-        continue-on-error: true
-        run: |
-          gcloud auth list
-          gcloud config list
-          gcloud storage buckets describe gs://marketgen-dev_cloudbuild --project=$PROJECT --verbosity=debug 2>&1 | tail -40
-
       - name: Construir la imagen de la API
-        working-directory: backend
         run: |
-          gcloud builds submit . --tag=$REGISTRY/api:dev --project=$PROJECT --region=$REGION
+          # Se sube el código al bucket de Cloud Build y se construye desde ahí: `builds submit .` falla con esta
+          # cuenta al preparar el bucket de origen, aunque tenga acceso de lectura y escritura a él.
+          SRC=gs://${PROJECT}_cloudbuild/source/api-${GITHUB_SHA::7}.tgz
+          tar -czf /tmp/api-src.tgz -C backend --exclude=tests --exclude=__pycache__ --exclude=.venv --exclude='.env*' --exclude='service-account*.json' .
+          gcloud storage cp /tmp/api-src.tgz $SRC --project=$PROJECT
+          gcloud builds submit $SRC --tag=$REGISTRY/api:dev --project=$PROJECT --region=$REGION
           gcloud artifacts docker tags add $REGISTRY/api:dev $REGISTRY/api:${GITHUB_SHA::7} --project=$PROJECT
 
       - name: Desplegar la API en Cloud Run
@@ -106,7 +103,10 @@ jobs:
       - name: Construir y desplegar el frontend
         if: steps.front.outputs.deploy == 'true'
         run: |
-          gcloud builds submit frontend --config=frontend/cloudbuild.yaml \
+          SRC=gs://${PROJECT}_cloudbuild/source/web-${GITHUB_SHA::7}.tgz
+          tar -czf /tmp/web-src.tgz -C frontend --exclude=node_modules --exclude=dist --exclude='.env*' .
+          gcloud storage cp /tmp/web-src.tgz $SRC --project=$PROJECT
+          gcloud builds submit $SRC --config=frontend/cloudbuild.yaml \
             --substitutions=_API_URL=$API_URL/api/v1 --project=$PROJECT --region=$REGION
           gcloud run services update marketgen-web \
             --image=$REGISTRY/web:dev \
