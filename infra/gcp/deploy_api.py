@@ -39,12 +39,16 @@ secretos = {
     "PIPELINE_ENCRYPTION_KEY": "pipeline-encryption-key", "DEEPSEEK_API_KEY": "deepseek-api-key",
     "GEMINI_API_KEY": "gemini-api-key", "GOOGLE_API_KEY": "google-api-key",
     "SUPABASE_SERVICE_KEY": "supabase-service-key", "GOOGLE_OAUTH_CLIENT_SECRET": "google-oauth-client-secret",
+    "REDIS_URL": "redis-url", "CELERY_RESULT_BACKEND": "celery-result-backend",
 }
 set_secrets = ",".join(f"{k}={v}:latest" for k, v in secretos.items())
 
 cmd = [G, "run", "deploy", SERVICE, f"--image={IMAGE}", f"--region={REGION}", f"--project={PROJECT}",
        f"--service-account={SA}", "--allow-unauthenticated", "--min-instances=0", "--max-instances=3",
-       "--memory=1Gi", "--cpu=1", "--timeout=300", "--port=8080", f"--env-vars-file={path}", f"--set-secrets={set_secrets}", "--quiet"]
+       "--memory=1Gi", "--cpu=1", "--timeout=300", "--port=8080",
+       # Salida directa a la VPC: así la API llega a Redis (en la VM) por la red interna.
+       "--network=default", "--subnet=default", "--vpc-egress=private-ranges-only",
+       f"--env-vars-file={path}", f"--set-secrets={set_secrets}", "--quiet"]
 r = subprocess.run(cmd, capture_output=True)
 out = (r.stdout + r.stderr).decode("utf-8", "replace")
 print("\n".join(out.strip().splitlines()[-12:]))
