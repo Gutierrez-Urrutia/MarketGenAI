@@ -93,6 +93,12 @@ class Settings(BaseSettings):
     supabase_service_key: str = ""
     supabase_storage_bucket: str = "nd-assets"
 
+    # Dónde se guardan los archivos generados: "supabase" (por defecto, comportamiento histórico) o "gcs"
+    # (Google Cloud Storage, con gcs_bucket). Con "gcs" una falla de subida NO cae al disco local: en la
+    # nube la API y el worker son máquinas distintas y un archivo local no lo vería la otra.
+    storage_backend: str = "supabase"
+    gcs_bucket: str = ""
+
     # Fernet key encrypting pipeline secrets at rest (provider API keys, the
     # mailbox OAuth tokens) — see app/services/encryption_service.py.
     # Deliberately not derived from app_secret_key: different blast radius and

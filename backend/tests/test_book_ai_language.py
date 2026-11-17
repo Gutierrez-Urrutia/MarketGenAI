@@ -6,6 +6,8 @@ import pytest
 
 from app.services import book_ai_service
 
+# El prompt nombra el idioma completo («Spanish (español)»): un código suelto («es») lo ignoraba el modelo.
+
 
 @pytest.mark.asyncio
 async def test_generate_chapters_includes_requested_language():
@@ -22,7 +24,7 @@ async def test_generate_chapters_includes_requested_language():
         )
 
     prompt = generate_text.call_args.args[0]
-    assert "Language: es" in prompt
+    assert "Language: Spanish (español)" in prompt
 
 
 @pytest.mark.asyncio
@@ -31,7 +33,7 @@ async def test_generate_chapter_content_includes_requested_language():
         book_ai_service.deepseek_service,
         "generate_text",
         new_callable=AsyncMock,
-        return_value="<h2>Contenido</h2>",
+        return_value="<h2>Contenido</h2><p>" + ("El contenido del capítulo está escrito en español para los equipos de marketing. " * 20) + "</p>",
     ) as generate_text:
         await book_ai_service.generate_chapter_content(
             book_title="Libro",
@@ -42,7 +44,7 @@ async def test_generate_chapter_content_includes_requested_language():
         )
 
     prompt = generate_text.call_args.args[0]
-    assert "Language: es" in prompt
+    assert "Language: Spanish (español)" in prompt
 
 
 @pytest.mark.asyncio
@@ -61,4 +63,4 @@ async def test_generate_social_posts_includes_requested_language():
         )
 
     prompt = generate_text.call_args.args[0]
-    assert "Language: es" in prompt
+    assert "Language: Spanish (español)" in prompt

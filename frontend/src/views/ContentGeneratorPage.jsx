@@ -50,11 +50,13 @@ export function ContentGeneratorPage() {
     setForm((current) => ({ ...current, [field]: event.target.value }));
   };
 
+  // El idioma del libro manda: el whitepaper y demás archivos salen en el idioma con que se generó el libro,
+  // no en el de la interfaz (que en un navegador nuevo parte en inglés).
   useEffect(() => {
     if (!bookLanguageManuallySelected) {
-      setBookLanguage(language || getStoredPreference(PREF_KEYS.language, "en"));
+      setBookLanguage(book?.language || language || getStoredPreference(PREF_KEYS.language, "en"));
     }
-  }, [language, bookLanguageManuallySelected]);
+  }, [book?.language, language, bookLanguageManuallySelected]);
 
   useEffect(() => {
     const previousDefaults = previousBookDefaultsRef.current;

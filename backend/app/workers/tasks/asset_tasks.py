@@ -37,6 +37,7 @@ from app.config import settings
 from app.services import book_ai_service, deepseek_service
 from app.services.firestore_service import assets_repo, jobs_repo
 from app.services.storage_service import storage_service
+from app.core.languages import language_name, normalize_language
 from app.rendering.brand_styles import (
     BRAND_BORDER,
     BRAND_MUTED,
@@ -110,19 +111,31 @@ def _chapter_flowables(content_html: str, styles) -> list:
     return html_to_flowables(content_html, styles)
 
 
-def _whitepaper_page_decoration(canvas_obj, _doc_template):
-    canvas_obj.saveState()
-    canvas_obj.setStrokeColor(colors.HexColor(BRAND_BORDER))
-    canvas_obj.setLineWidth(0.5)
-    canvas_obj.line(54, 40, LETTER[0] - 54, 40)
-    canvas_obj.setFont("Helvetica", 8)
-    canvas_obj.setFillColor(colors.HexColor(BRAND_MUTED))
-    canvas_obj.drawString(54, 28, "NoonDalton AI Marketing Suite")
-    canvas_obj.drawRightString(LETTER[0] - 54, 28, f"Page {canvas_obj.getPageNumber()}")
-    canvas_obj.restoreState()
+PAGE_LABELS = {"es": "Página", "en": "Page", "pt": "Página"}
 
 
-def _build_whitepaper_pdf(book: Dict[str, Any], chapters: List[Dict[str, Any]]) -> bytes:
+def _page_decoration(language: str = "en"):
+    """Pie de página con el rótulo «Página N» en el idioma del documento."""
+    label = PAGE_LABELS.get(normalize_language(language), "Page")
+
+    def decorate(canvas_obj, _doc_template):
+        canvas_obj.saveState()
+        canvas_obj.setStrokeColor(colors.HexColor(BRAND_BORDER))
+        canvas_obj.setLineWidth(0.5)
+        canvas_obj.line(54, 40, LETTER[0] - 54, 40)
+        canvas_obj.setFont("Helvetica", 8)
+        canvas_obj.setFillColor(colors.HexColor(BRAND_MUTED))
+        canvas_obj.drawString(54, 28, "NoonDalton AI Marketing Suite")
+        canvas_obj.drawRightString(LETTER[0] - 54, 28, f"{label} {canvas_obj.getPageNumber()}")
+        canvas_obj.restoreState()
+
+    return decorate
+
+
+_whitepaper_page_decoration = _page_decoration()  # versión en inglés, por compatibilidad
+
+
+def _build_whitepaper_pdf(book: Dict[str, Any], chapters: List[Dict[str, Any]], language: str = "en") -> bytes:
     styles = _whitepaper_styles()
 
     story = [
@@ -149,13 +162,13 @@ def _build_whitepaper_pdf(book: Dict[str, Any], chapters: List[Dict[str, Any]]) 
         topMargin=50,
         bottomMargin=60,
     )
-    pdf.build(story, onFirstPage=_whitepaper_page_decoration, onLaterPages=_whitepaper_page_decoration)
+    pdf.build(story, onFirstPage=_page_decoration(language), onLaterPages=_page_decoration(language))
     return buffer.getvalue()
 
 
 # ── One-Pager ─────────────────────────────────────────────────────────────────
 
-def _build_one_pager_pdf(html_content: str) -> bytes:
+def _build_one_pager_pdf(html_content: str, language: str = "en") -> bytes:
     """Render the LLM-generated one-pager copy to a single-flow PDF using
     ReportLab (same corporate palette as _whitepaper_styles). No native
     system libraries required, unlike WeasyPrint, so this also works on
@@ -200,7 +213,7 @@ def _build_one_pager_pdf(html_content: str) -> bytes:
         topMargin=50,
         bottomMargin=60,
     )
-    pdf.build(story, onFirstPage=_whitepaper_page_decoration, onLaterPages=_whitepaper_page_decoration)
+    pdf.build(story, onFirstPage=_page_decoration(language), onLaterPages=_page_decoration(language))
     return buffer.getvalue()
 
 
@@ -221,7 +234,7 @@ async def generate_one_pager_now(
         f"Title: {book['title']}\n"
         f"Description: {book.get('description', '')}\n"
         f"Target audience: {book.get('targetAudience', '')}\n"
-        f"Language: {options.get('language', 'es')}\n"
+        f"Language: {language_name(options.get('language', 'es'))}\n"
         f"Style: {options.get('style', 'professional')}\n\n"
         "Include: headline, problem statement, solution, key benefits (3-4 bullets), "
         "and a call to action. Wrap the call-to-action text in its own "
@@ -244,13 +257,13 @@ async def generate_one_pager_now(
         timeout=None,
         **extra_kwargs,
     )
-    html_content = book_ai_service._clean_fenced_text(html_content)
+    html_content = book_ai_service.clean_text_output(html_content)
 
     await jobs_repo.update_progress(job_id, 60, "processing")
 
     # TODO: honor GenerateOnePagerRequest.maxPages (schemas/asset.py:30) here
     # — currently ignored, same as it was with the WeasyPrint implementation.
-    pdf_bytes = _build_one_pager_pdf(html_content)
+    pdf_bytes = _build_one_pager_pdf(html_content, options.get("language", "es"))
 
     # Upload to Supabase Storage
     path = storage_service.asset_path(asset_id, "one-pager.pdf")
@@ -342,7 +355,7 @@ async def generate_whitepaper_now(
 
     # Pure-Python rendering (ReportLab) — no native GTK/Pango libraries
     # required, unlike WeasyPrint, so this also works on Vercel serverless.
-    pdf_bytes = _build_whitepaper_pdf(book, chapters)
+    pdf_bytes = _build_whitepaper_pdf(book, chapters, options.get("language", "es"))
 
     path = storage_service.asset_path(asset_id, "whitepaper.pdf")
     await storage_service.upload_bytes(pdf_bytes, path, "application/pdf")
@@ -453,7 +466,7 @@ async def generate_infographic_now(
         f"Create a structured JSON data payload for an infographic about:\n"
         f"Title: {book['title']}\n"
         f"Description: {book.get('description', '')}\n\n"
-        f"Language: {options.get('language', 'es')}. Every user-facing JSON value must be in this language.\n\n"
+        f"Language: {language_name(options.get('language', 'es'))}. Every user-facing JSON value must be in this language.\n\n"
         "The JSON must have this structure:\n"
         '{"title": "...", "subtitle": "...", "sections": ['
         '{"heading": "...", "stat": "...", "description": "..."}], '

@@ -1,0 +1,17 @@
+# Lo que NO se sube a Cloud Build (mismo criterio que .dockerignore). Los secretos viven en Secret Manager.
+.env
+.env.*
+!.env.example
+*.env
+service-account*.json
+*-credentials*.json
+firebase*.json
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.git/
+generated_files/
+tests/
+*.log

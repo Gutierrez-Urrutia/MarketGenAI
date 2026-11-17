@@ -1,0 +1,26 @@
+# Secretos y configuración local: NUNCA deben entrar a la imagen (se inyectan como variables de entorno o secretos).
+.env
+.env.*
+!.env.example
+*.env
+service-account*.json
+*-credentials*.json
+firebase*.json
+
+# Entorno y caches locales
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Datos locales y pruebas (no van a producción)
+generated_files/
+tests/
+pytest.ini
+.git/
+.gitignore
+*.log
