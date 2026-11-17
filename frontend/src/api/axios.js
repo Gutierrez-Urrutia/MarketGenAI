@@ -490,6 +490,7 @@ export const reportsApi = {
   dashboard: (params) => api.get('/reports/dashboard', { params }),
   books: (params) => api.get('/reports/books', { params }),
   proposals: (params) => api.get('/reports/proposals', { params }),
+  pipeline: (params) => api.get('/reports/pipeline', { params }),
   content: (params) => api.get('/reports/content', { params }),
   export: (params) => api.get('/reports/export', { params, responseType: 'blob' }),
 }

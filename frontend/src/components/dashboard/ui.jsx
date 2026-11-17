@@ -64,8 +64,8 @@ export const Btn = ({ variant = "primary", children, icon, className = "", small
   );
 };
 
-export const Card = ({ children, className = "" }) => (
-  <div className={`bg-white rounded-2xl border border-gray-100 shadow-sm ${className}`}>{children}</div>
+export const Card = ({ children, className = "", ...rest }) => (
+  <div className={`bg-white rounded-2xl border border-gray-100 shadow-sm ${className}`} {...rest}>{children}</div>
 );
 
 const Section = ({ title, IconComp, desc, badge, children }) => (

@@ -69,6 +69,7 @@ SERVER_ONLY_FIELDS = VERSION_INTERNAL_FIELDS + (
     "id", "userId", "createdAt", "updatedAt", "crmSync", "filePath", "downloadUrl",
     "signedDocumentPath", "signedDocumentUrl", "signedDocumentName", "signedDocumentUploadedAt", "hasSignedDocument",
     "clientIndustry", "clientSize",  # RF-VTA-03: copia del perfil del cliente que toma el servidor al generar
+    "statusDates",  # RF-VTA-10: fecha de cada cambio de estado, la escribe solo el servidor
 )
 
 
