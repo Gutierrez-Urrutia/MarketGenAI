@@ -1,8 +1,10 @@
 """Tests for the asynchronous Celery tasks router and pilot task."""
+from contextlib import asynccontextmanager
 from unittest.mock import MagicMock, patch
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from app.dependencies.auth import CurrentUser, verify_token
 from app.main import app
 from app.workers.tasks.pilot_tasks import task_pilot_deepseek
 
@@ -12,11 +14,94 @@ def anyio_backend():
     return "asyncio"
 
 
+def _user(roles):
+    return CurrentUser(sub="u1", email="u@x.com", roles=roles, raw={"sub": "u1"})
+
+
+@asynccontextmanager
+async def _as(roles):
+    """Cliente con el usuario indicado (None = sin sesión); restaura el override de la sesión de pruebas."""
+    previous = app.dependency_overrides.pop(verify_token, None)
+    if roles is not None:
+        app.dependency_overrides[verify_token] = lambda: _user(roles)
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            yield c
+    finally:
+        app.dependency_overrides.pop(verify_token, None)
+        if previous is not None:
+            app.dependency_overrides[verify_token] = previous
+
+
 @pytest.fixture
 async def client():
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as c:
+    """Cliente autenticado como administrador."""
+    async with _as(["admin"]) as c:
         yield c
+
+
+@pytest.fixture
+async def anon_client():
+    """Cliente sin sesión (sin override de autenticación)."""
+    async with _as(None) as c:
+        yield c
+
+
+@pytest.fixture
+async def user_client():
+    """Cliente con sesión de usuario normal (sin rol admin)."""
+    async with _as(["user"]) as c:
+        yield c
+
+
+@pytest.mark.asyncio
+async def test_pilot_requires_login(anon_client: AsyncClient):
+    with patch("app.routers.tasks.task_pilot_deepseek.delay") as mock_delay:
+        r = await anon_client.post("/api/v1/tasks/pilot", json={"prompt": "Hola"})
+    assert r.status_code in (401, 403)
+    mock_delay.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_pilot_forbidden_for_non_admin(user_client: AsyncClient):
+    with patch("app.routers.tasks.task_pilot_deepseek.delay") as mock_delay:
+        r = await user_client.post("/api/v1/tasks/pilot", json={"prompt": "Hola"})
+    assert r.status_code == 403
+    mock_delay.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_task_status_requires_login(anon_client: AsyncClient):
+    r = await anon_client.get("/api/v1/tasks/abc")
+    assert r.status_code in (401, 403)
+
+
+@pytest.mark.asyncio
+async def test_debug_urls_requires_admin(anon_client: AsyncClient, user_client: AsyncClient):
+    assert (await anon_client.get("/api/v1/auth/debug-urls")).status_code in (401, 403)
+    assert (await user_client.get("/api/v1/auth/debug-urls")).status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_debug_urls_admin_does_not_leak_headers(client: AsyncClient):
+    r = await client.get("/api/v1/auth/debug-urls", headers={"X-Secret": "s3"})
+    assert r.status_code == 200
+    assert "headers" not in r.json()
+
+
+def test_docs_disabled_in_production():
+    """Se comprueba en un proceso aparte para no recargar la app compartida de los tests."""
+    import os, subprocess, sys
+    code = (
+        "from unittest.mock import MagicMock, patch\n"
+        "with patch('google.cloud.firestore.AsyncClient', MagicMock()):\n"
+        "    from app.main import app\n"
+        "print(app.docs_url, app.openapi_url, app.redoc_url)\n"
+    )
+    env = {**os.environ, "APP_ENV": "production", "APP_SECRET_KEY": "x" * 48, "APP_DEBUG": "false",
+           "LOCAL_DEV_AUTH_ENABLED": "false"}
+    out = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True)
+    assert out.stdout.strip().splitlines()[-1] == "None None None", out.stderr[-500:]
 
 
 @pytest.mark.asyncio

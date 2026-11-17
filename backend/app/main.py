@@ -42,10 +42,15 @@ from app.routers import (
     templates,
 )
 
+_is_prod = settings.app_env.lower() == "production"
 app = FastAPI(
     title="MarketGen AI API",
     version="1.0.0",
     description="Backend API for MarketGen AI",
+    # En producción no se publica la documentación interactiva (Swagger/ReDoc/OpenAPI).
+    docs_url=None if _is_prod else "/docs",
+    redoc_url=None if _is_prod else "/redoc",
+    openapi_url=None if _is_prod else "/openapi.json",
 )
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)

@@ -8,10 +8,11 @@ import secrets
 from urllib.parse import urlencode
 
 import httpx
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
 
 from app.config import settings
+from app.dependencies.auth import CurrentUser, require_roles
 from app.services.auth_service import (
     create_access_token,
     hash_token,
@@ -118,13 +119,13 @@ async def _find_or_create_oauth_user(
 # ── Debug ─────────────────────────────────────────────────────────────────────
 
 @router.get("/debug-urls")
-async def debug_urls(request: Request):
+async def debug_urls(request: Request, _admin: CurrentUser = Depends(require_roles("admin"))):
+    # Solo admin: antes era público y devolvía todas las cabeceras de la petición.
     return {
         "google_callback": _google_callback_url(request),
         "microsoft_callback": _microsoft_callback_url(request),
         "frontend_callback": _frontend_callback_url(),
         "base_url": _base_url(request),
-        "headers": dict(request.headers),
     }
 
 
