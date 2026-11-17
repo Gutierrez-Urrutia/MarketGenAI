@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Optional
 from celery import Task
 
 from app.workers.celery_app import celery_app
-from app.services import deepseek_service
+from app.services import audit_service, deepseek_service
 from app.services.customer_profile_service import SIZE_RANGES, industry_label, size_label
 from app.services.firestore_service import jobs_repo, proposals_repo
 from app.services.rag_proposal_service import get_rag_context_and_sources
@@ -477,7 +477,39 @@ async def generate_proposal_now(
 ) -> Dict[str, Any]:
     """Generate proposal content using DeepSeek and update Firestore.
     Shared by the Celery task and the sync fallback used when Celery/Redis is unavailable.
+
+    RNF-02: el worker no tiene Request; el router le pasa la IP original en
+    `options["auditIp"]`, y aquí se registra cómo terminó la generación.
     """
+    author = options.get("versionAuthor") or {}
+    audit_who = {
+        "user_id": options.get("userId") or author.get("author_id"),
+        "user_email": author.get("author_email"),
+        "ip": options.get("auditIp"),
+    }
+    try:
+        updated = await _generate_proposal_now(job_id, proposal_id, title, client_name, description, options)
+    except Exception as exc:
+        await audit_service.record(
+            action=audit_service.PROPOSAL_GENERATED, resource_id=proposal_id, status="failed",
+            details={"stage": "completed", "jobId": job_id, "error": str(exc)[:500]}, **audit_who,
+        )
+        raise
+    await audit_service.record(
+        action=audit_service.PROPOSAL_GENERATED, resource_id=proposal_id,
+        details={"stage": "completed", "jobId": job_id}, **audit_who,
+    )
+    return updated
+
+
+async def _generate_proposal_now(
+    job_id: str,
+    proposal_id: str,
+    title: str,
+    client_name: str,
+    description: str,
+    options: Dict[str, Any],
+) -> Dict[str, Any]:
     await jobs_repo.update_progress(job_id, 20, "processing")
     await proposals_repo.update(proposal_id, {"status": "generating"})
 
