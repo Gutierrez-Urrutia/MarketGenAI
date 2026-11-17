@@ -41,6 +41,7 @@ from app.schemas.book import (
     ChapterContentSave, ChapterCreate, ChapterReorder, ChapterUpdate,  # Quité ChapterOut
     GenerateChaptersRequest, GenerateContentRequest, RefineContentRequest,
 )
+from app.core.languages import normalize_language
 from app.schemas.job import JobAccepted
 from app.services import book_ai_service
 from app.services.firestore_service import books_repo, jobs_repo
@@ -123,7 +124,8 @@ async def _generate_chapters_now(job_id: str, book_id: str, book: dict, chapter_
             "contentAvailable": False,
         }))
 
-    await books_repo.update(book_id, {"status": "outlined"})
+    # El libro recuerda su idioma: los archivos que se generen después (whitepaper, one-pager...) lo reutilizan.
+    await books_repo.update(book_id, {"status": "outlined", "language": normalize_language(language)})
     await jobs_repo.complete_job(job_id, {"chapters": created, "bookStatus": "outlined"})
     logger.info(f"✨ [BooksRouter] Generación de capítulos completada con éxito para book_id={book_id}")
 

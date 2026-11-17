@@ -9,6 +9,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 from app.config import settings
+from app.core.languages import language_name
 from app.dependencies.auth import CurrentUser, get_current_user
 from app.rendering.content_items import build_content_item_pdf
 from app.services import deepseek_service
@@ -200,7 +201,7 @@ OUTPUT FORMAT - return clean semantic HTML only, no markdown, no div containers,
 <blockquote class="cs-testimonial">"{body.testimonial_quote}" - {body.testimonial_name}, {body.testimonial_role}, {body.client_name}</blockquote>
 
 RULES:
-- Language: {body.language}. Every word must be in this language.
+- Language: {language_name(body.language)}. Every word must be in this language.
 - Do NOT invent metrics beyond what user provided
 - Do NOT add fictional client details
 - Headline must lead with the result, not the client name
@@ -249,7 +250,7 @@ OUTPUT FORMAT - clean semantic HTML only:
 <p>[2-3 sentences summarizing key takeaways and recommending next steps with NoonDalton]</p>
 
 RULES:
-- Language: {body.language}. Every word must be in this language.
+- Language: {language_name(body.language)}. Every word must be in this language.
 - Each section must have real insight, not filler
 - Include at least one data point or statistic per major section (use realistic industry benchmarks, not invented numbers)
 - Maximum 800 words total
@@ -307,7 +308,7 @@ OUTPUT FORMAT - clean semantic HTML only:
 </div>
 
 RULES:
-- Language: {body.language}. Every word must be in this language.
+- Language: {language_name(body.language)}. Every word must be in this language.
 - Subject line must be under 50 characters
 - Body must be under 200 words
 - Every merge variable provided must appear at least once in subject or body
@@ -349,7 +350,7 @@ OUTPUT FORMAT - clean semantic HTML only, no markdown, no div containers, no sty
 <p class="sp-hashtags">[3-5 relevant hashtags separated by spaces]</p>
 
 RULES:
-- Language: {body.language}. Every word must be in this language.
+- Language: {language_name(body.language)}. Every word must be in this language.
 - Platform length rules: Twitter/X max 280 characters total; LinkedIn 150-300 words; Instagram/Facebook 80-150 words.
 - Tone must be consistent throughout: {body.tone}
 - Every key point provided must be reflected in the body
@@ -412,7 +413,7 @@ OUTPUT FORMAT - clean semantic HTML only:
 </div>
 
 RULES:
-- Language: {body.language}. Every word must be in this language.
+- Language: {language_name(body.language)}. Every word must be in this language.
 - Maximum 300 words total
 - Every feature must have a concrete benefit, not just a label
 - Steps must be action-oriented and specific to {body.product_name}
