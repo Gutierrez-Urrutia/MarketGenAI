@@ -1,5 +1,8 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
@@ -14,7 +17,7 @@ from app.routers import (
     auth,
     books,
     campaigns,
-    chat,
+    catalog,
     content_types,
     customers,
     health,
@@ -46,6 +49,13 @@ app = FastAPI(
 )
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    errors = jsonable_encoder(exc.errors())
+    first_message = errors[0]["msg"] if errors else "Solicitud inválida."
+    return JSONResponse(status_code=422, content={"detail": errors, "message": first_message})
 
 app.add_middleware(
     CORSMiddleware,
@@ -80,6 +90,7 @@ app.include_router(customers.router, prefix="/api/v1")
 app.include_router(knowledge.router, prefix="/api/v1")
 app.include_router(sales_enablement.router, prefix="/api/v1")
 app.include_router(templates.router, prefix="/api/v1")
+app.include_router(catalog.router, prefix="/api/v1")
 app.include_router(assets.router, prefix="/api/v1")
 app.include_router(jobs.router, prefix="/api/v1")
 app.include_router(platform.router, prefix="/api/v1")
@@ -87,7 +98,6 @@ app.include_router(reports.router, prefix="/api/v1")
 app.include_router(analysis.router, prefix="/api/v1")
 app.include_router(publishing.router, prefix="/api/v1")
 app.include_router(settings_router.router, prefix="/api/v1")
-app.include_router(chat.router, prefix="/api/v1")
 app.include_router(proposals.router, prefix="/api/v1")
 # social must be registered before social_mock: both define overlapping
 # /settings/social/* paths, and Starlette uses the first route that matches —

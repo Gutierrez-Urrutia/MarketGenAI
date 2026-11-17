@@ -494,11 +494,19 @@ export const customersApi = {
 }
 
 export const templatesApi = {
-  list: (params) => api.get('/templates', { params }),
-  create: (data) => api.post('/templates', data),
+  list: (params, config) => api.get('/templates', { ...config, params }),
+  catalog: (config) => api.get('/templates/catalog', config),
+  create: (data, config) => api.post('/templates', data, config),
   get: (id) => api.get(`/templates/${id}`),
-  update: (id, data) => api.put(`/templates/${id}`, data),
-  delete: (id) => api.delete(`/templates/${id}`),
+  update: (id, data, config) => api.put(`/templates/${id}`, data, config),
+  delete: (id, config) => api.delete(`/templates/${id}`, config),
+  // RF-VTA-07: { proposalId?, customerId?, variables?, language? } → { rendered, commercialTerms, missingVariables }
+  apply: (id, data, config) => api.post(`/templates/${id}/apply`, data, config),
+  extract: (file, config) => {
+    const fd = new FormData()
+    fd.append('file', file)
+    return api.post('/templates/extract', fd, { ...config, headers: { 'Content-Type': 'multipart/form-data' } })
+  },
 }
 
 export const assetsApi = {
@@ -543,13 +551,9 @@ export const reportsApi = {
   dashboard: (params) => api.get('/reports/dashboard', { params }),
   books: (params) => api.get('/reports/books', { params }),
   proposals: (params) => api.get('/reports/proposals', { params }),
+  pipeline: (params) => api.get('/reports/pipeline', { params }),
   content: (params) => api.get('/reports/content', { params }),
   export: (params) => api.get('/reports/export', { params, responseType: 'blob' }),
-}
-
-export const chatApi = {
-  send: (data) => api.post('/chat', data),
-  history: (sessionId) => api.get(`/chat/${sessionId}`),
 }
 
 export const analysisApi = {

@@ -108,5 +108,33 @@ export const downloadProposalDocx = (id) =>
 export const updateProposalStatus = (id, status) =>
   withProposalUpdated(api.patch(`/proposals/${id}/status`, { status }));
 
-export const sendProposalToCrm = (id, provider) =>
+// RF-VTA-06 (etapa diferida): documento firmado adjunto, sin proveedor de e-signature.
+export const uploadSignedDocument = (id, file) => {
+  const formData = new FormData();
+  formData.append("file", file);
+  return withProposalUpdated(
+    api.post(`/proposals/${id}/signed-document`, formData, {
+      headers: { "Content-Type": "multipart/form-data" },
+    })
+  );
+};
+
+export const removeSignedDocument = (id) =>
+  withProposalUpdated(api.delete(`/proposals/${id}/signed-document`));
+
+// Enlace temporal (5 min) para ver el documento firmado: la URL del archivo no viaja con la propuesta.
+export const getSignedDocumentLink = (id) => api.get(`/proposals/${id}/signed-document/link`);
+
+// RF-VTA-11: historial de versiones (fecha, autor y contenido de cada una).
+// El listado no trae el contenido; getProposalVersion sí.
+export const listProposalVersions = (id) => api.get(`/proposals/${id}/versions`);
+
+export const getProposalVersion = (id, versionId) => api.get(`/proposals/${id}/versions/${versionId}`);
+
+export const createProposalVersion = (id, data = {}) => api.post(`/proposals/${id}/versions`, data);
+
+export const restoreProposalVersion = (id, versionId) =>
+  withProposalUpdated(api.post(`/proposals/${id}/versions/${versionId}/restore`));
+
+export const sendProposalToCrm =(id, provider) =>
   withProposalUpdated(api.post(`/proposals/${id}/send-to-crm`, provider ? { provider } : {}, { suppressServerErrorToast: true, crmRequest: true }));

@@ -157,6 +157,9 @@ async def download_asset(
 # ── Local Asset Serving ───────────────────────────────────────────────────────
 @router.get("/assets/local/{file_path:path}")
 async def get_local_asset(file_path: str):
+    # Los documentos firmados de propuestas (RF-VTA-06) solo se abren con su enlace temporal, no por esta ruta pública.
+    if "/signed/" in f"/{file_path}":
+        raise HTTPException(status_code=404, detail="File not found.")
     base_dir = Path("generated_files").resolve()
     target_path = (base_dir / file_path).resolve()
     if not str(target_path).startswith(str(base_dir)) or not target_path.is_file():

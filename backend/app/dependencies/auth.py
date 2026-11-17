@@ -9,6 +9,7 @@ from jose import JWTError, jwt
 from pydantic import BaseModel, Field
 
 from app.config import settings
+from app.core.rbac import is_manager
 from app.services.auth_service import JWT_ALGORITHM
 
 http_bearer = HTTPBearer(auto_error=True)
@@ -72,3 +73,15 @@ def require_roles(*required_roles: str):
 
 
 get_current_user = verify_token
+
+
+async def require_manager(
+    current_user: CurrentUser = Depends(get_current_user),
+) -> CurrentUser:
+    """manager or admin (admin inherits manager through core.rbac)."""
+    if not is_manager(current_user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only managers and admins can modify the service catalog.",
+        )
+    return current_user

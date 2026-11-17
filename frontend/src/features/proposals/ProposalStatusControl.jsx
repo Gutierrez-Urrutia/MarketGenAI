@@ -8,14 +8,17 @@ import { useI18n } from "@/hooks/useI18n";
 // estado actual, con aspecto de desplegable. Sin destinos (firmada, desconocido,
 // rechazada sin ser admin) muestra solo la etiqueta, como badge de solo lectura.
 // Firmada y rechazada piden confirmación antes de llamar a `onChange`.
-export function ProposalStatusControl({ status, proposalTitle = "", isAdmin = false, pending = false, colorClassName = "", onChange }) {
+export function ProposalStatusControl({ status, proposalTitle = "", isAdmin = false, hasSignedDocument = true, pending = false, colorClassName = "", onChange }) {
   const { t } = useI18n();
   const [confirmTarget, setConfirmTarget] = useState(null);
   const [submitting, setSubmitting] = useState(false);
   const submittingRef = useRef(false);
   const currentStatus = toDisplayProposalStatus(status);
-  const allowedStatuses = getAllowedTransitions(currentStatus, { isAdmin });
+  const allowedStatuses = getAllowedTransitions(currentStatus, { isAdmin, hasSignedDocument });
   const label = (value) => t(proposalStatusLabelKey(value));
+  // Firmada desapareció del selector solo porque falta el adjunto (no por falta de
+  // destinos reales): se lo explica en vez de dejarlo como badge mudo.
+  const needsSignedDocumentHint = currentStatus === PROPOSAL_STATUS.EN_NEGOCIACION && !hasSignedDocument;
 
   // El select es controlado: si no se llama a onChange, sigue mostrando el estado actual.
   const handleSelect = (value) => {
@@ -91,6 +94,9 @@ export function ProposalStatusControl({ status, proposalTitle = "", isAdmin = fa
   return (
     <>
       {control}
+      {needsSignedDocumentHint && (
+        <p className="mt-1 text-xs text-slate-400 dark:text-slate-500">{t("proposalStatus.needsSignedDocument")}</p>
+      )}
       {confirmDialog}
     </>
   );

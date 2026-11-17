@@ -4,6 +4,9 @@ import api, { reportsApi } from "@/api/axios";
 import { getDashboardData } from "@/api/dashboardApi";
 import { useEffect, useState } from "react";
 import { useI18n } from "@/hooks/useI18n";
+import { PipelineReport } from "@/features/reports/PipelineReport";
+import { formatMoneyByCurrency } from "@/features/reports/pipelineFormat";
+import { usePipelineReport } from "@/features/reports/usePipelineReport";
 import {
   PROPOSAL_STATUS_DISPLAY_ORDER,
   UNKNOWN_PROPOSAL_STATUS,
@@ -17,8 +20,10 @@ import {
 /* ═══════════════════════════════════════════════════════════════ */
 export function ReportsPage({ onNavigate = () => {}, campaignFlow = null, setCampaignFlow = () => {} }) {
   const { t } = useI18n();
-  const [proposalStatusPeriod, setProposalStatusPeriod] = useState("30d");
   const [winRateData, setWinRateData] = useState({ rate: null, detail: "" });
+  // RF-VTA-10: reporte de pipeline (conversión, tiempo de cierre, valor por moneda) y su período.
+  const [pipelineDays, setPipelineDays] = useState(null);
+  const pipeline = usePipelineReport(pipelineDays);
   const [reportsState, setReportsState] = useState({
     overview: null,
     dashboard: null,
@@ -61,8 +66,7 @@ export function ReportsPage({ onNavigate = () => {}, campaignFlow = null, setCam
     loadReports();
   }, []);
 
-  const fetchWinRate = async (period) => {
-    const days = period === "30d" ? 30 : period === "90d" ? 90 : null;
+  const fetchWinRate = async (days) => {
     const params = days ? `?days=${days}` : "";
     const res = await api.get(`/reports/overview${params}`).then((r) => r.data);
     setWinRateData({
@@ -71,9 +75,10 @@ export function ReportsPage({ onNavigate = () => {}, campaignFlow = null, setCam
     });
   };
 
-  const handlePeriodChange = (period) => {
-    setProposalStatusPeriod(period);
-    fetchWinRate(period);
+  // Un solo selector de período para toda la pantalla: el del reporte de Pipeline también recalcula el win rate de oportunidades.
+  const handlePeriodChange = (days) => {
+    setPipelineDays(days);
+    fetchWinRate(days);
   };
 
   useEffect(() => {
@@ -283,9 +288,11 @@ export function ReportsPage({ onNavigate = () => {}, campaignFlow = null, setCam
 
       {!reportsState.loading && !reportsState.error && (
         <>
+          <PipelineReport days={pipelineDays} onDaysChange={handlePeriodChange} pipeline={pipeline} />
+
           <div className="grid grid-cols-1 gap-1.5 md:grid-cols-2 xl:grid-cols-4">
             <KpiCard icon={BriefIcon} label={t("reports.totalProposalsGenerated")} value={Number(overviewKpis.proposalsSent) || 0} sub={t("reports.backendData")} color="bg-indigo-50 text-indigo-600" onClick={() => onNavigate("content", { typeFilter: "Proposals" })} />
-            <KpiCard icon={TrendIcon} label={t("reports.totalProposalValue")} value={formatCompactCurrency(totalProposalValue)} sub={t("reports.fromProposals")} color="bg-green-50 text-green-600" onClick={() => onNavigate("content", { typeFilter: "Proposals" })} />
+            <KpiCard icon={TrendIcon} label={t("reports.totalProposalValue")} value={pipeline.report ? formatMoneyByCurrency(pipeline.report.value.total) : formatCompactCurrency(totalProposalValue)} sub={t("reports.fromProposals")} color="bg-green-50 text-green-600" onClick={() => onNavigate("content", { typeFilter: "Proposals" })} />
             <KpiCard icon={BookIcon} label={t("reports.bookConceptsCreated")} value={Number(overviewKpis.totalBooks) || 0} sub={t("reports.fromBooks")} color="bg-purple-50 text-purple-600" onClick={() => onNavigate("books")} />
             <KpiCard
               icon={TargetIcon}
@@ -308,17 +315,6 @@ export function ReportsPage({ onNavigate = () => {}, campaignFlow = null, setCam
                     </div>
                     <p className="mt-1 text-xs text-gray-400">{t("reports.distributionPipelineValue")}</p>
                   </div>
-                  <div className="flex rounded-lg bg-gray-100 p-1">
-                    {["30d", "90d", "all"].map((period) => (
-                      <button
-                        key={period}
-                        onClick={() => handlePeriodChange(period)}
-                        className={`rounded-md px-3 py-1 text-xs font-medium transition-colors ${proposalStatusPeriod === period ? "bg-white text-indigo-700 shadow-sm" : "text-gray-500 hover:text-gray-700"}`}
-                      >
-                        {period === "all" ? t("reports.all") : period}
-                      </button>
-                    ))}
-                  </div>
                 </div>
 
                 <div className="grid grid-cols-1 items-center gap-2.5 md:grid-cols-[170px_1fr]">
@@ -327,7 +323,6 @@ export function ReportsPage({ onNavigate = () => {}, campaignFlow = null, setCam
                     <div className="absolute inset-5 flex flex-col items-center justify-center rounded-full bg-white">
                       <p className="text-3xl font-bold leading-none text-gray-900">{totalProposalCount}</p>
                       <p className="mt-1 text-[10px] font-semibold uppercase tracking-wide text-gray-400">{t("reports.proposals")}</p>
-                      <p className="mt-2 text-xs font-bold text-indigo-600">{formatCompactCurrency(totalProposalValue)}</p>
                     </div>
                   </div>
 
@@ -348,7 +343,6 @@ export function ReportsPage({ onNavigate = () => {}, campaignFlow = null, setCam
                             <div className="h-full rounded-full" style={{ width: `${row.percent}%`, background: row.fill }} />
                           </div>
                           <span className="w-8 text-right text-[11px] font-medium text-gray-400">{row.percent}%</span>
-                          <span className="w-12 text-right text-[11px] font-medium text-gray-500">{formatCompactCurrency(row.totalValue)}</span>
                         </div>
                       </div>
                     ))}

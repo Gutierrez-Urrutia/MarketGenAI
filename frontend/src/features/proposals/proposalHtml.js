@@ -1,7 +1,7 @@
 import { BRAND } from "@/config/brand";
 import { generatedSectionsToHtml } from "@/utils/proposalSections";
 import { getProposalCopy } from "@/features/proposals/proposalCopy";
-import { formatUsd, normalizeProposalDocument } from "@/features/proposals/proposalDocument";
+import { formatMoney, normalizeProposalDocument } from "@/features/proposals/proposalDocument";
 import { escapeHtml } from "@/utils/htmlText";
 
 export const PROPOSAL_PDF_PAGE_BREAK_CSS = `
@@ -38,9 +38,9 @@ export function proposalAdjustmentRows(doc, copy) {
   const adjustments = doc.pricingAdjustments;
   if (!adjustments?.show) return [];
   return [
-    [copy.subtotal, formatUsd(adjustments.subtotal)],
-    adjustments.discountAmount > 0 ? [copy.discount, `- ${formatUsd(adjustments.discountAmount)}`] : null,
-    adjustments.taxAmount > 0 ? [copy.taxes, formatUsd(adjustments.taxAmount)] : null,
+    [copy.subtotal, formatMoney(adjustments.subtotal, doc.currency)],
+    adjustments.discountAmount > 0 ? [copy.discount, `- ${formatMoney(adjustments.discountAmount, doc.currency)}`] : null,
+    adjustments.taxAmount > 0 ? [copy.taxes, formatMoney(adjustments.taxAmount, doc.currency)] : null,
   ].filter(Boolean);
 }
 
@@ -79,8 +79,8 @@ export function proposalDocumentToHtml(proposal = {}) {
       <td>${escapeHtml(item.service)}</td>
       <td>${escapeHtml(item.description)}</td>
       <td>${escapeHtml(item.quantity)}</td>
-      <td>${escapeHtml(formatUsd(item.unitPrice))}</td>
-      <td>${escapeHtml(formatUsd(item.subtotal))}</td>
+      <td>${escapeHtml(formatMoney(item.unitPrice, item.currency || doc.currency))}</td>
+      <td>${escapeHtml(formatMoney(item.subtotal, item.currency || doc.currency))}</td>
     </tr>
   `).join("");
   const clientDetails = proposalClientDetails(doc, copy);

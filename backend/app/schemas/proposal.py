@@ -7,7 +7,35 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, FrozenSet, List, Literal, Optional, Union
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, EmailStr, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, EmailStr, Field, model_validator
+
+Currency = Literal["USD", "CLP"]
+
+
+def line_item_currencies(line_items: Any) -> set[str]:
+    """Explicit currencies among the lines (models or raw dicts). Lines without
+    one are legacy / manual rows and take the proposal's currency."""
+    found: set[str] = set()
+    if not isinstance(line_items, (list, tuple)):
+        return found
+    for item in line_items:
+        value = item.get("currency") if isinstance(item, dict) else getattr(item, "currency", None)
+        if value:
+            found.add(str(value).upper())
+    return found
+
+
+def ensure_single_currency(line_items: Any, proposal_currency: Optional[str] = None) -> Optional[str]:
+    """A proposal uses one currency, with no conversion. Returns the currency the
+    lines point to (or None) and raises ValueError when they disagree."""
+    currencies = line_item_currencies(line_items)
+    if proposal_currency:
+        currencies.add(str(proposal_currency).upper())
+    if len(currencies) > 1:
+        raise ValueError(
+            "A proposal can only use one currency: found " + ", ".join(sorted(currencies)) + "."
+        )
+    return next(iter(currencies), None)
 
 
 class ProposalStatus(str, Enum):
@@ -24,6 +52,44 @@ class ProposalStatus(str, Enum):
 
 
 PROPOSAL_STATUS_VALUES: FrozenSet[str] = frozenset(s.value for s in ProposalStatus)
+
+# RF-VTA-06 (etapa diferida): documento firmado adjunto a la propuesta.
+SIGNED_DOCUMENT_EXTENSIONS: FrozenSet[str] = frozenset({".pdf"})
+MAX_SIGNED_DOCUMENT_BYTES: int = 10 * 1024 * 1024
+SIGNED_DOCUMENT_MAGIC: bytes = b"%PDF-"
+SIGNED_DOCUMENT_LINK_SECONDS: int = 300   # vigencia del enlace temporal para ver el documento firmado
+
+
+# RF-VTA-11: campos que escribe solo el servidor. PUT y POST de propuestas aceptan campos extra (el frontend manda
+# estructura, etiquetas, filas de precios…), así que sin esta lista un cliente podía ceder la propuesta a otro usuario
+# (userId), inventar la ruta del documento firmado o el estado del CRM, apuntar filePath a otro archivo o falsificar
+# el historial (versions, versionCounter, versionHash) (RF11-D-009 y RF11-D-013).
+VERSION_INTERNAL_FIELDS = ("versions", "versionCounter", "versionHash")
+SERVER_ONLY_FIELDS = VERSION_INTERNAL_FIELDS + (
+    "id", "userId", "createdAt", "updatedAt", "crmSync", "filePath", "downloadUrl",
+    "signedDocumentPath", "signedDocumentUrl", "signedDocumentName", "signedDocumentUploadedAt", "hasSignedDocument",
+    "clientIndustry", "clientSize",  # RF-VTA-03: copia del perfil del cliente que toma el servidor al generar
+    "statusDates",  # RF-VTA-10: fecha de cada cambio de estado, la escribe solo el servidor
+)
+
+
+def strip_server_only_fields(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Quita de lo que manda el cliente los campos que solo escribe el servidor (en el mismo diccionario)."""
+    for name in SERVER_ONLY_FIELDS:
+        data.pop(name, None)
+    return data
+VERSION_LABEL_MAX = 200
+# Una versión es un documento de Firestore (límite 1 MiB con sus metadatos): por encima de esto se rechaza con un error claro.
+VERSION_MAX_BYTES = 1_000_000
+
+
+def public_proposal(doc: Dict[str, Any]) -> Dict[str, Any]:
+    """Una propuesta como la ve el cliente: sin la ruta ni la URL permanente del documento firmado
+    (abren el archivo sin sesión); en su lugar `hasSignedDocument`. El enlace se pide aparte, con
+    sesión, a GET /proposals/{id}/signed-document/link y dura SIGNED_DOCUMENT_LINK_SECONDS."""
+    out = {k: v for k, v in doc.items() if k not in ("signedDocumentUrl", "signedDocumentPath")}
+    out["hasSignedDocument"] = bool(doc.get("signedDocumentPath") or doc.get("signedDocumentUrl"))
+    return out
 
 # Transiciones permitidas. Todo lo que no está aquí es inválido, incluido
 # misma→misma. rechazada→en_negociacion (reapertura) además exige ser admin.
@@ -139,6 +205,14 @@ class ProposalCreate(BaseModel):
     description: Optional[str] = None
     content:     Optional[str] = None
     bookId:      Optional[str] = None
+    customerId:  Optional[str] = None   # RF-VTA-03: cliente propio al que se vincula
+    currency:    Optional[Currency] = None
+
+    @model_validator(mode="after")
+    def _single_currency(self):
+        extra = self.model_extra or {}
+        ensure_single_currency(extra.get("lineItems") or extra.get("line_items"), self.currency)
+        return self
 
 
 class ProposalUpdate(BaseModel):
@@ -152,6 +226,13 @@ class ProposalUpdate(BaseModel):
     description: Optional[str] = None
     status:      Optional[str] = None
     content:     Optional[str] = None   # HTML/markdown body
+    currency:    Optional[Currency] = None
+
+    @model_validator(mode="after")
+    def _single_currency(self):
+        extra = self.model_extra or {}
+        ensure_single_currency(extra.get("lineItems") or extra.get("line_items"), self.currency)
+        return self
 
 
 class ProposalLineItem(BaseModel):
@@ -162,6 +243,12 @@ class ProposalLineItem(BaseModel):
     description: Optional[str] = None
     qty:         Optional[float] = Field(None, validation_alias=AliasChoices("qty", "quantity"))
     unitPrice:   Optional[float] = Field(None, validation_alias=AliasChoices("unitPrice", "unit_price"))
+    # Copy of the catalog service chosen in step 2 (RF-VTA-02); all optional so
+    # manual rows and proposals created before the catalog keep working.
+    serviceId:   Optional[str] = None
+    unit:        Optional[str] = None
+    currency:    Optional[Currency] = None
+    conditions:  Optional[str] = None
 
 
 class GenerateProposalRequest(BaseModel):
@@ -179,16 +266,42 @@ class GenerateProposalRequest(BaseModel):
     style:               str = "professional"
     language:            str = "es"
     customPrompt:        Optional[str] = None
+    customerId:          Optional[str] = None   # RF-VTA-03: cliente propio al que se vincula
+    currency:            Currency = "USD"
     sync:                bool = False
+
+    @model_validator(mode="after")
+    def _single_currency(self):
+        explicit = "currency" in self.model_fields_set
+        found = ensure_single_currency(self.lineItems, self.currency if explicit else None)
+        if found and not explicit:
+            self.currency = found  # type: ignore[assignment]
+        return self
 
 
 class ProposalVersionCreate(BaseModel):
     """Save a new version/snapshot of the proposal content."""
     model_config = ConfigDict(extra="allow")
 
-    title:   Optional[str] = None
+    title:   Optional[str] = Field(None, max_length=200)
     content: Optional[str] = None
-    label:   Optional[str] = None
+    label:   Optional[str] = Field(None, max_length=VERSION_LABEL_MAX)
+
+
+class ProposalVersionOut(BaseModel):
+    """RF-VTA-11: una versión guardada (fecha, autor y contenido). `content` y los
+    demás campos del snapshot solo se incluyen en el detalle, no en el listado."""
+    model_config = ConfigDict(extra="allow")
+
+    id:          str
+    version:     int
+    label:       Optional[str] = None
+    source:      Optional[str] = None
+    title:       Optional[str] = None
+    authorId:    Optional[str] = None
+    authorName:  Optional[str] = None
+    authorEmail: Optional[str] = None
+    createdAt:   Optional[datetime] = None
 
 
 class SendToCrmRequest(BaseModel):
@@ -207,6 +320,11 @@ class ProposalOut(BaseModel):
     proposal documents."""
     model_config = ConfigDict(extra="allow", from_attributes=True)
 
+    @model_validator(mode="before")
+    @classmethod
+    def _hide_signed_document_location(cls, data: Any) -> Any:
+        return public_proposal(data) if isinstance(data, dict) else data
+
     id:          str
     title:       Optional[str] = None
     clientName:  Optional[str] = None
@@ -219,6 +337,9 @@ class ProposalOut(BaseModel):
     userId:      Optional[str] = None
     bookId:      Optional[str] = None
     downloadUrl: Optional[str] = None
+    hasSignedDocument:        bool = False
+    signedDocumentName:       Optional[str] = None
+    signedDocumentUploadedAt: Optional[datetime] = None
     createdAt:   Optional[datetime] = None
     updatedAt:   Optional[datetime] = None
 

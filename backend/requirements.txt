@@ -34,6 +34,12 @@ storage3==0.9.0
 
 # ── Celery + Redis ────────────────────────────────────────────────────────────
 celery[redis]==5.4.0
+# Dependencias de Celery fijadas: sin esto pip instala la kombu mas nueva (5.7.0 exige redis-py>=6.1.0 y el worker
+# muere con VersionMismatch). Son las versiones con las que se desarrollo y probo el proyecto.
+kombu==5.6.2
+amqp==5.3.1
+billiard==4.2.4
+vine==5.1.0
 redis==5.2.0
 flower==2.0.1
 

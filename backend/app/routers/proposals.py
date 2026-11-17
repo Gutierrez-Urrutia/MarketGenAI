@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import re
@@ -15,8 +16,9 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Pt, RGBColor
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import FileResponse, JSONResponse
+from jose import JWTError, jwt
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import LETTER
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
@@ -41,17 +43,28 @@ from app.schemas.proposal import (
     GenerateProposalRequest,
     ProposalExportRequest,
     ProposalCreate,
+    MAX_SIGNED_DOCUMENT_BYTES,
+    SIGNED_DOCUMENT_LINK_SECONDS,
     PROPOSAL_STATUS_VALUES,
     ProposalOut,
     ProposalStatus,
     ProposalUpdate,
     ProposalVersionCreate,
+    ProposalVersionOut,
+    strip_server_only_fields,
+    VERSION_MAX_BYTES,
     SendToCrmRequest,
+    SIGNED_DOCUMENT_EXTENSIONS,
+    SIGNED_DOCUMENT_MAGIC,
     invalid_status_detail,
+    public_proposal,
 )
-from app.services.firestore_service import proposals_repo, jobs_repo, settings_repo
+from app.services.auth_service import JWT_ALGORITHM
+from app.services.firestore_service import customers_repo, proposals_repo, jobs_repo, settings_repo
 from app.services import crm_service, deepseek_service
-from app.workers.tasks.proposal_tasks import _lang_code, format_usd
+from app.services.storage_service import storage_service
+from app.services.template_service import classification_labels
+from app.workers.tasks.proposal_tasks import _lang_code, format_money, format_usd
 from app.services.crm_service import (
     CrmAuthError,
     CrmError,
@@ -108,6 +121,90 @@ async def _get_proposal_for_user(proposal_id: str, user_id: str) -> dict:
     return proposal
 
 
+async def _resolve_customer(customer_id: Optional[str], user: CurrentUser) -> Optional[dict]:
+    """RF-VTA-03: el cliente al que se vincula la propuesta debe existir y ser del usuario
+    (404 si no existe, 403 si es de otro). Sin `customerId` no hay vínculo."""
+    if not customer_id:
+        return None
+    customer = await customers_repo.get(customer_id)
+    if not customer:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Customer not found.")
+    if customer.get("userId") != user.sub:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied.")
+    return customer
+
+
+def _customer_copy(customer: Optional[dict]) -> dict:
+    """Lo que la propuesta guarda del cliente: el vínculo y una copia del perfil al generar (RN-09)."""
+    if not customer:
+        return {}
+    return {
+        "customerId": customer["id"],
+        "clientIndustry": customer.get("industry"),
+        "clientSize": customer.get("size"),
+    }
+
+
+def _apply_customer_options(options: dict, customer: Optional[dict]) -> None:
+    """El perfil que ve el worker sale solo del cliente guardado: lo que mande el navegador se descarta."""
+    for key in ("customerId", "clientIndustry", "clientSize"):
+        options.pop(key, None)
+    options.update(_customer_copy(customer))
+
+
+async def _customer_for_generation(proposal: dict, requested_id: Optional[str], user: CurrentUser) -> Optional[dict]:
+    """Cliente de una propuesta ya creada. Una vez vinculada no se puede cambiar de cliente (409);
+    si el cuerpo no trae `customerId` se conserva el vínculo existente."""
+    linked = proposal.get("customerId")
+    if linked and requested_id and requested_id != linked:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="This proposal is already linked to another customer.")
+    return await _resolve_customer(linked or requested_id, user)
+
+
+async def _apply_proposal_template(proposal: dict, options: dict, user: CurrentUser) -> None:
+    """RF-VTA-07: con `templateId` en el cuerpo, aplica la plantilla a la propuesta y deja en
+    `options` el contenido y las condiciones comerciales ya renderizados para el worker.
+    Lo que el cliente mande como templateContent/commercialTerms se descarta: el texto
+    siempre sale de la plantilla guardada."""
+    options.pop("templateContent", None)
+    options.pop("commercialTerms", None)
+    template_id = options.get("templateId")
+    if not template_id:
+        # Regenerada sin plantilla: que no vuelva a aparecer la anterior al reabrirla.
+        if proposal.get("templateId"):
+            await proposals_repo.update(proposal["id"], {"templateId": None, "templateVariables": None})
+        return
+    variables = options.get("templateVariables") or {}
+    if not isinstance(variables, dict):
+        raise HTTPException(status_code=422, detail="templateVariables must be an object.")
+
+    # Import diferido: routers/templates.py importa helpers de este módulo.
+    from app.routers.templates import render_template_for_user
+    from app.schemas.template import ApplyTemplateRequest
+
+    # El título, el cliente y el total pueden venir en esta solicitud y aún no estar guardados
+    # en la propuesta: la plantilla debe usar los mismos valores que el worker (RF07-D-002).
+    overrides = {
+        key: options[key]
+        for key in ("title", "clientName", "totalAmount")
+        if options.get(key) not in (None, "")
+    }
+    applied = await render_template_for_user(
+        template_id,
+        ApplyTemplateRequest(proposalId=proposal["id"], variables=variables, language=options.get("language")),
+        user,
+        proposal_overrides=overrides,
+    )
+    options["templateContent"] = applied.rendered
+    options["commercialTerms"] = applied.commercialTerms
+    await proposals_repo.update(proposal["id"], {
+        "templateId": template_id,
+        "templateVariables": variables,  # para regenerar con los mismos valores
+        "serviceType": proposal.get("serviceType") or applied.serviceType,
+        "industry": proposal.get("industry") or applied.industry,
+    })
+
+
 _EXPORT_LABELS = {
     "es": {
         "proposal": "PROPUESTA COMERCIAL", "total": "TOTAL", "issued": "FECHA DE EMISIÓN", "valid": "VÁLIDA HASTA", "prepared": "PREPARADO POR", "reference": "REFERENCIA",
@@ -153,6 +250,21 @@ def _format_usd(value, not_calculated: str = "Not calculated", lang: str = "en")
     return format_usd(amount, not_calculated, lang)
 
 
+def _format_money(value, not_calculated: str = "Not calculated", lang: str = "en", currency: str = "USD") -> str:
+    try:
+        amount = float(value)
+    except (TypeError, ValueError):
+        return not_calculated
+    return format_money(amount, not_calculated, lang, currency)
+
+
+def _resolve_currency(proposal: dict) -> str:
+    """Proposals created before RF-VTA-02 have no currency: they were always USD."""
+    structured = proposal.get("structured_content") or proposal.get("structuredContent") or {}
+    currency = str(proposal.get("currency") or structured.get("currency") or "USD").upper()
+    return currency if currency in ("USD", "CLP") else "USD"
+
+
 def _resolve_total_amount(proposal: dict):
     """The frontend has saved this under totalAmount, total_amount, or nested
     in structured(_)Content.totalAmount depending on which flow wrote it —
@@ -191,6 +303,8 @@ def _proposal_cover_fields(proposal: dict) -> dict:
     valid_until = issued_on + timedelta(days=30)
     lang = _lang_code(proposal.get("language") or structured.get("language"))
     labels = _EXPORT_LABELS[lang]
+    # RF-VTA-07: servicio e industria elegidos al crear la propuesta (no heurísticas).
+    classification = classification_labels(proposal.get("serviceType"), proposal.get("industry"), lang)
 
     return {
         "client": (
@@ -201,11 +315,11 @@ def _proposal_cover_fields(proposal: dict) -> dict:
             or ""
         ),
         "contact": structured.get("contact") or proposal.get("contact") or "",
-        # Industria y línea de servicio salían de heurísticas de la plantilla del frontend
-        # ("B2B Operations", "NoonDalton Standard Proposal"): no son datos del cliente.
-        "industry": "",
-        "service_line": "",
-        "total_amount_display": _format_usd(total_amount, labels["not_calculated"], lang),
+        # Antes salían de heurísticas del frontend ("B2B Operations", "NoonDalton Standard
+        # Proposal"); ahora solo se muestran si la propuesta trae serviceType/industry válidos.
+        "industry": classification["industria"] or "",
+        "service_line": classification["servicio"] or "",
+        "total_amount_display": _format_money(total_amount, labels["not_calculated"], lang, _resolve_currency(proposal)),
         "issued_on": _localized_date(issued_on, lang),
         "valid_until": _localized_date(valid_until, lang),
         "prepared_by": proposal.get("issuedBy") or "—",
@@ -931,6 +1045,8 @@ async def create_proposal(
     user: CurrentUser = Depends(get_current_user),
 ):
     data = body.model_dump(exclude_none=True)
+    strip_server_only_fields(data)   # RF-VTA-11: dueño, documento firmado, CRM, archivo e historial los escribe solo el servidor
+    customer = await _resolve_customer(data.pop("customerId", None), user)   # RF-VTA-03
 
     client_name = (
         data.get("clientName")
@@ -962,6 +1078,8 @@ async def create_proposal(
         "proposal_status": ProposalStatus.borrador.value,
         "userId": user.sub,
     }
+    if customer:
+        proposal["customerId"] = customer["id"]   # la copia del perfil la toma el servidor al generar
     if data.get("opportunity_id"):
         proposal["opportunity_id"] = data["opportunity_id"]
     return await proposals_repo.create(proposal, doc_id=str(uuid.uuid4()))
@@ -1001,6 +1119,7 @@ async def generate_proposal_draft(
         or extra.get("proposal_description")
         or ""
     )
+    customer = await _resolve_customer(body.customerId, user)   # RF-VTA-03: antes de crear, para no dejar propuestas huérfanas
 
     proposal = await proposals_repo.create({
         "title": title,
@@ -1013,13 +1132,18 @@ async def generate_proposal_draft(
         "proposal_status": ProposalStatus.borrador.value,
         "language": body.language,
         "customPrompt": body.customPrompt,
+        "currency": body.currency,
         "userId": user.sub,
+        **_customer_copy(customer),
     }, doc_id=str(uuid.uuid4()))
 
     options = body.model_dump(exclude_none=True)
     if extra:
         options.update(extra)
     options["userId"] = user.sub  # tras extra: el cliente no puede suplantarlo; el worker lo usa para recuperar el contexto RAG del usuario
+    _apply_customer_options(options, customer)
+    options["versionAuthor"] = _version_author(user)  # RF-VTA-11: autor de las versiones que deja la generación (tampoco suplantable)
+    await _apply_proposal_template(proposal, options, user)
 
     job = await jobs_repo.create_job(
         "proposal_generation",
@@ -1075,6 +1199,7 @@ async def generate_proposal_by_id(
     user: CurrentUser = Depends(get_current_user),
 ):
     proposal = await _get_proposal_for_user(proposal_id, user.sub)
+    customer = await _customer_for_generation(proposal, body.customerId, user)   # RF-VTA-03
 
     title = body.title or proposal.get("title") or "AI Marketing Proposal"
     client_name = body.clientName or proposal.get("clientName") or "Demo Client"
@@ -1084,6 +1209,13 @@ async def generate_proposal_by_id(
     if body.model_extra:
         options.update(body.model_extra)
     options["userId"] = user.sub  # tras extra: el cliente no puede suplantarlo; el worker lo usa para recuperar el contexto RAG del usuario
+    options["versionAuthor"] = _version_author(user)  # RF-VTA-11: la regeneración deja el contenido anterior en el historial, a nombre de quien la pidió
+    _apply_customer_options(options, customer)
+    if customer:
+        # La copia del perfil se toma cada vez que se genera: la propuesta ya generada conserva
+        # lo que tenía hasta que alguien la regenera (RN-09).
+        await proposals_repo.update(proposal_id, _customer_copy(customer))
+    await _apply_proposal_template(proposal, options, user)
 
     job = await jobs_repo.create_job(
         "proposal_generation",
@@ -1126,6 +1258,28 @@ async def generate_proposal_by_id(
             raise
 
 
+async def _auto_snapshot(before: dict, after: dict, changes: dict, user: CurrentUser) -> None:
+    """RF-VTA-11: al guardar cambios de contenido, deja constancia en el historial.
+    Si aún no había versiones, primero guarda el estado previo (para poder volver a
+    él). Un fallo aquí no debe impedir el guardado de la propuesta."""
+    if not any(f in changes for f in proposals_repo.VERSION_FIELDS):
+        return
+    proposal_id = before.get("id")
+    author = _version_author(user)
+    try:
+        if not before.get("versionCounter") and not before.get("versions"):
+            await proposals_repo.create_version(
+                proposal_id, proposals_repo.version_snapshot(before),
+                source="auto", label="Initial", skip_if_unchanged=True, **author,
+            )
+        await proposals_repo.create_version(
+            proposal_id, proposals_repo.version_snapshot(after),
+            source="auto", skip_if_unchanged=True, **author,
+        )
+    except Exception:
+        logger.warning("No se pudo guardar la versión automática de %s", proposal_id, exc_info=True)
+
+
 @router.put("/{proposal_id}", response_model=ProposalOut)
 async def update_proposal(
     proposal_id: str,
@@ -1139,12 +1293,16 @@ async def update_proposal(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="No fields to update."
         )
+    strip_server_only_fields(update_data)   # RF-VTA-11: dueño, documento firmado, CRM, archivo e historial los escribe solo el servidor
+    update_data.pop("customerId", None)     # RF-VTA-03: el vínculo con el cliente no se cambia por edición
     # El estado comercial solo cambia por PATCH /status (transiciones + auditoría).
     # `status` (ciclo de generación con IA) sí pasa: el frontend lo usa.
     update_data.pop("proposal_status", None)
     if not update_data:
         return proposal
-    return await proposals_repo.update(proposal_id, update_data)
+    updated = await proposals_repo.update(proposal_id, update_data)
+    await _auto_snapshot(proposal, updated, update_data, user)
+    return updated
 
 
 @router.patch("/{proposal_id}/status")
@@ -1186,49 +1344,268 @@ async def update_proposal_status(
     if outcome.get("error"):
         error = outcome["error"]
         raise HTTPException(status_code=error.status_code, detail=error.detail)
-    return outcome["proposal"]
+    return public_proposal(outcome["proposal"])
+
+
+@router.post("/{proposal_id}/signed-document", response_model=ProposalOut)
+@limiter.limit("20/minute")
+async def upload_signed_document(
+    request: Request,
+    proposal_id: str,
+    file: UploadFile = File(...),
+    user: CurrentUser = Depends(get_current_user),
+):
+    """RF-VTA-06 (etapa diferida): adjunta el documento firmado. Se puede subir o
+    reemplazar en cualquier estado, incluida `firmada` (el PATCH /status es lo
+    único que exige que ya exista un adjunto para llegar a `firmada`)."""
+    proposal = await _get_proposal_for_user(proposal_id, user.sub)
+
+    filename = file.filename or "documento.pdf"
+    ext = Path(filename).suffix.lower()
+    if ext not in SIGNED_DOCUMENT_EXTENSIONS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Formato no soportado. Solo se acepta: {', '.join(sorted(SIGNED_DOCUMENT_EXTENSIONS))}.",
+        )
+    data = await file.read(MAX_SIGNED_DOCUMENT_BYTES + 1)
+    if len(data) > MAX_SIGNED_DOCUMENT_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"El archivo supera el tamaño máximo permitido ({MAX_SIGNED_DOCUMENT_BYTES // (1024 * 1024)} MB).",
+        )
+    # La extensión la elige quien sube el archivo: se comprueba también que el contenido sea un PDF.
+    if not data.lstrip(b"\x00\t\n\r\x0c ").startswith(SIGNED_DOCUMENT_MAGIC):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="El archivo no es un PDF válido. Adjunta el documento firmado en formato PDF.",
+        )
+
+    old_path = proposal.get("signedDocumentPath")
+    if old_path:
+        await storage_service.delete_file(old_path)
+
+    storage_path = storage_service.proposal_path(proposal_id, f"signed/{uuid.uuid4().hex}.pdf")
+    await storage_service.upload_bytes(data, storage_path, "application/pdf")
+
+    # No se guarda la URL del archivo: abriría el documento sin sesión. Se pide un enlace temporal aparte.
+    return await proposals_repo.update(proposal_id, {
+        "signedDocumentPath": storage_path,
+        "signedDocumentUrl": None,
+        "signedDocumentName": filename,
+        "signedDocumentUploadedAt": datetime.now(timezone.utc).isoformat(),
+    })
+
+
+@router.delete("/{proposal_id}/signed-document", response_model=ProposalOut)
+@limiter.limit("20/minute")
+async def delete_signed_document(request: Request, proposal_id: str, user: CurrentUser = Depends(get_current_user)):
+    """Quita el documento firmado adjunto, para corregir un archivo subido por
+    error antes de reemplazarlo. No se permite en una propuesta ya `firmada`:
+    eso la dejaría firmada sin el adjunto que sustenta ese estado — para
+    corregirla ahí, hay que subir el reemplazo directo (POST), sin pasar por
+    un estado intermedio sin documento."""
+    proposal = await _get_proposal_for_user(proposal_id, user.sub)
+    if proposal.get("proposal_status") == "firmada":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="No puedes quitar el documento de una propuesta ya firmada. Sube el reemplazo directamente.",
+        )
+    storage_path = proposal.get("signedDocumentPath")
+    if storage_path:
+        await storage_service.delete_file(storage_path)
+    return await proposals_repo.update(proposal_id, {
+        "signedDocumentPath": None,
+        "signedDocumentUrl": None,
+        "signedDocumentName": None,
+        "signedDocumentUploadedAt": None,
+    })
+
+
+@router.get("/{proposal_id}/signed-document/link")
+@limiter.limit("60/minute")
+async def get_signed_document_link(
+    request: Request,
+    proposal_id: str,
+    user: CurrentUser = Depends(get_current_user),
+):
+    """Enlace temporal (SIGNED_DOCUMENT_LINK_SECONDS) para ver el documento firmado. Solo el dueño lo pide;
+    el enlace no sirve para otra propuesta ni después de reemplazar el documento."""
+    proposal = await _get_proposal_for_user(proposal_id, user.sub)
+    storage_path = proposal.get("signedDocumentPath")
+    if not storage_path:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Esta propuesta no tiene documento firmado.")
+    if (Path("generated_files") / storage_path).is_file():
+        # Respaldo local (Supabase no disponible al subir): enlace propio con token firmado.
+        token = jwt.encode(
+            {"typ": "signed-document", "pid": proposal_id, "path": storage_path,
+             "exp": datetime.now(timezone.utc) + timedelta(seconds=SIGNED_DOCUMENT_LINK_SECONDS)},
+            settings.app_secret_key, algorithm=JWT_ALGORITHM,
+        )
+        url = f"/api/v1/proposals/{proposal_id}/signed-document/file?token={token}"
+    else:
+        url = await storage_service.get_signed_url(storage_path, SIGNED_DOCUMENT_LINK_SECONDS)
+        if url.startswith("/api/v1/assets/local/"):   # no pudo firmar: ese respaldo abre sin sesión
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="No se pudo generar el enlace al documento firmado.")
+    return {"url": url, "expiresIn": SIGNED_DOCUMENT_LINK_SECONDS, "name": proposal.get("signedDocumentName")}
+
+
+@router.get("/{proposal_id}/signed-document/file")
+async def download_signed_document(proposal_id: str, token: str = Query(...)):
+    """Sirve el documento firmado guardado en el respaldo local a quien traiga un enlace temporal válido."""
+    invalid = HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Enlace inválido o vencido.")
+    try:
+        claims = jwt.decode(token, settings.app_secret_key, algorithms=[JWT_ALGORITHM])
+    except JWTError:
+        raise invalid
+    if claims.get("typ") != "signed-document" or claims.get("pid") != proposal_id:
+        raise invalid
+    proposal = await proposals_repo.get(proposal_id)
+    if not proposal or proposal.get("signedDocumentPath") != claims.get("path"):
+        raise invalid   # el documento se reemplazó o se quitó: el enlace viejo ya no sirve
+    base = Path("generated_files").resolve()
+    target = (base / claims["path"]).resolve()
+    if not str(target).startswith(str(base)) or not target.is_file():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found.")
+    return FileResponse(str(target), media_type="application/pdf", content_disposition_type="inline")
 
 
 @router.delete("/{proposal_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_proposal(proposal_id: str, user: CurrentUser = Depends(get_current_user)):
-    await _get_proposal_for_user(proposal_id, user.sub)
+    proposal = await _get_proposal_for_user(proposal_id, user.sub)
+    # Que no quede en el almacenamiento un contrato firmado sin propuesta.
+    if proposal.get("signedDocumentPath"):
+        await storage_service.delete_file(proposal["signedDocumentPath"])
     await proposals_repo.delete(proposal_id)
+    # RF-VTA-11: Firestore no borra la subcolección con el documento; que no queden versiones de una propuesta eliminada.
+    try:
+        await proposals_repo.delete_versions(proposal_id)
+    except Exception:
+        logger.warning("No se pudieron borrar las versiones de la propuesta %s", proposal_id, exc_info=True)
     return None
+
+
+def _version_author(user: CurrentUser) -> dict:
+    return {
+        "author_id": user.sub,
+        "author_name": user.name or user.preferred_username or user.email,
+        "author_email": user.email,
+    }
+
+
+# RF-VTA-11: campos pesados que solo viajan en el detalle de una versión.
+_VERSION_HEAVY_FIELDS = ("content", "structured_content")
+
+
+async def _save_version(proposal_id: str, snapshot: dict, **kwargs):
+    """Guarda una versión; si Firestore sigue abortando la transacción tras los reintentos (muchos guardados
+    simultáneos de la misma propuesta) responde 503 con instrucción de reintentar, no un 500 genérico."""
+    try:
+        return await proposals_repo.create_version(proposal_id, snapshot, **kwargs)
+    except ValueError as exc:
+        if "Failed to commit transaction" not in str(exc):
+            raise
+        logger.warning("Versión de %s no guardada por contención de transacciones", proposal_id)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="No se pudo guardar la versión en este momento (se estaban guardando otras). Inténtalo de nuevo.",
+            headers={"Retry-After": "1"},
+        )
 
 
 @router.get("/{proposal_id}/versions")
 async def list_proposal_versions(proposal_id: str, user: CurrentUser = Depends(get_current_user)):
+    """Historial de versiones (más recientes primero), sin el contenido: usar
+    GET /versions/{version_id} para consultar una en particular."""
     proposal = await _get_proposal_for_user(proposal_id, user.sub)
-    versions = proposal.get("versions") or []
-    if not versions:
-        versions = [{
-            "version": 1,
-            "title": proposal.get("title"),
-            "content": proposal.get("content") or proposal.get("description") or "",
-            "createdAt": proposal.get("createdAt"),
-            "label": "Current",
-        }]
-    return {"items": versions, "total": len(versions)}
+    versions = await proposals_repo.list_versions(proposal_id, proposal.get("versions"))
+    items = [
+        ProposalVersionOut.model_validate(
+            {k: v for k, v in version.items() if k not in _VERSION_HEAVY_FIELDS}
+        )
+        for version in versions
+    ]
+    return {"items": items, "total": len(items)}
 
 
-@router.post("/{proposal_id}/versions")
+@router.get("/{proposal_id}/versions/{version_id}", response_model=ProposalVersionOut)
+async def get_proposal_version(
+    proposal_id: str,
+    version_id: str,
+    user: CurrentUser = Depends(get_current_user),
+):
+    proposal = await _get_proposal_for_user(proposal_id, user.sub)
+    version = await proposals_repo.get_version(proposal_id, version_id, proposal.get("versions"))
+    if version is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Version not found.")
+    return version
+
+
+@router.post("/{proposal_id}/versions", response_model=ProposalVersionOut)
+@limiter.limit("20/minute")
 async def create_proposal_version(
+    request: Request,
     proposal_id: str,
     body: ProposalVersionCreate,
     user: CurrentUser = Depends(get_current_user),
 ):
+    """Guarda a pedido una versión con autor y fecha. Si el body trae `title` o
+    `content` (edición aún no guardada) se usan; si no, el estado actual."""
     proposal = await _get_proposal_for_user(proposal_id, user.sub)
-    versions = list(proposal.get("versions") or [])
-    version = {
-        "version": len(versions) + 1,
-        "title": body.title or proposal.get("title"),
-        "content": body.content or proposal.get("content") or "",
-        "label": body.label or f"Version {len(versions) + 1}",
-        "createdAt": datetime.now(timezone.utc).isoformat(),
-    }
-    versions.append(version)
-    await proposals_repo.update(proposal_id, {"versions": versions})
+    snapshot = proposals_repo.version_snapshot(proposal)
+    if body.title is not None:
+        snapshot["title"] = body.title
+    if body.content is not None:
+        snapshot["content"] = body.content
+    if len(json.dumps(snapshot, default=str, ensure_ascii=False).encode("utf-8")) > VERSION_MAX_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="El contenido es demasiado grande para guardarlo como versión (máximo 1 MB).",
+        )
+    version = await _save_version(
+        proposal_id, snapshot, source="manual", label=body.label, **_version_author(user)
+    )
+    if version is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Proposal '{proposal_id}' not found.")
     return version
+
+
+@router.post("/{proposal_id}/versions/{version_id}/restore", response_model=ProposalOut)
+@limiter.limit("20/minute")
+async def restore_proposal_version(
+    request: Request,
+    proposal_id: str,
+    version_id: str,
+    user: CurrentUser = Depends(get_current_user),
+):
+    """Vuelve al contenido de una versión anterior. Antes guarda el estado actual
+    (para poder deshacer) y registra la restauración como una versión nueva. No toca
+    el documento firmado ni el estado comercial; se bloquea si la propuesta está firmada."""
+    proposal = await _get_proposal_for_user(proposal_id, user.sub)
+    if proposal.get("proposal_status") == "firmada":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="No puedes restaurar una versión de una propuesta ya firmada.",
+        )
+    version = await proposals_repo.get_version(proposal_id, version_id, proposal.get("versions"))
+    if version is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Version not found.")
+
+    author = _version_author(user)
+    # Sin el estado actual guardado no se pisa nada: si falla, el 503 llega antes de tocar la propuesta.
+    await _save_version(
+        proposal_id, proposals_repo.version_snapshot(proposal),
+        source="auto", label="Before restore", skip_if_unchanged=True, **author,
+    )
+    restored = proposals_repo.version_restore_fields(version)
+    updated = await proposals_repo.update(proposal_id, restored)
+    try:
+        await proposals_repo.create_version(
+            proposal_id, proposals_repo.version_snapshot(updated),
+            source="restore", label=f"Restored from v{version.get('version')}", **author,
+        )
+    except Exception:
+        logger.warning("No se pudo registrar la restauración de %s", proposal_id, exc_info=True)
+    return updated
 
 
 _CRM_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
@@ -1358,7 +1735,7 @@ async def send_proposal_to_crm(
         await _record_crm_failure(proposal_id, existing_sync, provider, detail, partial)
         raise HTTPException(status_code=502, detail=detail) from exc
 
-    return await proposals_repo.update(proposal_id, {"crmSync": crm_sync})
+    return public_proposal(await proposals_repo.update(proposal_id, {"crmSync": crm_sync}))
 
 
 @router.post("/{proposal_id}/export")

@@ -1,7 +1,7 @@
 import { BRAND } from "@/config/brand";
 import { generatedSectionsToHtml } from "@/utils/proposalSections";
 import { getProposalCopy } from "@/features/proposals/proposalCopy";
-import { formatUsd, normalizeProposalDocument } from "@/features/proposals/proposalDocument";
+import { formatMoney, normalizeProposalDocument } from "@/features/proposals/proposalDocument";
 import { additionalSectionTitle, proposalAdjustmentRows, proposalClientDetails } from "@/features/proposals/proposalHtml";
 
 function ProposalParagraphs({ text, fallback }) {
@@ -134,8 +134,8 @@ export function ProposalDocumentPreview({ proposal, className = "", exportRef = 
                     <td>{item.service}</td>
                     <td>{item.description}</td>
                     <td>{item.quantity}</td>
-                    <td>{formatUsd(item.unitPrice)}</td>
-                    <td>{formatUsd(item.subtotal)}</td>
+                    <td>{formatMoney(item.unitPrice, item.currency || doc.currency)}</td>
+                    <td>{formatMoney(item.subtotal, item.currency || doc.currency)}</td>
                   </tr>
                 )) : (
                   <tr><td colSpan={5}>{copy.noPricing}</td></tr>

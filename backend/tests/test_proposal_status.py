@@ -308,10 +308,35 @@ async def test_patch_unknown_current_is_409_asking_to_migrate(client, as_user):
 
 async def test_patch_legacy_current_is_normalized(client, as_user):
     as_user(["user"])
-    store = FakeStatusStore(fake_proposal({"proposal_status": "En Negociación"}))
+    store = FakeStatusStore(fake_proposal({
+        "proposal_status": "En Negociación",
+        "signedDocumentPath": "proposals/proposal-001/signed/doc.pdf",
+    }))
     resp, *_ = await _patch_status(client, store, "firmada")
     assert resp.status_code == 200
     assert store.audit_logs[0]["previousStatus"] == "en_negociacion"
+
+
+async def test_patch_to_firmada_without_signed_document_is_422(client, as_user):
+    """RF-VTA-06 (etapa diferida): no se puede firmar sin el documento adjunto."""
+    as_user(["user"])
+    store = FakeStatusStore(fake_proposal({"proposal_status": "en_negociacion"}))
+    resp, *_ = await _patch_status(client, store, "firmada")
+    assert resp.status_code == 422
+    assert "documento firmado" in resp.json()["detail"]
+    assert store.audit_logs == []
+    assert store.doc["proposal_status"] == "en_negociacion"
+
+
+async def test_patch_to_firmada_with_signed_document_is_200(client, as_user):
+    as_user(["user"])
+    store = FakeStatusStore(fake_proposal({
+        "proposal_status": "en_negociacion",
+        "signedDocumentPath": "proposals/proposal-001/signed/doc.pdf",
+    }))
+    resp, *_ = await _patch_status(client, store, "firmada")
+    assert resp.status_code == 200
+    assert store.doc["proposal_status"] == "firmada"
 
 
 async def test_patch_reopen_without_admin_is_403(client, as_user):
@@ -419,3 +444,43 @@ async def test_generate_draft_forces_borrador(client):
         })
     assert resp.status_code == 202
     assert create.await_args.args[0]["proposal_status"] == "borrador"
+
+
+# ── DELETE /proposals/{id}/signed-document (RF-VTA-06, etapa diferida) ──────
+
+async def test_delete_signed_document_on_firmada_is_409(client, as_user):
+    """No se puede quitar el documento sin reemplazo si la propuesta ya quedó
+    firmada: la dejaría firmada sin el adjunto que sustenta ese estado."""
+    as_user(["user"])
+    doc = fake_proposal({
+        "proposal_status": "firmada",
+        "signedDocumentPath": "proposals/proposal-001/signed/doc.pdf",
+    })
+    with (
+        patch(f"{REPO}.get", new_callable=AsyncMock, return_value=doc),
+        patch("app.services.storage_service.storage_service.delete_file", new_callable=AsyncMock) as delete_file,
+        patch(f"{REPO}.update", new_callable=AsyncMock) as update,
+    ):
+        resp = await client.delete(f"{API}/proposal-001/signed-document")
+    assert resp.status_code == 409
+    delete_file.assert_not_called()
+    update.assert_not_called()
+
+
+async def test_delete_signed_document_before_firmada_is_allowed(client, as_user):
+    as_user(["user"])
+    doc = fake_proposal({
+        "proposal_status": "en_negociacion",
+        "signedDocumentPath": "proposals/proposal-001/signed/doc.pdf",
+    })
+    cleared = {**doc, "signedDocumentPath": None, "signedDocumentUrl": None,
+               "signedDocumentName": None, "signedDocumentUploadedAt": None}
+    with (
+        patch(f"{REPO}.get", new_callable=AsyncMock, return_value=doc),
+        patch("app.services.storage_service.storage_service.delete_file", new_callable=AsyncMock) as delete_file,
+        patch(f"{REPO}.update", new_callable=AsyncMock, return_value=cleared) as update,
+    ):
+        resp = await client.delete(f"{API}/proposal-001/signed-document")
+    assert resp.status_code == 200
+    delete_file.assert_awaited_once_with("proposals/proposal-001/signed/doc.pdf")
+    update.assert_awaited_once()

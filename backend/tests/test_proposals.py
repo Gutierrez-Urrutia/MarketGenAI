@@ -54,6 +54,20 @@ async def test_create_proposal(client):
 
 
 @pytest.mark.asyncio
+async def test_create_proposal_invalid_client_email_is_422_with_message(client):
+    resp = await client.post(API, json={
+        "title":       "Test Proposal",
+        "clientName":  "Acme Corp",
+        "description": "A proposal for AI services.",
+        "clientEmail": "eeee",
+    })
+    assert resp.status_code == 422
+    body = resp.json()
+    assert isinstance(body["detail"], list)
+    assert isinstance(body["message"], str) and body["message"]
+
+
+@pytest.mark.asyncio
 async def test_get_proposal_not_found(client):
     with patch("app.routers.proposals.proposals_repo.get", new_callable=AsyncMock, return_value=None):
         resp = await client.get(f"{API}/nonexistent")
@@ -290,6 +304,11 @@ async def test_generate_draft_passes_frontend_payload_to_generator(client):
         "language": "en",
         "custom_prompt": "Emphasize outcomes over problems.",
         "user_id": FAKE_USER_SUB,
+        "template_content": None,  # RF-VTA-07: sin templateId no hay plantilla aplicada
+        "commercial_terms": None,
+        "currency": "USD",
+        "client_industry": None,  # RF-VTA-03: sin cliente vinculado no hay perfil
+        "client_size": None,
     }
 
 

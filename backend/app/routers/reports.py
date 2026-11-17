@@ -22,6 +22,7 @@ from app.rendering.brand_styles import (
     BRAND_TEXT,
 )
 from app.schemas.proposal import PROPOSAL_STATUS_VALUES, ProposalStatus, normalize_proposal_status
+from app.services import pipeline_report_service as pipeline_report
 from app.services.firestore_service import (
     books_repo, proposals_repo, customers_repo, opportunities_repo,
 )
@@ -299,12 +300,39 @@ async def reports_content(
         ]
     }
 
+REPORT_PERIOD_DAYS_MAX = 3650
+
+
+async def _load_user_proposals(user_id: str) -> tuple[list[dict], bool]:
+    """Propuestas del usuario (más recientes primero) y si se llegó al tope de lectura."""
+    proposals = await proposals_repo.list(
+        filters=[("userId", "==", user_id)],
+        order_by="createdAt",
+        order_direction="DESCENDING",
+        limit=pipeline_report.MAX_PROPOSALS,
+    )
+    return proposals, len(proposals) >= pipeline_report.MAX_PROPOSALS
+
+
+@router.get("/pipeline")
+async def reports_pipeline(
+    days: Optional[int] = Query(None, ge=1, le=REPORT_PERIOD_DAYS_MAX),
+    user: CurrentUser = Depends(get_current_user),
+):
+    """RF-VTA-10: propuestas por estado, conversión, win rate, valor por moneda y tiempo de cierre."""
+    proposals, truncated = await _load_user_proposals(user.sub)
+    return pipeline_report.build_pipeline_report(proposals, days=days, truncated=truncated)
+
 @router.get("/export")
 async def export_report(
     format: str = Query("xlsx", pattern="^(xlsx|csv|pdf)$"),
+    report: str = Query("books", pattern="^(books|pipeline)$"),
+    days: Optional[int] = Query(None, ge=1, le=REPORT_PERIOD_DAYS_MAX),
     user:   CurrentUser = Depends(get_current_user),
 ):
-    """Export a simple overview report as Excel, CSV, or PDF."""
+    """Exporta a Excel, CSV o PDF. `report=pipeline` lleva los datos de Ventas; sin él, el listado de libros."""
+    if report == "pipeline":
+        return await _export_pipeline(format, days, user)
     books = await books_repo.list(
         filters=[("userId", "==", user.sub)], limit=500,
     )
@@ -372,4 +400,28 @@ async def export_report(
         buf,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": "attachment; filename=report.xlsx"},
+    )
+
+
+_EXPORT_TYPES = {
+    "xlsx": ("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "xlsx"),
+    "csv": ("text/csv; charset=utf-8", "csv"),
+    "pdf": ("application/pdf", "pdf"),
+}
+
+
+async def _export_pipeline(fmt: str, days: Optional[int], user: CurrentUser) -> StreamingResponse:
+    proposals, truncated = await _load_user_proposals(user.sub)
+    report = pipeline_report.build_pipeline_report(proposals, days=days, truncated=truncated)
+    if fmt == "csv":
+        content = pipeline_report.render_csv(proposals, days=days)
+    elif fmt == "pdf":
+        content = pipeline_report.render_pdf(report, proposals, days=days)
+    else:
+        content = pipeline_report.render_xlsx(report, proposals, days=days)
+    media_type, extension = _EXPORT_TYPES[fmt]
+    return StreamingResponse(
+        io.BytesIO(content),
+        media_type=media_type,
+        headers={"Content-Disposition": f"attachment; filename=pipeline-ventas.{extension}"},
     )

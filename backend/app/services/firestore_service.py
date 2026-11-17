@@ -26,13 +26,20 @@ Collections used by this project:
   - pipeline_runs/{runId}
   - knowledge_documents/{docId}   (RAG: propuestas históricas cargadas por el usuario)
   - knowledge_chunks/{chunkId}    (RAG: fragmentos de cada documento)
+  - serviceCatalog/{serviceId}    (RF-VTA-02: catálogo de servicios de la empresa)
+  - serviceCatalogKeys/{hash}     (clave única nombre+unidad del catálogo)
+  - serviceTypes/{typeId}         (RF-VTA-02: tipos de servicio)
+  - serviceTypeKeys/{hash}        (clave única del nombre de tipo)
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
+import random
 import uuid
+import weakref
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
@@ -474,6 +481,12 @@ class ProposalsRepo(FirestoreRepo):
         decision = decide_cambio_estado(previous, target, owner_id == actor_id, actor_is_admin)
         if isinstance(decision, StatusChangeError):
             return {"error": decision}
+        # RF-VTA-06 (etapa diferida): firmar exige haber adjuntado el documento firmado.
+        if decision.value == "firmada" and not proposal.get("signedDocumentPath"):
+            return {"error": StatusChangeError(
+                422,
+                "Debes adjuntar el documento firmado antes de marcar la propuesta como firmada.",
+            )}
         return {
             "new_status": decision.value,
             "audit_log": {
@@ -527,9 +540,152 @@ class ProposalsRepo(FirestoreRepo):
             if "new_status" not in plan:
                 return plan
             updated_at = now_utc()
-            txn.update(ref, {"proposal_status": plan["new_status"], "updatedAt": updated_at})
+            # RF-VTA-10: fecha del último paso a cada estado; de ahí sale el tiempo de cierre del reporte.
+            txn.update(ref, {
+                "proposal_status": plan["new_status"],
+                "updatedAt": updated_at,
+                f"statusDates.{plan['new_status']}": updated_at,
+            })
             txn.set(audit_ref, plan["audit_log"])
-            return {"proposal": {**proposal, "proposal_status": plan["new_status"], "updatedAt": updated_at}}
+            dates = {**(proposal.get("statusDates") or {}), plan["new_status"]: updated_at}
+            return {"proposal": {**proposal, "proposal_status": plan["new_status"], "updatedAt": updated_at, "statusDates": dates}}
+
+        return await _txn(transaction)
+
+    # ── RF-VTA-11: historial de versiones ────────────────────────────────────
+    # Subcolección proposals/{id}/versions/{versionId}. El contador `versionCounter`
+    # y el hash `versionHash` viven en la propuesta y se actualizan en la misma
+    # transacción que escribe la versión (sin números duplicados ni lecturas extra).
+
+    # `total_amount` y `totalAmount` son dos grafías del mismo monto que el producto lee por igual
+    # (_resolve_total_amount): las dos forman parte de la versión.
+    VERSION_FIELDS = ("title", "content", "structured_content", "total_amount", "totalAmount")
+
+    @classmethod
+    def version_snapshot(cls, proposal: Dict[str, Any]) -> Dict[str, Any]:
+        return {f: proposal.get(f) for f in cls.VERSION_FIELDS}
+
+    @staticmethod
+    def _snapshot_hash(snapshot: Dict[str, Any]) -> str:
+        raw = json.dumps(snapshot, sort_keys=True, default=str, ensure_ascii=False)
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+    @classmethod
+    def version_restore_fields(cls, version: Dict[str, Any]) -> Dict[str, Any]:
+        """Campos que restaura una versión. Si la versión guardó el campo vacío (None), restaurar
+        también lo vacía: no deja la estructura o el monto nuevos mezclados con el texto viejo. Un
+        campo que la versión ni siquiera tiene (versiones del formato anterior) no se toca."""
+        return {f: version[f] for f in cls.VERSION_FIELDS if f in version}
+
+    def _versions_col(self, proposal_id: str):
+        return self._doc(proposal_id).collection("versions")
+
+    async def delete_versions(self, proposal_id: str) -> int:
+        """Borra la subcolección de versiones (Firestore no la borra con el documento). Devuelve cuántas."""
+        docs = await self._versions_col(proposal_id).get()
+        for start in range(0, len(docs), 400):
+            batch = self.db.batch()
+            for d in docs[start:start + 400]:
+                batch.delete(d.reference)
+            await batch.commit()
+        return len(docs)
+
+    @staticmethod
+    def _legacy_versions(legacy: Optional[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+        """Versiones viejas embebidas en el documento (sin id ni autor)."""
+        return [
+            {**v, "id": f"legacy-{v.get('version', i + 1)}", "source": v.get("source") or "manual"}
+            for i, v in enumerate(legacy if isinstance(legacy, list) else [])
+            if isinstance(v, dict)
+        ]
+
+    async def list_versions(
+        self, proposal_id: str, legacy: Optional[List[Dict[str, Any]]] = None
+    ) -> List[Dict[str, Any]]:
+        """Más recientes primero. Incluye siempre las versiones embebidas anteriores a RF-VTA-11
+        (compatibilidad, sin migración obligatoria): al guardar la primera versión nueva las antiguas
+        no desaparecen. Sus números son menores porque la numeración nueva continúa tras ellas."""
+        docs = await self._versions_col(proposal_id).order_by(
+            "version", direction=firestore.Query.DESCENDING
+        ).get()
+        items = [d.to_dict() for d in docs if d.exists]
+        items += self._legacy_versions(legacy)
+        return sorted(items, key=lambda v: v.get("version", 0), reverse=True)
+
+    async def get_version(
+        self, proposal_id: str, version_id: str, legacy: Optional[List[Dict[str, Any]]] = None
+    ) -> Optional[Dict[str, Any]]:
+        if version_id.startswith("legacy-"):
+            return next((v for v in self._legacy_versions(legacy) if v["id"] == version_id), None)
+        snap = await self._versions_col(proposal_id).document(version_id).get()
+        return snap.to_dict() if snap.exists else None
+
+    # Guardados simultáneos de la misma propuesta (doble clic, edición + guardado manual): todos leen y
+    # actualizan el mismo contador, así que Firestore aborta las transacciones que chocan y, tras 5 intentos,
+    # lanza ValueError (RF11-D-011). Se serializan los de este proceso y se reintenta con espera para los
+    # de otros procesos.
+    VERSION_TXN_ATTEMPTS = 6
+    _version_locks: "weakref.WeakValueDictionary[str, asyncio.Lock]" = weakref.WeakValueDictionary()
+
+    async def create_version(self, proposal_id: str, snapshot: Dict[str, Any], **kwargs) -> Optional[Dict[str, Any]]:
+        """Guarda un snapshot con el siguiente número de versión (ver `_create_version_once`)."""
+        lock = self._version_locks.setdefault(proposal_id, asyncio.Lock())
+        async with lock:
+            for attempt in range(1, self.VERSION_TXN_ATTEMPTS + 1):
+                try:
+                    return await self._create_version_once(proposal_id, snapshot, **kwargs)
+                except ValueError as exc:
+                    if "Failed to commit transaction" not in str(exc) or attempt == self.VERSION_TXN_ATTEMPTS:
+                        raise
+                    await asyncio.sleep(random.uniform(0.05, 0.25) * attempt)
+
+    async def _create_version_once(
+        self,
+        proposal_id: str,
+        snapshot: Dict[str, Any],
+        *,
+        author_id: str,
+        author_name: Optional[str],
+        author_email: Optional[str],
+        source: str = "manual",
+        label: Optional[str] = None,
+        skip_if_unchanged: bool = False,
+    ) -> Optional[Dict[str, Any]]:
+        """Una transacción: guarda un snapshot con el siguiente número de versión. Devuelve la versión,
+        o None si la propuesta no existe o (con skip_if_unchanged) el contenido es
+        idéntico al de la última versión."""
+        ref = self._doc(proposal_id)
+        version_id = new_id()
+        version_ref = self._versions_col(proposal_id).document(version_id)
+        digest = self._snapshot_hash(snapshot)
+        transaction = self.db.transaction()
+
+        @firestore.async_transactional
+        async def _txn(txn):
+            snap = await ref.get(transaction=txn)
+            if not snap.exists:
+                return None
+            proposal = snap.to_dict()
+            if skip_if_unchanged and proposal.get("versionHash") == digest:
+                return None
+            counter = proposal.get("versionCounter")
+            legacy_count = len(proposal.get("versions") or []) if isinstance(proposal.get("versions"), list) else 0
+            number = max(counter if isinstance(counter, int) else 0, legacy_count) + 1
+            version = {
+                **snapshot,
+                "id": version_id,
+                "proposalId": proposal_id,
+                "version": number,
+                "label": label or f"Version {number}",
+                "source": source,
+                "authorId": author_id,
+                "authorName": author_name,
+                "authorEmail": author_email,
+                "createdAt": now_utc(),
+            }
+            txn.set(version_ref, version)
+            txn.update(ref, {"versionCounter": number, "versionHash": digest})
+            return version
 
         return await _txn(transaction)
 
@@ -1376,6 +1532,87 @@ class EnablementDraftsRepo(FirestoreRepo):
     collection = "enablement_drafts"
 
 
+class DuplicateKeyError(Exception):
+    """Raised when a unique key (e.g. service name + unit) is already taken."""
+
+
+class UniqueKeyedRepo(FirestoreRepo):
+    """Repo whose documents must be unique under a normalized key.
+
+    For each document there is a key document (`keys_collection/{sha256(key)}`)
+    pointing at the owner. Creating or re-keying reads the key document and
+    writes both inside one Firestore transaction, so two simultaneous requests
+    with the same key cannot both succeed: Firestore retries/aborts the loser,
+    which then sees the key as taken."""
+
+    keys_collection: str = ""
+
+    @staticmethod
+    def make_key(*parts: str) -> str:
+        """Case-insensitive, whitespace-insensitive hash of the key parts."""
+        normalized = "".join(" ".join(p.split()).casefold() for p in parts)
+        return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+    def _key_ref(self, key: str) -> AsyncDocumentReference:
+        return self.db.collection(self.keys_collection).document(key)
+
+    async def create_unique(self, data: Dict[str, Any], key: str) -> Dict[str, Any]:
+        doc_id = new_id()
+        now = now_utc()
+        payload = {**data, "id": doc_id, "uniqueKey": key, "createdAt": now, "updatedAt": now}
+        doc_ref = self._doc(doc_id)
+        key_ref = self._key_ref(key)
+        transaction = self.db.transaction()
+
+        @firestore.async_transactional
+        async def _txn(txn):
+            if (await key_ref.get(transaction=txn)).exists:
+                raise DuplicateKeyError(key)
+            txn.set(key_ref, {"id": key, "ownerId": doc_id})
+            txn.set(doc_ref, payload)
+
+        await _txn(transaction)
+        return payload
+
+    async def update_unique(
+        self, doc_id: str, data: Dict[str, Any], new_key: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Partial update; pass `new_key` when a field that feeds the key changed."""
+        doc_ref = self._doc(doc_id)
+        transaction = self.db.transaction()
+
+        @firestore.async_transactional
+        async def _txn(txn):
+            snap = await doc_ref.get(transaction=txn)
+            if not snap.exists:
+                raise KeyError(f"{self.collection}/{doc_id} not found")
+            current = snap.to_dict()
+            payload = {**data, "updatedAt": now_utc()}
+            old_key = current.get("uniqueKey")
+            if new_key and new_key != old_key:
+                new_snap = await self._key_ref(new_key).get(transaction=txn)
+                if new_snap.exists and (new_snap.to_dict() or {}).get("ownerId") != doc_id:
+                    raise DuplicateKeyError(new_key)
+                if old_key:
+                    txn.delete(self._key_ref(old_key))
+                txn.set(self._key_ref(new_key), {"id": new_key, "ownerId": doc_id})
+                payload["uniqueKey"] = new_key
+            txn.update(doc_ref, payload)
+            return {**current, **payload}
+
+        return await _txn(transaction)
+
+
+class ServiceCatalogRepo(UniqueKeyedRepo):
+    collection = "serviceCatalog"
+    keys_collection = "serviceCatalogKeys"
+
+
+class ServiceTypesRepo(UniqueKeyedRepo):
+    collection = "serviceTypes"
+    keys_collection = "serviceTypeKeys"
+
+
 class PipelineRunLocksRepo(FirestoreRepo):
     """One lock document per PipelineConfig (doc id == config id) so two runs
     can never be active on the same config at once. Acquired inside a Firestore
@@ -1481,3 +1718,5 @@ pipeline_run_locks_repo = PipelineRunLocksRepo()
 knowledge_documents_repo = KnowledgeDocumentsRepo()
 knowledge_chunks_repo    = KnowledgeChunksRepo()
 enablement_drafts_repo   = EnablementDraftsRepo()
+service_catalog_repo     = ServiceCatalogRepo()
+service_types_repo       = ServiceTypesRepo()
