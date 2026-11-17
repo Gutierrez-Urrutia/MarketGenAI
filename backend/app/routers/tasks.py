@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import logging
 from celery.result import AsyncResult
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
+
+from app.dependencies.auth import CurrentUser, require_roles, verify_token
 
 from app.schemas.task import PilotTaskRequest, TaskEnqueueResponse, TaskStatusResponse
 from app.workers.celery_app import celery_app
@@ -11,7 +13,8 @@ from app.workers.tasks.pilot_tasks import task_pilot_deepseek
 
 logger = logging.getLogger("marketgen.tasks.router")
 
-router = APIRouter(prefix="/tasks", tags=["Tasks"])
+# Todo el router exige sesión; encolar la tarea piloto (gasta créditos del LLM) además exige rol admin.
+router = APIRouter(prefix="/tasks", tags=["Tasks"], dependencies=[Depends(verify_token)])
 
 
 @router.post(
@@ -20,7 +23,10 @@ router = APIRouter(prefix="/tasks", tags=["Tasks"])
     response_model=TaskEnqueueResponse,
     summary="Encolar tarea piloto con DeepSeek en segundo plano",
 )
-async def enqueue_pilot_task(body: PilotTaskRequest):
+async def enqueue_pilot_task(
+    body: PilotTaskRequest,
+    _admin: CurrentUser = Depends(require_roles("admin")),
+):
     """
     Encola una tarea de generación en segundo plano vía Celery y responde de inmediato con HTTP 202.
     """
