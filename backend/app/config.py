@@ -10,6 +10,10 @@ from typing import List
 from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Official Microsoft endpoints for the mailbox connection (see Settings.mail_*).
+DEFAULT_MICROSOFT_LOGIN_BASE_URL = "https://login.microsoftonline.com"
+DEFAULT_GRAPH_BASE_URL = "https://graph.microsoft.com/v1.0"
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -95,10 +99,32 @@ class Settings(BaseSettings):
     storage_backend: str = "supabase"
     gcs_bucket: str = ""
 
-    # Fernet key encrypting pipeline secrets at rest (SMTP passwords, provider
-    # API keys) — see app/services/encryption_service.py. Deliberately not
-    # derived from app_secret_key: different blast radius and rotation needs.
+    # Fernet key encrypting pipeline secrets at rest (provider API keys, the
+    # mailbox OAuth tokens) — see app/services/encryption_service.py.
+    # Deliberately not derived from app_secret_key: different blast radius and
+    # rotation needs.
     pipeline_encryption_key: str = ""
+
+    # Real sending of prospecting emails from the platform (RF-VTA-16). Master
+    # switch for the whole deployment: off by default, and each user must also
+    # switch it on in their pipeline config. Both are required to send.
+    outreach_real_send_enabled: bool = False
+
+    # Sending from each user's own Microsoft 365 / Outlook mailbox (RF-VTA-16):
+    # delegated OAuth (authorization code + PKCE) and Microsoft Graph. Its own
+    # app registration, apart from the login one (microsoft_oauth_*), so that
+    # signing in never asks for mail permissions.
+    mail_oauth_client_id: str = ""
+    mail_oauth_client_secret: str = ""
+    # Must match the redirect URI registered in Entra ID exactly.
+    mail_oauth_redirect_url: str = "http://localhost:8000/api/v1/mail-connection/callback"
+    microsoft_login_base_url: str = DEFAULT_MICROSOFT_LOGIN_BASE_URL
+    graph_base_url: str = DEFAULT_GRAPH_BASE_URL
+    # Development/test only: lets the two URLs above point somewhere else
+    # (e.g. the local fake Graph). Never honoured when APP_ENV=production.
+    mail_allow_custom_endpoints: bool = False
+    # Time budget of one HTTP call to Microsoft (login or Graph).
+    mail_http_timeout_seconds: float = 20.0
 
     redis_url: str = "redis://localhost:6379/0"
     celery_broker_url: str = "redis://localhost:6379/0"
@@ -116,6 +142,19 @@ class Settings(BaseSettings):
                 "APP_SECRET_KEY is still set to the default 'change-me-in-production' value "
                 "while APP_ENV=production. Set a strong, unique APP_SECRET_KEY before starting "
                 "the application."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _official_mail_endpoints_in_production(self) -> "Settings":
+        if self.app_env.lower() == "production" and (
+            self.microsoft_login_base_url.rstrip("/") != DEFAULT_MICROSOFT_LOGIN_BASE_URL
+            or self.graph_base_url.rstrip("/") != DEFAULT_GRAPH_BASE_URL
+        ):
+            raise RuntimeError(
+                "MICROSOFT_LOGIN_BASE_URL / GRAPH_BASE_URL point to non-official endpoints "
+                "while APP_ENV=production. Remove them: custom endpoints (the local fake "
+                "Graph) are for development and tests only."
             )
         return self
 

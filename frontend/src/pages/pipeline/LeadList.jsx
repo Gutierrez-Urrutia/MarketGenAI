@@ -2,18 +2,24 @@
  * LeadList — Agente 1 output (Fase 2). Lists leads found by the last
  * scan(s) and lets the user trigger a new scan manually. Mounted by
  * Dashboard.jsx as the "leads" top-level page.
+ *
+ * RF15: each row can expand into LeadContactsPanel (contact search of that
+ * lead). Only one contact search runs at a time on the whole screen — each
+ * one may spend Hunter credits — so the lock lives here.
  */
-import { useEffect, useRef, useState } from "react";
+import { Fragment, forwardRef, useEffect, useLayoutEffect, useRef, useState } from "react";
 import toast from "react-hot-toast";
-import { Radar, Loader2, RefreshCw } from "lucide-react";
+import { Radar, Loader2, RefreshCw, ArrowUp, ArrowDown, ChevronDown, ChevronRight, Search, X } from "lucide-react";
 
 import { leadsApi, pipelineApi } from "@/api/axios";
 import { useI18n } from "@/hooks/useI18n";
+import LeadContactsPanel from "./LeadContactsPanel";
 
-const STATUS_OPTIONS = [
-  "new", "researching", "contacts_found", "composing", "ready_for_review",
-  "approved", "auto_approved", "sent", "replied", "rejected", "error",
-];
+// Status filter: the statuses a lead rests in today. RF-VTA-16 adds
+// ready_for_review, approved and sent (its prospecting emails); researching and
+// composing are transient, and replied, rejected and error are not assigned yet.
+// The Status column still shows any status.
+const STATUS_OPTIONS = ["new", "contacts_found", "ready_for_review", "approved", "sent"];
 
 const POLL_INTERVAL_MS = 2000;
 const POLL_MAX_ATTEMPTS = 150; // ~5 minutes
@@ -64,6 +70,74 @@ function FoundAtCell({ value }) {
   );
 }
 
+// Sortable columns and the direction of their first click. The backend
+// already returns the default order (found, newest first), so "found" starts
+// ascending; score starts with the best leads. Third click: back to default.
+const SORT_COLUMNS = [
+  { key: "job_title", labelKey: "leads.columnTitle", firstDir: "asc" },
+  { key: "company_name", labelKey: "leads.columnCompany", firstDir: "asc" },
+  { key: "relevance_score", labelKey: "leads.columnScore", firstDir: "desc" },
+  { key: "status", labelKey: "leads.columnStatus", firstDir: "asc" },
+  { key: "created_at", labelKey: "leads.columnFound", firstDir: "asc" },
+];
+
+export function nextSort(sort, column) {
+  if (!sort || sort.key !== column.key) return { key: column.key, dir: column.firstDir };
+  if (sort.dir === column.firstDir) return { key: column.key, dir: column.firstDir === "asc" ? "desc" : "asc" };
+  return null;
+}
+
+const compareText = (a, b) => a.localeCompare(b, undefined, { sensitivity: "base", numeric: true });
+
+function foundTime(value) {
+  const time = value ? new Date(value).getTime() : NaN;
+  return Number.isNaN(time) ? null : time;
+}
+
+// Sorts on every render over the leads the backend sent (at most
+// LEADS_LIMIT, already filtered). Blank companies and missing dates always
+// go last; ties keep the backend order (found, newest first) since the sort
+// is stable. Status sorts by the label the user sees.
+export function sortLeads(leads, sort, t) {
+  if (!sort) return leads;
+  const sign = sort.dir === "asc" ? 1 : -1;
+  const valueOf = {
+    job_title: (lead) => (lead.job_title || "").trim(),
+    company_name: (lead) => (lead.company_name || "").trim() || null,
+    relevance_score: (lead) => lead.relevance_score ?? 0,
+    status: (lead) => t(`leads.status.${lead.status}`),
+    created_at: (lead) => foundTime(lead.created_at),
+  }[sort.key];
+  return [...leads].sort((a, b) => {
+    const va = valueOf(a);
+    const vb = valueOf(b);
+    if (va === null || vb === null) return (va === null) - (vb === null);
+    return sign * (typeof va === "string" ? compareText(va, vb) : va - vb);
+  });
+}
+
+// Text search over the leads already loaded (client side, at most
+// LEADS_LIMIT): case, accents and extra spaces do not count.
+export function normalizeSearch(text) {
+  return String(text ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+// Leads whose company or job title (the two columns the table shows)
+// contain the query. Runs on the list the backend sent, so it combines with
+// the status and minimum score filters (applied by the backend).
+export function searchLeads(leads, query) {
+  const needle = normalizeSearch(query);
+  if (!needle) return leads;
+  return leads.filter((lead) => (
+    normalizeSearch(lead.company_name).includes(needle) || normalizeSearch(lead.job_title).includes(needle)
+  ));
+}
+
 // Derived on every render (no effect): when the list shrinks under the page
 // being shown, that page is clamped to the last one that still exists.
 export function paginate(items, page, pageSize = PAGE_SIZE) {
@@ -85,9 +159,10 @@ function getApiErrorMessage(error, fallback) {
   return error?.message || fallback;
 }
 
-const Card = ({ children, className = "" }) => (
-  <div className={`bg-white rounded-2xl border border-gray-100 shadow-sm ${className}`}>{children}</div>
-);
+const Card = forwardRef(({ children, className = "" }, ref) => (
+  <div ref={ref} className={`bg-white rounded-2xl border border-gray-100 shadow-sm ${className}`}>{children}</div>
+));
+Card.displayName = "Card";
 
 const ScoreBadge = ({ score }) => {
   const pct = Math.round((score ?? 0) * 100);
@@ -97,15 +172,77 @@ const ScoreBadge = ({ score }) => {
   return <span className={`px-2 py-0.5 rounded-full text-xs font-semibold ${color}`}>{pct}%</span>;
 };
 
-export default function LeadList() {
+// Width of the table's scroll container, so the expanded panel (a sticky,
+// full-row cell) is never wider than what is visible: on a phone the table
+// may scroll sideways, the panel does not. null until measured (jsdom).
+function useVisibleWidth(ref) {
+  const [width, setWidth] = useState(null);
+  useLayoutEffect(() => {
+    const element = ref.current;
+    if (!element) return undefined;
+    const measure = () => setWidth(element.clientWidth || null);
+    measure();
+    if (typeof ResizeObserver === "function") {
+      const observer = new ResizeObserver(measure);
+      observer.observe(element);
+      return () => observer.disconnect();
+    }
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, [ref]);
+  return width;
+}
+
+const COLUMN_COUNT = SORT_COLUMNS.length + 2; // "#" + sortable columns + contacts
+
+export default function LeadList({ onNavigate } = {}) {
   const { t } = useI18n();
+  const [expandedLeadId, setExpandedLeadId] = useState(null);
+  const [searchingLeadId, setSearchingLeadId] = useState(null);
+  const searchingLeadRef = useRef(null);
+  const tableBoxRef = useRef(null);
+  const visibleWidth = useVisibleWidth(tableBoxRef);
+
+  // The ref is checked and set before any await, so two clicks in the same
+  // tick (or on two rows) can never both start a search.
+  const searchLock = {
+    activeLeadId: searchingLeadId,
+    tryAcquire: (leadId) => {
+      if (searchingLeadRef.current !== null) return false;
+      searchingLeadRef.current = leadId;
+      setSearchingLeadId(leadId);
+      return true;
+    },
+    release: (leadId) => {
+      if (searchingLeadRef.current !== leadId) return;
+      searchingLeadRef.current = null;
+      setSearchingLeadId(null);
+    },
+  };
+
+  // After a search or a refresh: patch the row at once, then replace it with
+  // the lead as the server has it. The rest of the table and its page stay.
+  const handleLeadChanged = async (leadId, patch) => {
+    if (patch) {
+      setLeads((current) => current.map((lead) => (lead.id === leadId ? { ...lead, ...patch } : lead)));
+    }
+    try {
+      const { data } = await leadsApi.get(leadId);
+      if (data?.id === leadId) setLeads((current) => current.map((lead) => (lead.id === leadId ? data : lead)));
+    } catch {
+      // Best effort: the patch above already shows the result.
+    }
+  };
+
   const [leads, setLeads] = useState([]);
   const [loading, setLoading] = useState(true);
   const [scanning, setScanning] = useState(false);
   const [loadError, setLoadError] = useState(null);
   const [statusFilter, setStatusFilter] = useState("");
   const [minScore, setMinScore] = useState("");
+  const [query, setQuery] = useState("");
   const [page, setPage] = useState(1);
+  const [sort, setSort] = useState(null);
   const pollRef = useRef(null);
   const mountedRef = useRef(true);
   // The poll outlives renders, so it must read the *current* filters, not the
@@ -245,11 +382,32 @@ export default function LeadList() {
         return;
       }
       setScanning(false);
+      if (error?.response?.data?.detail?.code === "no_keywords") {
+        toast.error(t("leads.scanNoKeywords"));
+        return;
+      }
       toast.error(getApiErrorMessage(error, t("leads.scanFailed")));
     }
   };
 
-  const { pageCount, currentPage, firstIndex, pageItems: pageLeads } = paginate(leads, page);
+  const matchingLeads = searchLeads(leads, query);
+  const searching = normalizeSearch(query) !== "";
+  const sortedLeads = sortLeads(matchingLeads, sort, t);
+  const { pageCount, currentPage, firstIndex, pageItems: pageLeads } = paginate(sortedLeads, page);
+
+  const changeQuery = (value) => {
+    setQuery(value);
+    setPage(1);
+  };
+
+  // The search only sees the leads loaded (at most LEADS_LIMIT): say so
+  // while searching a full response.
+  const showSearchLimit = searching && leads.length >= LEADS_LIMIT;
+
+  const changeSort = (column) => {
+    setSort((current) => nextSort(current, column));
+    setPage(1);
+  };
 
   return (
     <div className="space-y-4">
@@ -293,9 +451,41 @@ export default function LeadList() {
             className="border border-gray-300 rounded-lg text-xs px-2.5 py-1.5 w-24"
           />
         </div>
+        {/* Search on the right; on narrow screens it wraps below the filters. */}
+        <div data-testid="leads-search-box" className="w-full sm:w-auto sm:ml-auto">
+          <label htmlFor="leads-search" className="block text-xs font-medium text-gray-600 mb-1">{t("leads.searchLabel")}</label>
+          <div className="relative">
+            <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400" aria-hidden="true" />
+            <input
+              id="leads-search"
+              type="search"
+              value={query}
+              onChange={(e) => changeQuery(e.target.value)}
+              placeholder={t("leads.searchPlaceholder")}
+              aria-describedby={showSearchLimit ? "leads-search-limit" : undefined}
+              className="border border-gray-300 rounded-lg text-xs pl-7 pr-7 py-1.5 w-full sm:w-64"
+            />
+            {query && (
+              <button
+                type="button"
+                onClick={() => changeQuery("")}
+                aria-label={t("leads.clearSearch")}
+                title={t("leads.clearSearch")}
+                className="absolute right-1.5 top-1/2 -translate-y-1/2 p-0.5 rounded text-gray-400 hover:text-gray-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
+              >
+                <X size={12} aria-hidden="true" />
+              </button>
+            )}
+          </div>
+          {showSearchLimit && (
+            <p id="leads-search-limit" aria-live="polite" className="mt-1 text-xs text-amber-600">
+              {t("leads.searchLimit").replace(/\{limit\}/g, LEADS_LIMIT)}
+            </p>
+          )}
+        </div>
       </Card>
 
-      <Card className="overflow-x-auto">
+      <Card className="overflow-x-auto" ref={tableBoxRef}>
         {loading ? (
           <div className="p-8 text-center text-gray-400 text-sm">{t("common.loading")}</div>
         ) : loadError ? (
@@ -310,21 +500,59 @@ export default function LeadList() {
           </div>
         ) : leads.length === 0 ? (
           <div className="p-8 text-center text-gray-400 text-sm">{t("leads.empty")}</div>
+        ) : matchingLeads.length === 0 ? (
+          <div role="status" className="p-8 text-center text-sm text-gray-500 space-y-3">
+            <p>{t("leads.noMatches").replace("{query}", query.trim())}</p>
+            <button
+              type="button"
+              onClick={() => changeQuery("")}
+              className="px-3.5 py-2 rounded-lg text-xs font-medium border border-gray-300 text-gray-700 hover:bg-gray-50"
+            >
+              {t("leads.clearSearch")}
+            </button>
+          </div>
         ) : (
           <table className="min-w-full text-sm">
             <thead>
               <tr className="text-left text-xs text-gray-500 border-b border-gray-100">
                 <th className="px-4 py-3 text-right">#</th>
-                <th className="px-4 py-3">{t("leads.columnTitle")}</th>
-                <th className="px-4 py-3">{t("leads.columnCompany")}</th>
-                <th className="px-4 py-3">{t("leads.columnScore")}</th>
-                <th className="px-4 py-3">{t("leads.columnStatus")}</th>
-                <th className="px-4 py-3">{t("leads.columnFound")}</th>
+                {SORT_COLUMNS.map((column) => {
+                  const label = t(column.labelKey);
+                  const dir = sort?.key === column.key ? sort.dir : null;
+                  const Arrow = dir === "asc" ? ArrowUp : ArrowDown;
+                  return (
+                    <th
+                      key={column.key}
+                      className="px-4 py-3"
+                      aria-sort={dir === "asc" ? "ascending" : dir === "desc" ? "descending" : "none"}
+                    >
+                      <button
+                        type="button"
+                        onClick={() => changeSort(column)}
+                        title={t("leads.sortBy").replace("{column}", label)}
+                        className={`inline-flex items-center gap-1 hover:text-gray-800 ${dir ? "text-gray-800 font-semibold" : ""}`}
+                      >
+                        {label}
+                        {dir && (
+                          <Arrow
+                            size={12}
+                            aria-label={t(dir === "asc" ? "leads.sortAscending" : "leads.sortDescending")}
+                          />
+                        )}
+                      </button>
+                    </th>
+                  );
+                })}
+                <th className="px-4 py-3">{t("leads.contacts.column")}</th>
               </tr>
             </thead>
             <tbody>
-              {pageLeads.map((lead, i) => (
-                <tr key={lead.id} className="border-b border-gray-50 hover:bg-gray-50">
+              {pageLeads.map((lead, i) => {
+                const expanded = expandedLeadId === lead.id;
+                const panelId = `lead-contacts-${lead.id}`;
+                return (
+                <Fragment key={lead.id}>
+                <tr className="border-b border-gray-50 hover:bg-gray-50">
                   <td className="px-4 py-3 text-right text-xs text-gray-400 tabular-nums">{firstIndex + i + 1}</td>
                   <td className="px-4 py-3 font-medium text-gray-900">
                     {isSafeHttpUrl(lead.job_url) ? (
@@ -335,28 +563,53 @@ export default function LeadList() {
                   </td>
                   <td className="px-4 py-3 text-gray-700">
                     {lead.company_name?.trim() ? lead.company_name : (
-                      <>
-                        <span className="text-gray-400" title={t("leads.unknownCompany")} aria-hidden="true">—</span>
-                        <span className="sr-only">{t("leads.unknownCompany")}</span>
-                      </>
+                      <span className="text-gray-400 italic">{t("leads.unknownCompany")}</span>
                     )}
                   </td>
                   <td className="px-4 py-3"><ScoreBadge score={lead.relevance_score} /></td>
                   <td className="px-4 py-3 text-gray-600">{t(`leads.status.${lead.status}`)}</td>
                   <FoundAtCell value={lead.created_at} />
+                  <td className="px-4 py-3">
+                    <button
+                      type="button"
+                      aria-expanded={expanded}
+                      aria-controls={panelId}
+                      onClick={() => setExpandedLeadId(expanded ? null : lead.id)}
+                      className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 whitespace-nowrap focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
+                    >
+                      {expanded ? <ChevronDown size={12} aria-hidden="true" /> : <ChevronRight size={12} aria-hidden="true" />}
+                      {t(expanded ? "leads.contacts.hide" : "leads.contacts.show")}
+                    </button>
+                  </td>
                 </tr>
-              ))}
+                {expanded && (
+                  <tr id={panelId}>
+                    <td colSpan={COLUMN_COUNT} className="p-0">
+                      <div className="sticky left-0" style={visibleWidth ? { width: visibleWidth } : undefined}>
+                        <LeadContactsPanel
+                          lead={lead}
+                          searchLock={searchLock}
+                          onLeadChanged={handleLeadChanged}
+                          onNavigate={onNavigate}
+                        />
+                      </div>
+                    </td>
+                  </tr>
+                )}
+                </Fragment>
+                );
+              })}
             </tbody>
           </table>
         )}
-        {!loading && !loadError && leads.length > 0 && (
+        {!loading && !loadError && matchingLeads.length > 0 && (
           <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 border-t border-gray-100 bg-gray-50">
             <div>
               <span className="text-xs text-gray-400">
                 {t("leads.showing")
                   .replace("{from}", firstIndex + 1)
                   .replace("{to}", firstIndex + pageLeads.length)
-                  .replace("{total}", leads.length)}
+                  .replace("{total}", matchingLeads.length)}
               </span>
               {leads.length >= LEADS_LIMIT && (
                 <p className="text-xs text-amber-600">

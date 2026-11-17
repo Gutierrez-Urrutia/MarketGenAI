@@ -7,7 +7,8 @@ import Modal from "@/components/ui/Modal";
 import PipelineSettingsTab from "@/pages/settings/PipelineSettingsTab";
 import ProposalTemplatesTab from "@/pages/settings/ProposalTemplatesTab";
 import { ToastStack, useToastQueue } from "@/components/dashboard/toasts";
-import { crmApi, settingsApi, socialApi } from "@/api/axios";
+import api, { crmApi, settingsApi, socialApi } from "@/api/axios";
+import { logApiError } from "@/api/apiLogging";
 import { useEffect, useState } from "react";
 import { useI18n } from "@/hooks/useI18n";
 import { useLanguage } from "@/context/LanguageContext";
@@ -54,6 +55,16 @@ export function SettingsPage({ navigationState = {} }) {
   const [crmActiveSaving, setCrmActiveSaving] = useState(false);
   const { toasts, setToast, removeToast, pauseToast, resumeToast } = useToastQueue();
 
+  const loadSettingsTemplates = () => {
+    api.get("/templates", { suppressPermissionToast: true })
+      .then(({ data }) => setSettingsTemplates(data?.items || []))
+      .catch((error) => logApiError("SettingsPage", error));
+  };
+
+  useEffect(() => {
+    loadSettingsTemplates();
+  }, []);
+
   const getApiErrorMessage = (error, fallback) => {
     const detail = error?.response?.data?.detail;
     if (typeof detail === "string" && detail.trim()) return detail;
@@ -66,12 +77,75 @@ export function SettingsPage({ navigationState = {} }) {
     return error?.message || fallback;
   };
 
+  const resetTemplateEditor = () => {
+    setEditingTemplateId(null);
+    setTemplateNameDraft("");
+    setTemplateEditorContent(
+      "# Proposal for {{customer_name}}\n\n## Executive Summary\n\n## Pricing\n{{line_item_table}}\n\nTotal: {{total_amount}}\n\nDate: {{date}}"
+    );
+  };
+
+  const saveSettingsTemplate = async () => {
+    if (!templateNameDraft.trim()) {
+      setToast({ type: "error", message: t("settings.templateNameRequired") });
+      return;
+    }
+    setTemplateSaving(true);
+    try {
+      const payload = {
+        name: templateNameDraft.trim(),
+        type: "proposal",
+        content: templateEditorContent,
+      };
+      const { data } = editingTemplateId
+        ? await api.put(`/templates/${editingTemplateId}`, payload, { suppressPermissionToast: true })
+        : await api.post("/templates", payload, { suppressPermissionToast: true });
+      setSettingsTemplates((current) => {
+        if (editingTemplateId) {
+          return current.map((template) => template.id === editingTemplateId ? data : template);
+        }
+        return [data, ...current.filter((template) => template.id !== data.id)];
+      });
+      resetTemplateEditor();
+      setToast({ type: "success", message: t("settings.templateSaved") });
+    } catch (error) {
+      logApiError("SettingsPage", error);
+      setToast({ type: "error", message: getApiErrorMessage(error, t("settings.templateSaveFailed")) });
+    } finally {
+      setTemplateSaving(false);
+    }
+  };
+
+  const uploadTemplateFile = async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    setTemplateUploading(true);
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      const { data } = await api.post("/templates/extract", formData, {
+        headers: { "Content-Type": "multipart/form-data" },
+        suppressPermissionToast: true,
+      });
+      setEditingTemplateId(null);
+      setTemplateNameDraft(data?.name || file.name.replace(/\.[^.]+$/, ""));
+      setTemplateEditorContent(data?.content || "");
+      setToast({ type: "success", message: "Template content loaded. Review it before saving." });
+    } catch (error) {
+      logApiError("SettingsPage", error);
+      setToast({ type: "error", message: getApiErrorMessage(error, "Could not read the uploaded template.") });
+    } finally {
+      setTemplateUploading(false);
+      event.target.value = "";
+    }
+  };
+
   const refreshSocialStatus = async () => {
     try {
       const { data } = await socialApi.status();
       setSocialStatus(data);
     } catch (error) {
-      console.error(error);
+      logApiError("SettingsPage", error);
     }
   };
 
@@ -84,7 +158,7 @@ export function SettingsPage({ navigationState = {} }) {
       const { data } = await crmApi.status();
       setCrmStatus(data);
     } catch (error) {
-      console.error(error);
+      logApiError("SettingsPage", error);
     }
   };
 
@@ -104,7 +178,7 @@ export function SettingsPage({ navigationState = {} }) {
         localStorage.setItem(PREF_KEYS.timezone, savedTimezone);
         localStorage.setItem(PREF_KEYS.dateFormat, savedDateFormat);
       })
-      .catch((error) => console.error(error));
+      .catch((error) => logApiError("SettingsPage", error));
     return () => {
       mounted = false;
     };
@@ -124,7 +198,7 @@ export function SettingsPage({ navigationState = {} }) {
         setToast({ type: "error", message: t("settings.socialConnectFailed") });
       }
     } catch (error) {
-      console.error(error);
+      logApiError("SettingsPage", error);
       setToast({ type: "error", message: error.response?.data?.detail || t("settings.socialConnectFailed") });
     } finally {
       setSocialBusy(false);
@@ -149,7 +223,7 @@ export function SettingsPage({ navigationState = {} }) {
       setSocialModal(null);
       setToast({ type: "success", message: `${socialModal.l} connected.` });
     } catch (error) {
-      console.error(error);
+      logApiError("SettingsPage", error);
       setToast({ type: "error", message: error.response?.data?.detail || t("settings.socialConnectFailed") });
     } finally {
       setSocialBusy(false);
@@ -164,7 +238,7 @@ export function SettingsPage({ navigationState = {} }) {
       await refreshSocialStatus();
       setToast({ type: "success", message: t("settings.socialDisconnected") });
     } catch (error) {
-      console.error(error);
+      logApiError("SettingsPage", error);
       setToast({ type: "error", message: t("settings.socialConnectFailed") });
     } finally {
       setSocialBusy(false);
@@ -199,7 +273,7 @@ export function SettingsPage({ navigationState = {} }) {
       });
       setToast({ type: "success", message: t("settings.saved") });
     } catch (error) {
-      console.error(error);
+      logApiError("SettingsPage", error);
       setToast({ type: "error", message: "Could not save settings." });
     } finally {
       setSettingsSaving(false);
@@ -252,7 +326,7 @@ export function SettingsPage({ navigationState = {} }) {
       setCrmModal(null);
       setToast({ type: "success", message: t("settings.saved") });
     } catch (error) {
-      console.error(error);
+      logApiError("SettingsPage", error);
       setToast({ type: "error", message: getApiErrorMessage(error, "Could not save the CRM integration.") });
     } finally {
       setCrmSaving(false);
@@ -268,7 +342,7 @@ export function SettingsPage({ navigationState = {} }) {
       setCrmModal(null);
       setToast({ type: "success", message: t("settings.socialDisconnected") });
     } catch (error) {
-      console.error(error);
+      logApiError("SettingsPage", error);
       setToast({ type: "error", message: getApiErrorMessage(error, "Could not disconnect.") });
     } finally {
       setCrmSaving(false);
@@ -282,7 +356,7 @@ export function SettingsPage({ navigationState = {} }) {
       setCrmStatus(data);
       setToast({ type: "success", message: t("settings.saved") });
     } catch (error) {
-      console.error(error);
+      logApiError("SettingsPage", error);
       setToast({ type: "error", message: getApiErrorMessage(error, "Could not update active CRM provider.") });
     } finally {
       setCrmActiveSaving(false);

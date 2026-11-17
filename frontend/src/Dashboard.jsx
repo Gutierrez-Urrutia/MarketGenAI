@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 
-import { authApi, authTokenStore } from "./api/axios";
+import { authApi, authTokenStore, outreachEmailsApi } from "./api/axios";
+import { peekMailConnectionResult } from "./features/mailConnection/redirectResult";
+import { isActive } from "./features/outreach/prospectingEmails";
 import { useI18n } from "./hooks/useI18n";
 
 import { useTheme } from "./context/ThemeContext";
@@ -84,10 +86,19 @@ export default function App() {
     settings:   { label: t("sidebar.settings"),          icon: GearIcon,    component: SettingsPage },
   };
 
-  const [page, setPage] = useState(() => PATH_TO_PAGE[window.location.pathname] || "dashboard");
-  const [navigationState, setNavigationState] = useState({});
+  // Back from connecting the sending mailbox: open Settings › Pipeline, where
+  // the mailbox card shows the result (and removes it).
+  const [mailConnectionPending] = useState(() => Boolean(peekMailConnectionResult()));
+  const [page, setPage] = useState(() => (mailConnectionPending ? "settings" : PATH_TO_PAGE[window.location.pathname] || "dashboard"));
+  const [navigationState, setNavigationState] = useState(() => (mailConnectionPending ? { tab: "pipeline" } : {}));
   const [collapsed, setCollapsed] = useState(() => typeof window !== "undefined" && window.innerWidth < 1024);
   const PageComp = PAGES[page]?.visible === false ? DashboardPage : (PAGES[page]?.component || DashboardPage);
+
+  useEffect(() => {
+    if (mailConnectionPending && window.location.pathname !== "/settings") {
+      window.history.replaceState({}, "", "/settings");
+    }
+  }, [mailConnectionPending]);
 
   useEffect(() => {
     const onPopState = () => {
@@ -105,8 +116,13 @@ export default function App() {
   }, [theme]);
 
   useEffect(() => {
-    fetchOptional("/outreach/review-queue", null).then((items) => {
-      if (Array.isArray(items)) setOutreachBadge(items.length);
+    // Pending replies plus active prospecting emails (RF-VTA-16).
+    Promise.all([
+      fetchOptional("/outreach/review-queue", null),
+      outreachEmailsApi.list().then(({ data }) => data?.items || []).catch(() => []),
+    ]).then(([replies, emails]) => {
+      const active = emails.filter(isActive).length;
+      setOutreachBadge((Array.isArray(replies) ? replies.length : 0) + active);
     });
   }, []);
 

@@ -15,11 +15,41 @@ class LeadStatus(str, Enum):
     COMPOSING = "composing"
     READY_FOR_REVIEW = "ready_for_review"
     APPROVED = "approved"
-    AUTO_APPROVED = "auto_approved"
     SENT = "sent"
     REPLIED = "replied"
     REJECTED = "rejected"
     ERROR = "error"
+
+
+class ContactsSearchState(str, Enum):
+    """Result of the last contact search of a lead (Lead.contacts_search)."""
+
+    RUNNING = "running"
+    CONTACTS_FOUND = "contacts_found"
+    NO_DOMAIN = "no_domain"        # neither a domain nor a company name: no request made
+    NO_CONTACTS = "no_contacts"
+    ERROR = "error"
+
+
+class ContactsSearch(BaseModel):
+    """The last contact search of a lead (RF15). `reason` is a code
+    (no_credits, invalid_api_key, timeout...), never free text. `domain` is
+    the domain actually searched: the lead's, or the one Hunter resolved from
+    the company name (company_domain is never overwritten)."""
+
+    state: ContactsSearchState
+    search_id: Optional[str] = None
+    started_at: Optional[datetime] = None
+    searched_at: Optional[datetime] = None
+    reason: Optional[str] = None
+    domain: Optional[str] = None
+    domain_source: Optional[str] = None   # "lead" | "hunter_company_search"
+    query_type: Optional[str] = None      # "domain" | "company" | "reuse"
+    vacancy_area: Optional[str] = None
+    contacts_count: int = 0
+    credits_used: float = 0.0
+    forced: bool = False
+    reused_from_lead_id: Optional[str] = None
 
 
 class RawJobPosting(BaseModel):
@@ -42,6 +72,7 @@ class RawJobPosting(BaseModel):
     raw_title: Optional[str] = None
     company_domain: Optional[str] = None
     company_domain_source: Optional[str] = None
+    source_job_id: Optional[str] = None
 
     @field_validator("job_title")
     @classmethod
@@ -70,10 +101,16 @@ class Lead(BaseModel):
     pipeline_run_id: str
     fingerprint: str
     raw_title: Optional[str] = None
-    # Company's registrable domain and where it came from ("rss_url_line");
-    # None on leads saved before T9a and on postings without one.
+    # Company's registrable domain and where it came from ("rss_url_line",
+    # "jsearch_employer_website"); None on leads saved before T9a and on
+    # postings without one.
     company_domain: Optional[str] = None
     company_domain_source: Optional[str] = None
+    # The posting's id at its provider (JSearch `job_id`); None on other
+    # sources and on leads saved before RF15. Not part of the fingerprint.
+    source_job_id: Optional[str] = None
+    # Last contact search (RF15, Fase 5); None until the first one.
+    contacts_search: Optional[ContactsSearch] = None
     # Firestore stores createdAt/updatedAt (FirestoreRepo.create). Accept both
     # spellings on input only: the JSON key stays created_at/updated_at.
     created_at: Optional[datetime] = Field(None, validation_alias=AliasChoices("created_at", "createdAt"))
