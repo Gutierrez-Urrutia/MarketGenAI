@@ -5,7 +5,7 @@ name: Deploy dev (GCP)
 # Configuración de la identidad: infra/gcp/setup_cicd.py
 on:
   push:
-    branches: [main, feature/ci-cd-gcp]   # TEMPORAL: la rama de pruebas se quita antes de integrar
+    branches: [main]
     paths-ignore: ["**.md", "docs/**"]
   workflow_dispatch:
 
