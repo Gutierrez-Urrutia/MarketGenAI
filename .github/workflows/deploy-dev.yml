@@ -78,7 +78,7 @@ jobs:
           SRC=gs://${PROJECT}_cloudbuild/source/api-${GITHUB_SHA::7}.tgz
           tar -czf /tmp/api-src.tgz -C backend --exclude=tests --exclude=__pycache__ --exclude=.venv --exclude='.env*' --exclude='service-account*.json' .
           gcloud storage cp /tmp/api-src.tgz $SRC --project=$PROJECT
-          gcloud builds submit $SRC --tag=$REGISTRY/api:dev --project=$PROJECT --region=$REGION
+          gcloud builds submit $SRC --tag=$REGISTRY/api:dev --project=$PROJECT --gcs-log-dir=gs://${PROJECT}_cloudbuild/logs
           gcloud artifacts docker tags add $REGISTRY/api:dev $REGISTRY/api:${GITHUB_SHA::7} --project=$PROJECT
 
       - name: Desplegar la API en Cloud Run
@@ -107,7 +107,7 @@ jobs:
           tar -czf /tmp/web-src.tgz -C frontend --exclude=node_modules --exclude=dist --exclude='.env*' .
           gcloud storage cp /tmp/web-src.tgz $SRC --project=$PROJECT
           gcloud builds submit $SRC --config=frontend/cloudbuild.yaml \
-            --substitutions=_API_URL=$API_URL/api/v1 --project=$PROJECT --region=$REGION
+            --substitutions=_API_URL=$API_URL/api/v1 --project=$PROJECT --gcs-log-dir=gs://${PROJECT}_cloudbuild/logs
           gcloud run services update marketgen-web \
             --image=$REGISTRY/web:dev \
             --update-env-vars=DEPLOYED_FROM=${GITHUB_SHA::7} \
