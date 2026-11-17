@@ -39,6 +39,7 @@ import weakref
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
+from google.api_core.exceptions import FailedPrecondition
 from google.oauth2 import service_account
 from google.cloud import firestore
 from google.cloud.firestore_v1.async_client import AsyncClient
@@ -954,9 +955,11 @@ class AuditLogsRepo(FirestoreRepo):
     ) -> tuple[List[Dict[str, Any]], bool]:
         """Registros más recientes primero. Devuelve (items, has_more).
 
-        Con filtros de igualdad se filtra por rango y se pagina en memoria
-        (evita índices compuestos, igual que `FirestoreRepo.list`). Sin ellos
-        se usa el rango y el orden nativos de Firestore."""
+        Consulta nativa de Firestore (filtros de igualdad + rango y orden por `timestamp`):
+        lee solo `offset + limit + 1` documentos. Con filtros de igualdad necesita los
+        índices compuestos de `backend/firestore.indexes.json`; si falta alguno
+        (FailedPrecondition) se cae al camino lento, que lee TODO el conjunto filtrado en
+        cada página (RNF02-D-001: con 1.200 registros eran 1.200 lecturas por petición)."""
         equalities = [
             (field, value)
             for field, value in (
@@ -967,8 +970,24 @@ class AuditLogsRepo(FirestoreRepo):
         query = self._col()
         for field, value in equalities:
             query = query.where(filter=firestore.FieldFilter(field, "==", value))
-
-        if equalities:
+        native = query
+        if date_from:
+            native = native.where(filter=firestore.FieldFilter("timestamp", ">=", date_from))
+        if date_to:
+            native = native.where(filter=firestore.FieldFilter("timestamp", "<=", date_to))
+        native = native.order_by("timestamp", direction=firestore.Query.DESCENDING)
+        if offset:
+            native = native.offset(offset)
+        try:
+            docs = await native.limit(limit + 1).get()
+            page = [d.to_dict() for d in docs if d.exists]
+        except FailedPrecondition:
+            if not equalities:
+                raise   # sin igualdades solo hace falta el índice simple de `timestamp`, que Firestore crea solo
+            logger.warning(
+                "auditLogs: falta un índice compuesto para %s; se lee todo el conjunto filtrado en cada "
+                "página. Despliega backend/firestore.indexes.json.", [f for f, _ in equalities],
+            )
             docs = await query.get()
             items = [d.to_dict() for d in docs if d.exists]
             items = [
@@ -978,16 +997,6 @@ class AuditLogsRepo(FirestoreRepo):
             ]
             items.sort(key=lambda item: item.get("timestamp") or "", reverse=True)
             page = items[offset: offset + limit + 1]
-        else:
-            if date_from:
-                query = query.where(filter=firestore.FieldFilter("timestamp", ">=", date_from))
-            if date_to:
-                query = query.where(filter=firestore.FieldFilter("timestamp", "<=", date_to))
-            query = query.order_by("timestamp", direction=firestore.Query.DESCENDING)
-            if offset:
-                query = query.offset(offset)
-            docs = await query.limit(limit + 1).get()
-            page = [d.to_dict() for d in docs if d.exists]
         return page[:limit], len(page) > limit
 
 

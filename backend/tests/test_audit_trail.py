@@ -400,32 +400,109 @@ class _FakeDoc:
 
 
 class _FakeQuery:
-    def __init__(self, rows):
-        self.rows = rows
+    """Imita la consulta de Firestore y cuenta los documentos leídos (lo que se cobra).
+    `sin_indice=True`: igualdad + orden por otro campo falla como sin índice compuesto."""
+
+    def __init__(self, rows, contador, sin_indice=False, filtros=(), orden=False, salto=0, tope=None):
+        self.rows, self.contador, self.sin_indice = rows, contador, sin_indice
+        self.filtros, self.orden, self.salto, self.tope = list(filtros), orden, salto, tope
+
+    def _con(self, **cambios):
+        datos = dict(rows=self.rows, contador=self.contador, sin_indice=self.sin_indice, filtros=self.filtros, orden=self.orden, salto=self.salto, tope=self.tope)
+        datos.update(cambios)
+        return _FakeQuery(**datos)
 
     def where(self, filter):
-        field, op, value = filter.field_path, filter.op_string, filter.value
-        assert op == "=="
-        return _FakeQuery([r for r in self.rows if r.get(field) == value])
+        return self._con(filtros=[*self.filtros, (filter.field_path, filter.op_string, filter.value)])
+
+    def order_by(self, campo, direction=None):
+        return self._con(orden=True)
+
+    def offset(self, n):
+        return self._con(salto=n)
+
+    def limit(self, n):
+        return self._con(tope=n)
 
     async def get(self):
-        return [_FakeDoc(r) for r in self.rows]
+        from google.api_core.exceptions import FailedPrecondition
+
+        igualdades = [f for f in self.filtros if f[1] == "=="]
+        if self.sin_indice and igualdades and self.orden:
+            raise FailedPrecondition("The query requires an index.")
+        filas = list(self.rows)
+        for campo, op, valor in self.filtros:
+            filas = [r for r in filas if (r.get(campo) == valor if op == "==" else
+                                          (r.get(campo) or "") >= valor if op == ">=" else (r.get(campo) or "") <= valor)]
+        if self.orden:
+            filas.sort(key=lambda r: r.get("timestamp") or "", reverse=True)
+            leidas = filas[self.salto: self.salto + (self.tope if self.tope is not None else len(filas))]
+            self.contador["leidos"] += self.salto and min(self.salto, len(filas)) or 0   # los saltados también se cobran
+            self.contador["leidos"] += len(leidas)
+            return [_FakeDoc(r) for r in leidas]
+        self.contador["leidos"] += len(filas)
+        return [_FakeDoc(r) for r in filas]
 
 
-@pytest.mark.asyncio
-async def test_RNF02_repo_filtra_ordena_y_pagina():
-    from app.services.firestore_service import AuditLogsRepo
-
-    rows = [
+def _filas_auditoria():
+    return [
         {"id": str(i), "userId": "u-1", "action": "proposal_updated", "resourceId": "p-1",
          "timestamp": f"2026-11-1{i}T10:00:00+00:00"}
         for i in range(5)
     ] + [{"id": "x", "userId": "u-2", "action": "proposal_updated", "resourceId": "p-2", "timestamp": "2026-11-19T00:00:00+00:00"}]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sin_indice", [False, True])
+async def test_RNF02_repo_filtra_ordena_y_pagina(sin_indice):
+    """Mismos resultados con los índices compuestos y sin ellos (camino de respaldo)."""
+    from app.services.firestore_service import AuditLogsRepo
+
+    contador = {"leidos": 0}
     repo = AuditLogsRepo()
-    with patch.object(AuditLogsRepo, "_col", return_value=_FakeQuery(rows)):
+    with patch.object(AuditLogsRepo, "_col", return_value=_FakeQuery(_filas_auditoria(), contador, sin_indice=sin_indice)):
         page, more = await repo.search(user_id="u-1", limit=2)
         assert [r["id"] for r in page] == ["4", "3"] and more is True
         page, more = await repo.search(user_id="u-1", limit=2, offset=4)
         assert [r["id"] for r in page] == ["0"] and more is False
         page, _ = await repo.search(user_id="u-1", date_from="2026-11-12T00:00:00+00:00", date_to="2026-11-13T23:59:59+00:00")
         assert [r["id"] for r in page] == ["3", "2"]
+        page, _ = await repo.search(limit=3)   # sin igualdades: orden nativo de timestamp
+        assert [r["id"] for r in page] == ["x", "4", "3"]
+
+
+@pytest.mark.asyncio
+async def test_RNF02_con_indice_la_consulta_lee_solo_la_pagina():
+    """RNF02-D-001: con el índice compuesto se leen limit + 1 documentos, no todo el conjunto filtrado."""
+    from app.services.firestore_service import AuditLogsRepo
+
+    filas = [{"id": str(i), "userId": "u-1", "action": "a", "resourceId": "p", "timestamp": f"2026-10-01T00:{i // 60:02d}:{i % 60:02d}+00:00"} for i in range(1200)]
+    contador = {"leidos": 0}
+    with patch.object(AuditLogsRepo, "_col", return_value=_FakeQuery(filas, contador)):
+        page, more = await AuditLogsRepo().search(user_id="u-1", limit=50)
+    assert len(page) == 50 and more is True
+    assert contador["leidos"] == 51   # y no 1.200
+
+
+@pytest.mark.asyncio
+async def test_RNF02_sin_indice_avisa_y_sigue_funcionando(caplog):
+    from app.services.firestore_service import AuditLogsRepo
+
+    contador = {"leidos": 0}
+    with caplog.at_level(logging.WARNING, logger="marketgen.firestore"):
+        with patch.object(AuditLogsRepo, "_col", return_value=_FakeQuery(_filas_auditoria(), contador, sin_indice=True)):
+            page, _ = await AuditLogsRepo().search(user_id="u-1", limit=2)
+    assert [r["id"] for r in page] == ["4", "3"]
+    assert "falta un índice compuesto" in caplog.text and "firestore.indexes.json" in caplog.text
+
+
+def test_RNF02_el_archivo_de_indices_cubre_todas_las_combinaciones_de_filtros():
+    import itertools
+    import json
+    from pathlib import Path
+
+    datos = json.loads((Path(__file__).resolve().parent.parent / "firestore.indexes.json").read_text(encoding="utf-8"))
+    tenidos = {tuple(sorted(f["fieldPath"] for f in ix["fields"] if f["fieldPath"] != "timestamp")) for ix in datos["indexes"] if ix["collectionGroup"] == "auditLogs"}
+    esperados = {tuple(sorted(c)) for n in (1, 2, 3) for c in itertools.combinations(("userId", "action", "resourceId"), n)}
+    assert tenidos == esperados
+    assert all(ix["fields"][-1] == {"fieldPath": "timestamp", "order": "DESCENDING"} for ix in datos["indexes"])
