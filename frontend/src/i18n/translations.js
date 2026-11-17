@@ -39,6 +39,7 @@ export const translations = {
 
     // Sidebar / Navigation
     sidebar: {
+      auditLogs: "Audit log",
       dashboard: "Dashboard",
       books: "Book Concepts",
       opportunities: "Opportunities",
@@ -1300,6 +1301,7 @@ export const translations = {
 
     // Barra lateral / Navegación
     sidebar: {
+      auditLogs: "Registro de auditoría",
       dashboard: "Panel principal",
       books: "Conceptos de libros",
       opportunities: "Oportunidades",
@@ -2598,6 +2600,7 @@ export const translations = {
 
     // Barra Lateral / Navegação
     sidebar: {
+      auditLogs: "Registro de auditoria",
       dashboard: "Painel principal",
       books: "Conceitos de livros",
       opportunities: "Oportunidades",

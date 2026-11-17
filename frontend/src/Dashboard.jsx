@@ -80,7 +80,7 @@ export default function App() {
     leads:      { label: t("sidebar.leads"),             icon: RadarIcon,   component: LeadList },
     assistant: { label: t("sidebar.chat"), icon: SparkIcon, component: AssistantPage },
     reports:    { label: t("sidebar.reports"),           icon: ChartIcon,   component: ReportsPage },
-    auditLogs: { label: "Audit Logs", icon: ShieldIcon, component: AuditLogsPage, visible: showAuditLogs },
+    auditLogs: { label: t("sidebar.auditLogs"), icon: ShieldIcon, component: AuditLogsPage, visible: showAuditLogs },
     settings:   { label: t("sidebar.settings"),          icon: GearIcon,    component: SettingsPage },
   };
 

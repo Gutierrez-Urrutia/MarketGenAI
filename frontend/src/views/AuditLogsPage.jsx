@@ -158,7 +158,7 @@ export function AuditLogsPage() {
                   <td className="px-4 py-4 text-gray-700">
                     {log.action === PROPOSAL_STATUS_CHANGED ? (
                       <>
-                        <div>{actionLabel(log.action)}</div>
+                        <div>{t("auditLogs.proposalStatusChanged")}</div>
                         <div className="text-[11px] text-gray-500">
                           {t(proposalStatusLabelKey(log.previousStatus))} → {t(proposalStatusLabelKey(log.newStatus))}
                         </div>
