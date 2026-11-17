@@ -6,7 +6,7 @@ name: Deploy dev (GCP)
 on:
   push:
     branches: [main]
-    paths-ignore: ["**.md", "docs/**"]
+    paths-ignore: ["**.md", "docs/**", ".github/workflows/worker-vm.yml"]
   workflow_dispatch:
 
 concurrency:

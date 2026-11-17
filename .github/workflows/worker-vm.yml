@@ -86,5 +86,7 @@ jobs:
             echo "- Acción pedida: \`${{ inputs.action }}\`"
             echo "- Estado antes: \`${{ steps.before.outputs.status }}\`"
             echo "- Estado ahora: \`$status\`"
-            [ "$status" = "RUNNING" ] && echo "- Encendida: cuesta ~US\$0,02 por hora. Apágala cuando no haya demos."
+            if [ "$status" = "RUNNING" ]; then
+              echo "- Encendida: cuesta ~US\$0,02 por hora. Apágala cuando no haya demos."
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
