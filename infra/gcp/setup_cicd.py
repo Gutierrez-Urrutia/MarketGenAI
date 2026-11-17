@@ -54,14 +54,26 @@ for role in ["roles/cloudbuild.builds.editor", "roles/logging.viewer", "roles/se
        "--condition=None")
     print("rol:", role)
 
-gc("storage", "buckets", "add-iam-policy-binding", f"gs://{PROJECT}_cloudbuild",
-   f"--member=serviceAccount:{DEPLOYER_EMAIL}", "--role=roles/storage.objectAdmin")
+# `builds submit` sube el código al bucket de Cloud Build y antes consulta que exista (buckets.get).
+for role in ["roles/storage.objectAdmin", "roles/storage.legacyBucketReader"]:
+    gc("storage", "buckets", "add-iam-policy-binding", f"gs://{PROJECT}_cloudbuild",
+       f"--member=serviceAccount:{DEPLOYER_EMAIL}", f"--role={role}")
 # Debe poder «actuar como» las cuentas con las que corren Cloud Run, la VM y el build.
 for sa in [f"marketgen-api@{PROJECT}.iam.gserviceaccount.com", f"marketgen-worker@{PROJECT}.iam.gserviceaccount.com",
            f"{PROJECT_NUMBER}-compute@developer.gserviceaccount.com"]:
     gc("iam", "service-accounts", "add-iam-policy-binding", sa, f"--member=serviceAccount:{DEPLOYER_EMAIL}",
        "--role=roles/iam.serviceAccountUser")
     print("actAs:", sa)
+
+# `builds submit` lista los buckets del proyecto (GET /storage/v1/b?prefix=...) para ubicar el de Cloud Build; sin
+# storage.buckets.list falla con un engañoso «forbidden ... serviceusage.services.use». Rol mínimo con solo ese permiso.
+ROLE_ID = "bucketLister"
+if not exists("iam", "roles", "describe", ROLE_ID):
+    gc("iam", "roles", "create", ROLE_ID, "--title=Listar buckets (despliegue)", "--permissions=storage.buckets.list", "--stage=GA")
+    print("rol personalizado creado:", ROLE_ID)
+gc("projects", "add-iam-policy-binding", PROJECT, f"--member=serviceAccount:{DEPLOYER_EMAIL}",
+   f"--role=projects/{PROJECT}/roles/{ROLE_ID}", "--condition=None")
+print("rol:", ROLE_ID)
 
 # 3. Workload Identity Federation: solo este repositorio y las ramas indicadas
 condition = f"assertion.repository=='{REPO}' && (" + " || ".join(f"assertion.ref=='refs/heads/{b}'" for b in BRANCHES) + ")"
