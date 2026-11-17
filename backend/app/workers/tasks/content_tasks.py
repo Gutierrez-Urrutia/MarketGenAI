@@ -17,6 +17,7 @@ from celery import Task
 
 from app.workers.celery_app import celery_app
 from app.config import settings
+from app.core.languages import normalize_language
 from app.services import book_ai_service, deepseek_service
 from app.services.firestore_service import books_repo, jobs_repo
 
@@ -78,7 +79,7 @@ def task_generate_chapters(
             created.append(chapter)
 
         # Update book status
-        _run(books_repo.update(book_id, {"status": "outlined"}))
+        _run(books_repo.update(book_id, {"status": "outlined", "language": normalize_language(language)}))
 
         _run(jobs_repo.complete_job(job_id, {"chapters": created, "bookStatus": "outlined"}))
         logger.info("generate_chapters completed: job=%s book=%s chapters=%d", job_id, book_id, len(created))

@@ -104,7 +104,7 @@ describe("LeadList scan state lives on the server, not in the component", () => 
     await flush();
     await tick(2000); // still running
 
-    fireEvent.change(container.querySelector("select"), { target: { value: "sent" } });
+    fireEvent.change(container.querySelector("select"), { target: { value: "contacts_found" } });
     await flush();
     await tick(2000); // completes after the filter changed
 

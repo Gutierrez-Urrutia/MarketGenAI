@@ -120,7 +120,7 @@ def test_task_generate_chapters_success():
         chapter_count=2,
         language="en",
     )
-    update_book.assert_awaited_once_with("book-ch-test", {"status": "outlined"})
+    update_book.assert_awaited_once_with("book-ch-test", {"status": "outlined", "language": "en"})
     complete_job.assert_awaited_once()
     payload = complete_job.call_args.args[1]
     assert len(payload["chapters"]) == 2

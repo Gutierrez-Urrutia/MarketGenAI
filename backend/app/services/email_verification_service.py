@@ -5,7 +5,8 @@ What "valid" means — and what it does not:
     VALID means the address is well-formed AND its domain accepts mail: it has
     an MX record, or (with no MX at all) an A/AAAA record, which RFC 5321 §5.1
     treats as an implicit MX. It does NOT confirm that the mailbox exists —
-    that would take an SMTP probe, which this service never does.
+    that would take probing the recipient's mail server, which this service
+    never does.
 
 The three outcomes:
     VALID    — format ok and the domain receives mail.

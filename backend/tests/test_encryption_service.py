@@ -1,4 +1,4 @@
-"""Guards the encryption layer (SMTP passwords, API keys) across cryptography upgrades."""
+"""Guards the encryption layer (API keys, mailbox OAuth tokens) across cryptography upgrades."""
 from __future__ import annotations
 
 import pytest

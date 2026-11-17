@@ -1,0 +1,201 @@
+/**
+ * RF15 — Hunter API key in Settings → Pipeline: write-only. Synthetic values
+ * only; the API is mocked.
+ */
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { render, screen, act, fireEvent } from "@testing-library/react";
+
+vi.mock("@/api/axios", () => ({
+  pipelineApi: {
+    getConfig: vi.fn(), updateConfig: vi.fn(), createSource: vi.fn(), updateSource: vi.fn(),
+    deleteSource: vi.fn(), testSource: vi.fn(),
+  },
+  mailConnectionApi: {
+    status: vi.fn(async () => ({ data: { oauth_configured: true, connected: false, needs_reconnect: false } })),
+    start: vi.fn(), test: vi.fn(), delete: vi.fn(),
+  },
+}));
+vi.mock("@/hooks/useI18n", () => ({ useI18n: () => ({ t: (key) => key }) }));
+vi.mock("react-hot-toast", () => {
+  const toast = Object.assign(vi.fn(), { success: vi.fn(), error: vi.fn() });
+  return { default: toast };
+});
+
+import toast from "react-hot-toast";
+import { pipelineApi } from "@/api/axios";
+import PipelineSettingsTab from "@/pages/settings/PipelineSettingsTab";
+
+const flush = () => act(async () => { for (let i = 0; i < 5; i += 1) await Promise.resolve(); });
+const KEY = "hk-sintetica-0000";
+
+const config = (overrides = {}) => ({
+  id: "user-1", keywords: ["BPO"], industries: [], excluded_companies: [], sources: [],
+  outreach_daily_send_limit: 20, hunter_api_key_configured: false, is_active: true, ...overrides,
+});
+
+const keyInput = () => screen.getByLabelText("settings.pipelineTab.hunterKeyLabel");
+const saveButton = () => screen.getByRole("button", { name: "settings.pipelineTab.hunterSaveButton" });
+const save = async () => {
+  fireEvent.click(saveButton());
+  await flush();
+};
+const limitInput = () => screen.getByLabelText("settings.pipelineTab.dailyLimitLabel");
+const saveLimit = async () => {
+  fireEvent.click(screen.getByRole("button", { name: "settings.pipelineTab.dailyLimitSaveButton" }));
+  await flush();
+};
+const sentPayload = () => pipelineApi.updateConfig.mock.calls.at(-1)[0];
+
+async function renderTab(cfg = config()) {
+  pipelineApi.getConfig.mockResolvedValue({ data: cfg });
+  render(<PipelineSettingsTab />);
+  await flush();
+}
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  pipelineApi.updateConfig.mockImplementation(async (payload) => ({
+    data: config({ hunter_api_key_configured: "hunter_api_key" in payload ? payload.hunter_api_key !== "" : true }),
+  }));
+});
+
+describe("Hunter key field", () => {
+  it("not configured: says so and starts empty", async () => {
+    await renderTab();
+    expect(screen.getByText("settings.pipelineTab.hunterStatusNotConfigured")).toBeTruthy();
+    expect(screen.getByText("settings.pipelineTab.hunterNotConfiguredHint")).toBeTruthy();
+    expect(keyInput().type).toBe("password");
+    expect(keyInput().value).toBe("");
+    expect(keyInput().getAttribute("autocomplete")).toBe("new-password");
+    expect(screen.queryByRole("button", { name: "settings.pipelineTab.hunterClear" })).toBeNull();
+  });
+
+  it("configured: says so and is never filled with a value", async () => {
+    await renderTab(config({ hunter_api_key_configured: true, hunter_api_key: KEY }));
+    expect(screen.getByText("settings.pipelineTab.hunterStatusConfigured")).toBeTruthy();
+    expect(keyInput().value).toBe("");
+    expect(keyInput().placeholder).toBe("••••••••");
+    expect(document.body.innerHTML).not.toContain(KEY);
+  });
+
+  it("with nothing to apply, «Save key» is disabled and nothing is sent", async () => {
+    await renderTab(config({ hunter_api_key_configured: true }));
+    expect(saveButton().disabled).toBe(true);
+    await save();
+    expect(pipelineApi.updateConfig).not.toHaveBeenCalled();
+  });
+
+  it("a whitespace-only value keeps «Save key» disabled", async () => {
+    await renderTab(config({ hunter_api_key_configured: true }));
+    fireEvent.change(keyInput(), { target: { value: "   " } });
+    expect(saveButton().disabled).toBe(true);
+    await save();
+    expect(pipelineApi.updateConfig).not.toHaveBeenCalled();
+  });
+
+  it("typing a key enables «Save key»; emptying the field disables it again", async () => {
+    await renderTab();
+    fireEvent.change(keyInput(), { target: { value: KEY } });
+    expect(saveButton().disabled).toBe(false);
+    fireEvent.change(keyInput(), { target: { value: "" } });
+    expect(saveButton().disabled).toBe(true);
+  });
+
+  it("a new key is sent trimmed, then the field is emptied", async () => {
+    await renderTab();
+    fireEvent.change(keyInput(), { target: { value: `  ${KEY}  ` } });
+    await save();
+    expect(sentPayload()).toEqual({ hunter_api_key: KEY });
+    expect(keyInput().value).toBe("");
+    expect(screen.getByText("settings.pipelineTab.hunterStatusConfigured")).toBeTruthy();
+    expect(toast.success).toHaveBeenCalledWith("settings.pipelineTab.hunterSaved");
+    expect(saveButton().disabled).toBe(true);
+  });
+
+  it("'Clear key' is applied on save and sends an empty string", async () => {
+    await renderTab(config({ hunter_api_key_configured: true }));
+    fireEvent.click(screen.getByRole("button", { name: "settings.pipelineTab.hunterClear" }));
+    expect(screen.getByText("settings.pipelineTab.hunterClearPending")).toBeTruthy();
+    expect(pipelineApi.updateConfig).not.toHaveBeenCalled();
+    expect(saveButton().disabled).toBe(false);
+    await save();
+    expect(sentPayload()).toEqual({ hunter_api_key: "" });
+    expect(screen.getByText("settings.pipelineTab.hunterStatusNotConfigured")).toBeTruthy();
+    expect(toast.success).toHaveBeenCalledWith("settings.pipelineTab.hunterCleared");
+  });
+
+  it("'Undo' before saving keeps the key", async () => {
+    await renderTab(config({ hunter_api_key_configured: true }));
+    fireEvent.click(screen.getByRole("button", { name: "settings.pipelineTab.hunterClear" }));
+    fireEvent.click(screen.getByRole("button", { name: "settings.pipelineTab.hunterUndoClear" }));
+    expect(screen.queryByText("settings.pipelineTab.hunterClearPending")).toBeNull();
+    expect(saveButton().disabled).toBe(true);
+    await save();
+    expect(pipelineApi.updateConfig).not.toHaveBeenCalled();
+  });
+
+  it("typing a new key after 'Clear key' replaces it instead of clearing", async () => {
+    await renderTab(config({ hunter_api_key_configured: true }));
+    fireEvent.click(screen.getByRole("button", { name: "settings.pipelineTab.hunterClear" }));
+    fireEvent.change(keyInput(), { target: { value: KEY } });
+    await save();
+    expect(sentPayload().hunter_api_key).toBe(KEY);
+  });
+
+  it("a 503 (no encryption on the server) shows its own message", async () => {
+    pipelineApi.updateConfig.mockRejectedValue(Object.assign(new Error("HTTP 503"), {
+      response: { status: 503, data: { detail: "PIPELINE_ENCRYPTION_KEY is not set" } },
+    }));
+    await renderTab();
+    fireEvent.change(keyInput(), { target: { value: KEY } });
+    await save();
+    expect(toast.error).toHaveBeenCalledWith("settings.pipelineTab.toastEncryptionUnavailable");
+  });
+
+  it("a failed save keeps the typed key and shows the card's error", async () => {
+    // No server detail and no message: the card's own fallback text is shown.
+    pipelineApi.updateConfig.mockRejectedValue(Object.assign(new Error(""), { response: { status: 500 } }));
+    await renderTab();
+    fireEvent.change(keyInput(), { target: { value: KEY } });
+    await save();
+    expect(toast.error).toHaveBeenCalledWith("settings.pipelineTab.hunterSaveError");
+    expect(keyInput().value).toBe(KEY);
+    expect(saveButton().disabled).toBe(false);
+  });
+
+  it("a failed save does not log the Hunter key", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    const failure = Object.assign(new Error("HTTP 400"), {
+      config: { data: JSON.stringify({ hunter_api_key: KEY }) },
+      response: { status: 400, data: { detail: "Bad request" } },
+    });
+    pipelineApi.updateConfig.mockRejectedValue(failure);
+    await renderTab();
+    fireEvent.change(keyInput(), { target: { value: KEY } });
+    await save();
+    expect(pipelineApi.updateConfig).toHaveBeenCalledTimes(1);
+    const logged = JSON.stringify([...log.mock.calls, ...err.mock.calls], (k, v) => (v instanceof Error ? { ...v, message: v.message } : v));
+    expect(logged).not.toContain(KEY);
+    expect(err).not.toHaveBeenCalled();
+    log.mockRestore(); err.mockRestore();
+  });
+
+  it("«Save limit» does not send the key, and a typed key survives it", async () => {
+    await renderTab(config({ hunter_api_key_configured: true }));
+    fireEvent.change(keyInput(), { target: { value: KEY } });
+    await saveLimit();
+    expect(sentPayload()).toEqual({ outreach_daily_send_limit: 20 });
+    expect(keyInput().value).toBe(KEY);
+    expect(saveButton().disabled).toBe(false);
+  });
+
+  it("«Save key» sends nothing from the other cards", async () => {
+    await renderTab();
+    fireEvent.change(limitInput(), { target: { value: "35" } });
+    fireEvent.change(keyInput(), { target: { value: KEY } });
+    await save();
+    expect(sentPayload()).toEqual({ hunter_api_key: KEY });
+    expect(limitInput().value).toBe("35");
+  });
+});

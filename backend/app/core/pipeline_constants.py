@@ -64,6 +64,37 @@ RELEVANCE_SCORING_TIMEOUT_SECONDS = 45
 # RELEVANCE_SCORING_BATCH_SIZE postings stays a bounded prompt size.
 POSTING_DESCRIPTION_MAX_CHARS = 600
 
+# ── JSearch adapter (RapidAPI — LinkedIn, Indeed and other job boards) ──────
+# The endpoint is fixed here, never taken from the user's source config.
+# /search-v2 replaced /search (now 404); it pages by cursor, not page numbers.
+JSEARCH_SEARCH_URL = "https://jsearch.p.rapidapi.com/search-v2"
+JSEARCH_API_HOST = "jsearch.p.rapidapi.com"
+# JSearch aggregates several boards per request and is slower than a plain
+# feed, so it gets a longer per-request budget than SOURCE_FETCH_TIMEOUT_SECONDS.
+# RUN_TIME_BUDGET_SECONDS still bounds the whole run.
+JSEARCH_FETCH_TIMEOUT_SECONDS = 45
+# Each page is a separate request (and a separate billed call on RapidAPI).
+# Cap on the requests of one source per run, across all its keywords: enough
+# for page 1 of every keyword.
+JSEARCH_MAX_PAGES = 8
+# JSearch matches a query as one phrase, so each keyword is its own query;
+# only the first ones are used, and they share JSEARCH_MAX_PAGES.
+JSEARCH_MAX_KEYWORDS = 8
+# A source's num_pages: the depth per keyword (1..this). Never sent to JSearch.
+JSEARCH_MAX_NUM_PAGES = 3
+JSEARCH_DEFAULT_NUM_PAGES = 1
+# Postings kept per keyword and per JSearch source, so that every keyword
+# adds some (the first ones would otherwise fill the source cap alone).
+# 8 x 5 = 40 still fits RUN_TIME_BUDGET_SECONDS with batched scoring; the
+# other source types keep MAX_RESULTS_PER_SOURCE.
+JSEARCH_MAX_RESULTS_PER_KEYWORD = 5
+JSEARCH_MAX_RESULTS_PER_SOURCE = JSEARCH_MAX_KEYWORDS * JSEARCH_MAX_RESULTS_PER_KEYWORD
+# A JSearch request is not started with less run budget than this left.
+JSEARCH_MIN_REQUEST_SECONDS = 5
+JSEARCH_DEFAULT_COUNTRY = "gb"
+JSEARCH_DEFAULT_LANGUAGE = "en"
+JSEARCH_DATE_POSTED_OPTIONS = ("all", "today", "3days", "week", "month")
+
 # ── Agente 2 — Lead Researcher ──────────────────────────────────────────────
 # Total budget for verifying one email address: every DNS query it makes
 # (MX, then A/AAAA when there is no MX) shares this one deadline, so a single
@@ -79,6 +110,284 @@ ENRICHMENT_PROVIDER_TIMEOUT_SECONDS = 20
 # Contacts kept from a single provider per search; the rest are dropped (and
 # logged) so one misbehaving provider can't flood a lead with contacts.
 ENRICHMENT_MAX_CONTACTS_PER_PROVIDER = 50
+
+# ── Hunter.io provider (Agente 2 — contacts by company domain) ──────────────
+# Endpoints are fixed here, never taken from the user. The key travels only
+# in the X-API-KEY header, never in the URL (httpx logs URLs).
+HUNTER_DOMAIN_SEARCH_URL = "https://api.hunter.io/v2/domain-search"
+HUNTER_ACCOUNT_URL = "https://api.hunter.io/v2/account"
+# /account (free) is read once per provider instance, then the search runs:
+# both together stay under ENRICHMENT_PROVIDER_TIMEOUT_SECONDS.
+HUNTER_ACCOUNT_TIMEOUT_SECONDS = 5
+HUNTER_SEARCH_TIMEOUT_SECONDS = 12
+# A domain search costs 1 credit for 1 to 10 emails (none when it finds
+# nothing), so one page of 10 per lead.
+HUNTER_RESULTS_LIMIT = 10
+HUNTER_EMAIL_TYPE = "personal"
+# An empty seniority goes with operational staff (drivers, couriers): only
+# senior and executive people are asked for.
+HUNTER_SENIORITY = ("senior", "executive")
+# Sent comma-separated as `department`; an empty tuple sends no filter.
+HUNTER_DEPARTMENTS = ("executive", "management", "operations", "support", "procurement", "finance", "it")
+# A Hunter response is a handful of emails: far below MAX_SOURCE_RESPONSE_BYTES.
+HUNTER_MAX_RESPONSE_BYTES = 512 * 1024
+# Characters of Hunter's own error text (errors[].details) kept for the logs.
+HUNTER_ERROR_DETAIL_MAX_CHARS = 200
+# Source page URLs kept per contact (sources[].uri).
+HUNTER_MAX_SOURCE_URLS = 5
+# Searching by company name (no domain), Hunter picks the domain itself. Its
+# contacts are kept only when that domain matches the name at least this much
+# (company_domain_validation_service.domain_name_match). Measured: matching
+# pairs (hsbc.com / "HSBC Global Services", uniqlo.com / "Uniqlo", zigup.com /
+# "ZIGUP plc", britishairways.com / "British Airways") all score 1.0; unrelated
+# pairs score 0.0-0.286.
+HUNTER_COMPANY_MATCH_MIN = 0.7
+# Words that say nothing about which company it is. They are dropped from a
+# company name before it is matched against the domain Hunter picked, so
+# "HSBC Global Services" never matches services.com or global.com. A name
+# made only of these words matches nothing. Accent-free and lowercase.
+HUNTER_GENERIC_NAME_WORDS = frozenset({
+    "services", "service", "global", "group", "holdings", "holding", "limited", "ltd", "plc",
+    "inc", "incorporated", "company", "co", "corp", "corporation", "llc", "llp", "gmbh", "ag", "sa",
+    "solutions", "international", "intl", "worldwide", "enterprises", "partners", "systems",
+    "technologies", "technology", "consulting", "the", "and", "of",
+    # Spanish
+    "grupo", "servicios", "soluciones", "sociedad", "spa", "ltda", "compania", "de", "del", "la", "y",
+})
+
+# Email Verifier: 0.5 credit per address (a domain search costs 1).
+HUNTER_EMAIL_VERIFIER_URL = "https://api.hunter.io/v2/email-verifier"
+HUNTER_VERIFIER_TIMEOUT_SECONDS = 15
+HUNTER_SEARCH_CREDIT_COST = 1.0
+HUNTER_VERIFICATION_CREDIT_COST = 0.5
+# Addresses verified per lead (only top contacts not already "valid").
+HUNTER_MAX_VERIFICATIONS_PER_LEAD = 1
+
+# ── Agente 2 — manual contact search of one lead (RF15, Fase 5) ─────────────
+# app/services/contact_research_service.py and POST /leads/{id}/contacts/search.
+# A finished search (contacts found or none) is not repeated on the same lead
+# within this period unless the user forces it. Errors and "no domain" are
+# not cooled down: they cost no credit.
+CONTACT_SEARCH_COOLDOWN_SECONDS = 24 * 3600
+# Another lead of the same user and domain searched less than this ago lends
+# its contacts instead of a new Hunter search.
+CONTACT_REUSE_MAX_AGE_DAYS = 30
+# A reused address verified longer ago than this is verified again (within
+# HUNTER_MAX_VERIFICATIONS_PER_LEAD) before it is delivered.
+CONTACT_REVERIFY_AFTER_DAYS = 90
+# Contacts whose adjusted confidence is below this need the user's review.
+CONTACT_REVIEW_CONFIDENCE_THRESHOLD = 0.5
+# Wall-clock budget of the whole search request (account + search +
+# verification + Firestore). Worst case today is ~32 s of provider time.
+CONTACT_SEARCH_TIME_BUDGET_SECONDS = 45
+# A search still `running` this long after it started is presumed dead (the
+# process died) and no longer blocks a new search of that lead.
+CONTACT_SEARCH_CONSIDERED_DEAD_AFTER_SECONDS = 120
+# slowapi limit of POST /leads/{id}/contacts/search, per client address.
+CONTACT_SEARCH_RATE_LIMIT = "10/minute"
+# Lead statuses a search may start from ("researching" only once the running
+# search is presumed dead). Later stages (composing, sent...) are refused.
+CONTACT_SEARCH_SEARCHABLE_STATUSES = ("new", "researching", "contacts_found", "error")
+# Leads of one user and domain read when looking for a search to reuse.
+CONTACT_REUSE_MAX_CANDIDATES = 50
+
+# ── Agente 3 — prospecting email of one contact (RF-VTA-16) ─────────────────
+# A lead still `composing` this long after the generation started is presumed
+# stuck (the process died) and a new generation may take it over.
+COMPOSING_STALE_SECONDS = 120
+# Lead statuses a generation may start from ("composing" only once stale):
+# the lead has a contact, and maybe other contacts' emails already.
+COMPOSE_STARTABLE_STATUSES = ("contacts_found", "ready_for_review", "approved", "sent")
+# Lead statuses an email decision recomputes. researching / composing set
+# their own when they finish; rejected, replied and error are left alone.
+EMAIL_RECOMPUTABLE_STATUSES = ("new", "contacts_found", "ready_for_review", "approved", "sent")
+# Most emails of one lead read when summarizing its status.
+OUTREACH_EMAILS_PER_LEAD_LIMIT = 200
+# Language of the email's subject and body: a parameter of each generation,
+# not tied to the interface language. Default English.
+OUTREACH_EMAIL_LANGUAGE = "en"
+OUTREACH_EMAIL_LANGUAGES = ("en", "es", "pt")
+
+# ── Real sending of prospecting emails from the platform (RF-VTA-16) ────────
+# Opt-out line the server appends to every email it sends, in the email's
+# language. Never written by the model. PROVISIONAL TEXT: NoonDalton must
+# approve the final wording. It promises nothing the system does not do (there
+# is no reply detection: a person reads the reply and adds the address to the
+# do-not-contact list).
+OUTREACH_UNSUBSCRIBE_LINE = {
+    "en": "If you would prefer not to receive further emails, reply to this message and we will make a note of it.",
+    "es": "Si prefiere no recibir más correos, responda a este mensaje y lo anotaremos.",
+    "pt": "Se preferir não receber mais e-mails, responda a esta mensagem e tomaremos nota.",
+}
+assert set(OUTREACH_UNSUBSCRIBE_LINE) == set(OUTREACH_EMAIL_LANGUAGES)
+# Emails one user may send from the platform per UTC day: default and server cap.
+OUTREACH_DAILY_SEND_LIMIT_DEFAULT = 50
+OUTREACH_DAILY_SEND_LIMIT_MAX = 100
+# slowapi limit of POST /outreach-emails/{id}/send, per client address.
+OUTREACH_SEND_RATE_LIMIT = "10/minute"
+# A send lock older than SEND_LOCK_STALE_FACTOR × the longest a send can take
+# (MAIL_SEND_MAX_HTTP_CALLS calls of MAIL_HTTP_TIMEOUT_SECONDS each, once it is
+# claimed: create the draft, send it, read it back) is presumed dead (the
+# process died mid-send) and no longer blocks — unless it is `uncertain`.
+SEND_LOCK_STALE_FACTOR = 2
+MAIL_SEND_MAX_HTTP_CALLS = 3
+
+# Settings of the removed SMTP sending, still stored in older
+# pipeline_configs documents (with the SMTP password, encrypted). Never
+# returned nor accepted by the API (routers/pipeline.py RETIRED_CONFIG_FIELDS);
+# removed from Firestore only by scripts/migrations/drop_smtp_fields.py.
+RETIRED_SMTP_CONFIG_FIELDS = (
+    "smtp_host", "smtp_port", "smtp_user", "smtp_password_encrypted", "sender_email", "sender_name",
+)
+
+# ── Mailbox connection: Microsoft 365 / Outlook by OAuth (RF-VTA-16) ─────────
+# Delegated permissions asked for when a user connects their mailbox.
+# Mail.ReadWrite is needed to create the draft that is then sent (Mail.Send
+# alone only allows sendMail, which returns no message id). The code only ever
+# reads messages the platform itself sent, by their stored id (or their
+# conversation): never a listing of the mailbox, never another email's content.
+MAIL_OAUTH_SCOPES = ("openid", "offline_access", "User.Read", "Mail.ReadWrite", "Mail.Send")
+# Of those, the ones a connection is useless without (checked on the token).
+MAIL_OAUTH_REQUIRED_SCOPES = ("Mail.ReadWrite", "Mail.Send")
+# An authorization request (state + PKCE verifier) is valid this long, once.
+MAIL_OAUTH_STATE_TTL_SECONDS = 600
+# The access token is renewed when less than this is left of it.
+MAIL_TOKEN_REFRESH_MARGIN_SECONDS = 300
+# slowapi limit of POST /mail-connection/start and /test, per client address.
+MAIL_CONNECTION_RATE_LIMIT = "10/minute"
+
+# ── What NoonDalton sells ───────────────────────────────────────────────────
+# One source for the relevance prompt of Agente 1 (RF14-D-005) and the
+# prospecting email of Agente 3 (RF-VTA-16). Fixed here on purpose: the
+# pipeline keywords are search queries for the sources, not a description of
+# the services.
+NOONDALTON_SERVICES = (
+    "atención al cliente y call center",
+    "sales support (calificación de leads, seguimiento, CRM)",
+    "reclutamiento y RR. HH.",
+    "desarrollo de software, infraestructura y soporte técnico",
+    "procesamiento de datos y back office",
+    "underwriting de préstamos",
+    "operaciones de e-commerce (pedidos, inventario, envíos)",
+    "procesamiento de seguros (reclamos, renovaciones)",
+)
+
+# ── Agente 2 — contact role, ranking and confidence ─────────────────────────
+# app/services/contact_ranking_service.py. Titles and vacancy titles are
+# matched as whole words/phrases after folding accents and case. All values
+# below are initial values, to be tuned with real leads.
+
+# Contacts delivered per lead.
+RANK_TOP_N = 3
+
+# Area of the vacancy (Lead.job_title / job_context): first area with a match.
+VACANCY_AREA_KEYWORDS = {
+    "customer_service": ("customer support", "customer service", "customer care", "customer experience",
+                         "call center", "call centre", "contact center", "contact centre", "cx", "client services"),
+    "sales_support": ("sales", "lead generation", "sdr", "business development", "crm"),
+    "hr_recruitment": ("recruiter", "recruitment", "recruiting", "talent", "hr", "human resources"),
+    "software_it": ("developer", "engineer", "software", "devops", "it support", "helpdesk", "help desk",
+                    "infrastructure", "programmer"),
+    "back_office": ("data entry", "back office", "admin", "administrative", "bookkeeping", "bookkeeper",
+                    "accounts payable", "accounts receivable", "data processing"),
+    "underwriting": ("underwriter", "underwriting", "loan", "mortgage"),
+    "ecommerce": ("e commerce", "ecommerce", "order", "orders", "inventory", "fulfillment", "fulfilment", "shipping"),
+    "insurance": ("claims", "insurance", "renewals", "policy"),
+}
+
+# Areas a contact's title can name (a title can name several).
+CONTACT_TITLE_AREAS = {
+    "customer": ("customer", "customers", "cx", "client", "clients", "contact center", "contact centre",
+                 "call center", "call centre"),
+    "operations": ("operations", "operational", "operating"),
+    "technology": ("technology", "technical", "it", "engineering", "software", "digital", "information"),
+    "finance": ("finance", "financial", "controller", "comptroller", "cfo", "accounting", "treasury"),
+    "hr": ("hr", "human resources", "people", "talent", "chro"),
+    "sales": ("sales", "revenue", "commercial", "business development"),
+    "ecommerce": ("ecommerce", "e commerce", "fulfillment", "fulfilment", "supply chain", "logistics"),
+    "risk": ("credit", "risk", "underwriting", "lending"),
+    "claims": ("claims", "insurance"),
+}
+
+# Contact areas that make a department head (or manager) "the area's own"
+# for each vacancy area. Finance is NOT here for back office: finance heads
+# get their own tier (RANK_TIER_FINANCE) for FINANCE_VACANCY_AREAS.
+VACANCY_AREA_CONTACT_AREAS = {
+    "customer_service": ("customer", "operations"),
+    "sales_support": ("sales",),
+    "hr_recruitment": ("hr",),
+    "software_it": ("technology",),
+    "back_office": ("operations",),
+    "underwriting": ("risk", "operations"),
+    "ecommerce": ("ecommerce", "operations"),
+    "insurance": ("claims", "operations"),
+}
+FINANCE_VACANCY_AREAS = ("back_office", "underwriting", "insurance")
+
+# Title words of operational staff: such a contact is never delivered,
+# unless the title also has a TITLE_LEADERSHIP_WORDS word ("Driver Manager").
+# "officer" counts as operational unless it is a "chief ... officer".
+OPERATIONAL_TITLE_WORDS = frozenset({
+    "driver", "drivers", "courier", "messenger", "rider", "coordinator", "assistant", "associate",
+    "agent", "representative", "clerk", "operator", "technician", "cashier", "officer",
+})
+TITLE_LEADERSHIP_WORDS = frozenset({
+    "head", "director", "vp", "svp", "evp", "chief", "manager", "president", "owner", "founder",
+    "cofounder", "supervisor", "controller", "comptroller",
+})
+
+EXECUTIVE_TITLE_PHRASES = ("ceo", "chief executive officer", "founder", "co founder", "cofounder", "owner",
+                           "managing director", "president")
+# Phrases that contain an executive word but are not executives.
+EXECUTIVE_EXCLUDED_PHRASES = ("vice president", "product owner", "process owner")
+# "chief <word> officer" with one of these words heads a function
+# (department_head); any other chief officer is an executive.
+CHIEF_FUNCTION_WORDS = frozenset({
+    "operating", "operations", "financial", "finance", "technology", "technical", "information",
+    "customer", "people", "human", "procurement", "commercial", "revenue", "experience",
+})
+FUNCTION_CHIEF_ACRONYMS = frozenset({"coo", "cfo", "cto", "cio", "cco", "chro"})
+PROCUREMENT_TITLE_PHRASES = ("procurement", "purchasing", "sourcing", "supplier", "suppliers", "vendor",
+                             "vendors", "category manager")
+# A "Buyer" without a PROCUREMENT_TITLE_PHRASES phrase buys merchandise for a
+# product company: procurement, but last-resort priority.
+BUYER_TITLE_WORDS = ("buyer", "buyers")
+DEPARTMENT_HEAD_TITLE_PHRASES = ("vp", "vice president", "svp", "evp", "head", "director", "controller", "comptroller")
+HR_TITLE_PHRASES = ("recruiter", "recruiting", "recruitment", "talent acquisition", "human resources", "hr",
+                    "people partner")
+HIRING_MANAGER_TITLE_PHRASES = ("manager", "supervisor", "team lead", "team leader")
+
+# Company size from a headcount range ("51-200", "10001+"): its upper bound.
+# Hunter's Domain Search does not return a headcount, so in practice every
+# company is COMPANY_SIZE_DEFAULT until another source provides one.
+COMPANY_SIZE_SMALL_MAX = 50
+COMPANY_SIZE_MEDIUM_MAX = 500
+COMPANY_SIZE_DEFAULT = "medium"
+
+# Priority tiers: lower is better.
+RANK_TIER_EXECUTIVE_SMALL = 0     # executive / owner of a small company
+RANK_TIER_AREA_HEAD = 1           # department head of the vacancy's area
+RANK_TIER_PROCUREMENT = 2         # procurement / supplier management (not a merchandise buyer)
+RANK_TIER_FINANCE = 2             # finance head, for FINANCE_VACANCY_AREAS
+RANK_TIER_AREA_MANAGER = 2        # hiring manager of the vacancy's area (area bonus)
+RANK_TIER_EXECUTIVE_MEDIUM = 3
+RANK_TIER_OTHER_HEAD = 4          # department head of another area
+RANK_TIER_EXECUTIVE_LARGE = 5
+RANK_TIER_LAST_RESORT = 6         # other hiring managers, HR, merchandise buyers
+RANK_TIER_UNKNOWN_SENIOR = 7      # unknown title, senior/executive seniority
+# Within a tier: seniority first (lower is better; anything else counts as null).
+SENIORITY_RANK = {"executive": 0, "senior": 1, "junior": 2}
+SENIORITY_RANK_DEFAULT = 3
+SENIOR_SENIORITIES = ("senior", "executive")
+
+# Confidence = provider confidence x factor of the email's verification
+# status. invalid / disposable addresses are dropped; webmail and any status
+# not listed count as "unknown"; no status at all is None.
+CONFIDENCE_FACTOR_BY_VERIFICATION = {"valid": 1.0, "accept_all": 0.85, "unknown": 0.75, None: 0.6}
+DROPPED_VERIFICATION_STATUSES = ("invalid", "disposable")
+GENERIC_EMAIL_CONFIDENCE_CAP = 0.3
+# Within a tier, after seniority and confidence (lower is better).
+VERIFICATION_RANK = {"valid": 0, "accept_all": 1, "unknown": 2, None: 3}
 
 # ── Scraper adapter — responsible scraping ──────────────────────────────────
 # Identifies the bot to site operators (robots.txt, server logs) instead of

@@ -7,6 +7,7 @@ import re
 from typing import Any, Dict, List
 
 from app.config import settings
+from app.core.languages import is_wrong_language, language_name
 from app.services import deepseek_service
 
 logger = logging.getLogger("marketgen.books.ai")
@@ -48,6 +49,47 @@ def _clean_fenced_text(text: str) -> str:
     return cleaned.rstrip("`").strip()
 
 
+def _strip_code_fences(text: str) -> str:
+    """Quita solo las vallas ``` que a veces envuelven TODA la respuesta (texto o HTML).
+
+    No usar `_clean_fenced_text` para esto: está hecha para JSON y devuelve únicamente el tramo entre el primer
+    «[» y el último «]», así que un capítulo con ejemplos como «[producto]» quedaba reducido a ese fragmento.
+    """
+    text = (text or "").strip()
+    wrapped = re.match(r"^```[a-zA-Z]*\s*([\s\S]*?)\s*```$", text)
+    if wrapped:
+        return wrapped.group(1).strip()
+    return re.sub(r"^```[a-zA-Z]*\s*", "", text).strip()
+
+
+clean_text_output = _strip_code_fences
+
+
+class ChapterContentError(RuntimeError):
+    """El modelo no entregó un capítulo utilizable tras varios intentos."""
+
+
+MIN_CHAPTER_CHARS = 800          # un capítulo real tiene bastante más; menos que esto es un fragmento
+MAX_CHAPTER_ATTEMPTS = 3
+
+
+def _plain_text(html: str) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", html or "")).strip()
+
+
+def chapter_problem(content: str, language: str, content_type: str = "long") -> str | None:
+    """Motivo por el que el contenido no sirve (en español, para el mensaje de error), o None si está bien."""
+    text = _plain_text(content)
+    if content_type != "short" and len(text) < MIN_CHAPTER_CHARS:
+        return f"quedó demasiado corto ({len(text)} caracteres)"
+    bracketed = sum(len(m) for m in re.findall(r"\[[^\]]{1,200}\]", text))
+    if text and bracketed / len(text) > 0.5:
+        return "devolvió solo una plantilla con campos entre corchetes sin rellenar"
+    if is_wrong_language(text, language):
+        return f"salió en otro idioma que no es {language_name(language)}"
+    return None
+
+
 def _safe_json(text: str) -> Any:
     data = json.loads(_clean_fenced_text(text))
     if isinstance(data, dict):
@@ -71,7 +113,7 @@ Book description: {description}
 Keywords: {keywords_str}
 
 Generate exactly {chapter_count} chapters for this book concept.
-Language: {language}. Every title and description must be in this language.
+Language: {language_name(language)}. Write every title and description in {language_name(language)}.
 
 Return ONLY a valid JSON array. Each item must contain exactly:
 - "title": chapter title, max 80 characters
@@ -110,7 +152,8 @@ async def generate_chapter_content(
 ) -> str:
     length_instruction = CONTENT_LENGTH.get(content_type, CONTENT_LENGTH["long"])
     style_instruction = STYLE_PROMPTS.get(style, STYLE_PROMPTS["professional"])
-    prompt = f"""
+    lang = language_name(language)
+    base_prompt = f"""
 Book: {book_title}
 Book context: {book_description}
 
@@ -118,27 +161,43 @@ Chapter: {chapter_title}
 Chapter directive: {chapter_description}
 
 Instructions:
-- Language: {language}. Every word in the generated content must be in this language.
+- Language: {lang}. Write EVERY word of the chapter in {lang}, even if these instructions are in English.
 - {length_instruction}
 - {style_instruction}
+- Write the complete chapter as real prose with examples. Never answer with only a template, an outline or fill-in-the-blank fields like [placeholder].
 - Format the response as clean semantic HTML using h2, h3, p, ul, ol, strong, and em tags.
 - Do not include html, head, or body wrapper tags.
 - Do not include preamble, markdown fences, or meta-commentary. Output the chapter content directly.
 """
     if variation_instruction:
-        prompt += f"\nAdditional variation instruction:\n{variation_instruction}\n"
+        base_prompt += f"\nAdditional variation instruction:\n{variation_instruction}\n"
 
     extra_kwargs = {}
     if temperature is not None:
         extra_kwargs["temperature"] = temperature
-
-    content = await deepseek_service.generate_text(
-        prompt,
-        system_prompt="You are an expert long-form content writer specializing in business and marketing books. Write rich, substantive content with depth and examples. Return clean HTML only.",
-        timeout=None,
-        **extra_kwargs,
+    system_prompt = (
+        "You are an expert long-form content writer specializing in business and marketing books. "
+        "Write rich, substantive content with depth and examples. Return clean HTML only. "
+        f"Always write in {lang}."
     )
-    return _clean_fenced_text(content)
+
+    problem = None
+    for attempt in range(1, MAX_CHAPTER_ATTEMPTS + 1):
+        prompt = base_prompt
+        if problem:
+            prompt += (
+                f"\nIMPORTANT: your previous answer was rejected because it {problem}. "
+                f"Write the full chapter now, entirely in {lang}, as complete prose."
+            )
+        content = await deepseek_service.generate_text(prompt, system_prompt=system_prompt, timeout=None, **extra_kwargs)
+        content = _strip_code_fences(content)
+        problem = chapter_problem(content, language, content_type)
+        if not problem:
+            return content
+        logger.warning("Capítulo «%s»: intento %s/%s rechazado (%s)", chapter_title, attempt, MAX_CHAPTER_ATTEMPTS, problem)
+    raise ChapterContentError(
+        f"No se pudo generar el capítulo «{chapter_title}»: tras {MAX_CHAPTER_ATTEMPTS} intentos el contenido {problem}."
+    )
 
 
 async def refine_content(existing_content: str, instruction: str, language: str = "en") -> str:
@@ -150,14 +209,14 @@ Refinement instruction:
 {instruction}
 
 Return the improved content as clean HTML only. Preserve the original meaning unless the instruction says otherwise.
-Language: {language}. Every word in the refined content must be in this language.
+Language: {language_name(language)}. Write every word of the refined content in {language_name(language)}.
 """
     content = await deepseek_service.generate_text(
         prompt,
         system_prompt="You refine long-form marketing content. Return clean HTML only.",
         timeout=None,
     )
-    return _clean_fenced_text(content)
+    return _strip_code_fences(content)
 
 
 async def generate_social_posts(
@@ -186,7 +245,7 @@ Book/Content: {book_title}
 Summary: {content_summary}
 Tone: {tone}
 Platform rules: Max {meta['chars']} characters. {meta['note']}
-Language: {language}. Every word must be in this language.
+Language: {language_name(language)}. Write every word in {language_name(language)}.
 
 Output ONLY the post text. No labels, no quotes, no commentary.
 """
@@ -199,7 +258,7 @@ Output ONLY the post text. No labels, no quotes, no commentary.
             timeout=None,
             **extra_kwargs,
         )
-        text = _clean_fenced_text(text)
+        text = _strip_code_fences(text)
         results.append({
             "platform":       platform,
             "content":        text,

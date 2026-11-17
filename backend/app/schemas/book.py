@@ -113,6 +113,7 @@ class BookOut(BaseModel):
     description: str
     keywords:    List[str]
     status:      BookStatus
+    language:    Optional[str] = None   # idioma con el que se generó el libro
     user_id:     str           = Field(alias="userId")
     chapters:    List[ChapterOut] = []
     created_at:  datetime      = Field(alias="createdAt")

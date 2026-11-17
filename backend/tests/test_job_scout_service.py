@@ -2,6 +2,7 @@
 (httpx, feedparser, DeepSeek, Firestore) are mocked."""
 from __future__ import annotations
 
+import asyncio
 import json
 import socket
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -945,3 +946,928 @@ async def test_scan_all_sources_stops_when_time_budget_exhausted():
 
     assert call_order == []  # budget exhausted before the first source runs
     assert result["partial"] is True
+
+
+# ── RF13-D-003: una fuente que falla queda registrada en run.errors ─────────
+EMPTY_RSS = b'<?xml version="1.0"?><rss version="2.0"><channel><title>QA</title></channel></rss>'
+
+
+def _rss_source(source_id: str, url: str) -> dict:
+    return fake_source({"id": source_id, "name": f"Fuente {source_id}", "source_type": "rss", "config": {"feed_url": url}})
+
+
+def _stream_by_url(responses: dict):
+    """url prefix -> (status, content) or an exception raised on connect."""
+    def fake_stream(self, method, url, headers=None, params=None, **kwargs):
+        for prefix, response in responses.items():
+            if str(url).startswith(prefix):
+                if isinstance(response, Exception):
+                    return _FailingStreamCtx(response)
+                status_code, content = response
+                return _FakeStreamCtx(_stream_response(status_code, content=content, url=str(url)))
+        raise AssertionError(f"unexpected url {url}")
+    return fake_stream
+
+
+async def _scan_with(sources: list, responses: dict) -> dict:
+    with (
+        patch.object(httpx.AsyncClient, "stream", _stream_by_url(responses)),
+        patch.object(svc, "_is_duplicate", new_callable=AsyncMock, return_value=False),
+        patch.object(svc, "score_relevance_batch", new_callable=AsyncMock, return_value={}),
+        patch.object(svc.leads_repo, "create", new_callable=AsyncMock),
+    ):
+        return await svc.scan_all_sources(fake_pipeline_config({"sources": sources}), "run-1")
+
+
+@pytest.mark.asyncio
+async def test_scan_all_sources_records_http_error_of_a_source():
+    result = await _scan_with(
+        [_rss_source("caida", "https://caida.example.com/feed"), _rss_source("vacia", "https://vacia.example.com/feed")],
+        {"https://caida.example.com": (404, b"not found"), "https://vacia.example.com": (200, EMPTY_RSS)},
+    )
+    assert result["partial"] is True
+    assert [e["source_id"] for e in result["errors"]] == ["caida"]
+    assert result["errors"][0]["source_name"] == "Fuente caida"
+    assert "HTTP 404" in result["errors"][0]["message"]
+    assert result["all_sources_failed"] is False
+
+
+@pytest.mark.asyncio
+async def test_scan_all_sources_records_network_error_and_all_sources_failed():
+    api = fake_source({"id": "api-red", "config": {"base_url": "https://red.example.com/jobs"}})
+    result = await _scan_with([api], {"https://red.example.com": httpx.ConnectError("connection refused")})
+    assert result["partial"] is True
+    assert "error de red" in result["errors"][0]["message"]
+    assert result["all_sources_failed"] is True
+
+
+@pytest.mark.asyncio
+async def test_scan_all_sources_records_invalid_content():
+    api = fake_source({"id": "api-json", "config": {"base_url": "https://json.example.com/jobs"}})
+    result = await _scan_with(
+        [api, _rss_source("rss-html", "https://html.example.com/feed")],
+        {"https://json.example.com": (200, b"<html>no es json</html>"), "https://html.example.com": (200, b"<html><body>hola</body></html>")},
+    )
+    mensajes = {e["source_id"]: e["message"] for e in result["errors"]}
+    assert "JSON" in mensajes["api-json"]
+    assert "feed" in mensajes["rss-html"]
+
+
+@pytest.mark.asyncio
+async def test_scan_all_sources_records_robots_txt_block():
+    scraper = fake_source({"id": "scraper-robots", "source_type": "scraper",
+                           "config": {"url": "https://robots.example.com/list", "selectors": {"item": ".job"}}})
+    with patch.object(svc, "_robots_txt_allows", new_callable=AsyncMock, return_value=False):
+        result = await svc.scan_all_sources(fake_pipeline_config({"sources": [scraper]}), "run-1")
+    assert "robots.txt" in result["errors"][0]["message"]
+    assert result["partial"] is True
+
+
+@pytest.mark.asyncio
+async def test_scan_all_sources_records_truncated_response():
+    item = b"<item><title>Acme: Analista</title><link>https://x.example.com/1</link></item>"
+    feed = b'<?xml version="1.0"?><rss version="2.0"><channel><title>QA</title>' + item * 40 + b"</channel></rss>"
+    with patch.object(svc, "MAX_SOURCE_RESPONSE_BYTES", 1000):
+        result = await _scan_with([_rss_source("grande", "https://grande.example.com/feed")],
+                                  {"https://grande.example.com": (200, feed)})
+    assert any("truncada" in e["message"] for e in result["errors"])
+    assert result["partial"] is True
+
+
+@pytest.mark.asyncio
+async def test_finalize_run_marks_failed_when_every_source_failed():
+    with patch.object(svc.pipeline_runs_repo, "update", new_callable=AsyncMock) as mock_update:
+        await svc.finalize_run("run-1", {"leads_found": 0, "leads_new": 0, "partial": True, "all_sources_failed": True,
+                                         "errors": [{"source_id": "a", "message": "HTTP 404"}]})
+    assert mock_update.call_args.args[1]["status"] == "failed"
+
+
+# ── JSearch adapter (RapidAPI: LinkedIn, Indeed, ...) ──────────────────────
+
+JSEARCH_KEY = "jsearch-secret-key-123"
+
+
+@pytest.fixture
+def jsearch_source():
+    """A jsearch source whose api_key is encrypted the way the router stores it."""
+    from cryptography.fernet import Fernet
+    encryption_service._fernet.cache_clear()
+    with patch("app.services.encryption_service.settings.pipeline_encryption_key", Fernet.generate_key().decode()):
+        encryption_service._fernet.cache_clear()
+        token = encryption_service.encrypt(JSEARCH_KEY)
+
+        def _make(config: dict | None = None, source_id: str = "jsearch-1") -> dict:
+            return fake_source({
+                "id": source_id,
+                "name": f"Fuente {source_id}",
+                "source_type": "jsearch",
+                "config": config or {},
+                "config_encrypted": {"api_key": token},
+            })
+        yield _make
+    encryption_service._fernet.cache_clear()
+
+
+def _jsearch_job(**overrides) -> dict:
+    base = {
+        "job_title": "Customer Support Agent",
+        "employer_name": "Acme Ltd",
+        "job_description": "Handle inbound customer tickets.",
+        "job_apply_link": "https://acme.example.com/apply/1",
+        "job_publisher": "LinkedIn",
+        "job_city": "London",
+        "job_country": "GB",
+    }
+    base.update(overrides)
+    return base
+
+
+def _jsearch_body(jobs: list, *, as_list: bool = False, cursor: str | None = "cursor-next") -> bytes:
+    """Shape of GET /search-v2: {status, request_id, parameters, data: {jobs, cursor}}."""
+    data: object = jobs if as_list else {"jobs": jobs, **({"cursor": cursor} if cursor is not None else {})}
+    return json.dumps({"status": "OK", "request_id": "req-1", "parameters": {}, "data": data}).encode()
+
+
+def _jsearch_stream(pages: list, calls: list):
+    """pages[i] answers page i+1: (status, body) or an exception raised on connect."""
+    def fake_stream(self, method, url, headers=None, params=None, **kwargs):
+        calls.append({"url": str(url), "headers": dict(headers or {}), "params": dict(params or {})})
+        response = pages[len(calls) - 1]
+        if isinstance(response, Exception):
+            return _FailingStreamCtx(response)
+        status_code, content = response
+        return _FakeStreamCtx(_stream_response(status_code, content=content, url=str(url)))
+    return fake_stream
+
+
+async def _scan_jsearch_with(source: dict, pages: list, keywords=("BPO",)):
+    calls: list = []
+    problems: list = []
+    token = svc._source_problems.set(problems)
+    try:
+        with patch.object(httpx.AsyncClient, "stream", _jsearch_stream(pages, calls)):
+            postings = await svc._scan_jsearch(source, list(keywords))
+    finally:
+        svc._source_problems.reset(token)
+    return postings, calls, problems
+
+
+@pytest.mark.asyncio
+async def test_scan_jsearch_maps_linkedin_indeed_and_apply_options_offers(jsearch_source):
+    jobs = [
+        _jsearch_job(),
+        _jsearch_job(job_title="Back Office Clerk", employer_name="Globex", job_publisher="Indeed",
+                     job_apply_link="https://indeed.example.com/viewjob?jk=2", job_description="x" * 1000,
+                     job_city=None, job_country=None, job_location="Manchester, UK"),
+        _jsearch_job(job_title="Data Entry Operator", employer_name="Initech", job_apply_link=None,
+                     apply_options=[{"publisher": "Glassdoor", "apply_link": "https://glassdoor.example.com/3"},
+                                    {"publisher": "Other", "apply_link": "https://other.example.com/3"}],
+                     job_city="", job_country="", job_location="Anywhere"),
+    ]
+    postings, calls, problems = await _scan_jsearch_with(jsearch_source(), [(200, _jsearch_body(jobs))])
+
+    assert problems == []
+    assert [p.job_title for p in postings] == ["Customer Support Agent", "Back Office Clerk", "Data Entry Operator"]
+    assert [p.company_name for p in postings] == ["Acme Ltd", "Globex", "Initech"]
+    assert [p.job_url for p in postings] == [
+        "https://acme.example.com/apply/1",
+        "https://indeed.example.com/viewjob?jk=2",
+        "https://glassdoor.example.com/3",
+    ]
+    assert [p.location for p in postings] == ["London, GB", "Manchester, UK", None]
+    assert postings[0].job_description == "Handle inbound customer tickets."
+    assert len(postings[1].job_description) == svc.POSTING_DESCRIPTION_MAX_CHARS
+    assert all(p.source_id == "jsearch-1" for p in postings)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("overrides, expected", [
+    ({"job_city": "London", "job_country": "GB"}, "London, GB"),
+    ({"job_city": "London", "job_country": None, "job_location": "London, England"}, "London, England"),
+    ({"job_city": None, "job_country": None, "job_location": "Leeds"}, "Leeds"),
+    ({"job_city": "", "job_country": "", "job_location": "Anywhere"}, None),
+    ({"job_city": None, "job_country": None, "job_location": "  "}, None),
+    ({"job_city": None, "job_country": None}, None),
+])
+async def test_scan_jsearch_location(jsearch_source, overrides, expected):
+    postings, _, _ = await _scan_jsearch_with(jsearch_source(), [(200, _jsearch_body([_jsearch_job(**overrides)]))])
+    assert postings[0].location == expected
+
+
+@pytest.mark.asyncio
+async def test_scan_jsearch_drops_offers_without_company_or_title(jsearch_source):
+    jobs = [
+        _jsearch_job(employer_name=""),
+        _jsearch_job(employer_name=None),
+        _jsearch_job(job_title="   "),
+        _jsearch_job(job_title=None),
+        _jsearch_job(job_title="Kept", employer_name="Kept Co"),
+    ]
+    postings, _, _ = await _scan_jsearch_with(jsearch_source(), [(200, _jsearch_body(jobs))])
+    assert [(p.job_title, p.company_name) for p in postings] == [("Kept", "Kept Co")]
+
+
+@pytest.mark.asyncio
+async def test_scan_jsearch_sanitizes_apply_link(jsearch_source):
+    jobs = [_jsearch_job(job_apply_link="javascript:alert(1)")]
+    postings, _, _ = await _scan_jsearch_with(jsearch_source(), [(200, _jsearch_body(jobs))])
+    assert postings[0].job_url == ""
+
+
+@pytest.mark.asyncio
+async def test_scan_jsearch_also_reads_data_as_a_list(jsearch_source):
+    postings, _, _ = await _scan_jsearch_with(jsearch_source(), [(200, _jsearch_body([_jsearch_job()], as_list=True))])
+    assert len(postings) == 1
+
+
+@pytest.mark.asyncio
+async def test_scan_jsearch_sends_fixed_url_rapidapi_headers_and_query(jsearch_source):
+    source = jsearch_source({"base_url": "https://evil.example.com", "country": "us", "language": "es",
+                             "date_posted": "week"})
+    pages = [(200, _jsearch_body([_jsearch_job(job_title=f"Job {i}")], cursor=None)) for i in range(3)]
+    _, calls, _ = await _scan_jsearch_with(source, pages, keywords=["a", "b", "c"])
+    # One query per keyword (never joined into one phrase).
+    assert len(calls) == 3
+    for call, keyword in zip(calls, ["a", "b", "c"]):
+        assert call["url"] == "https://jsearch.p.rapidapi.com/search-v2"
+        assert call["headers"] == {"X-RapidAPI-Key": JSEARCH_KEY, "X-RapidAPI-Host": "jsearch.p.rapidapi.com"}
+        # First page: no cursor, and never page/num_pages (search-v2 pages by cursor).
+        assert call["params"] == {"query": keyword, "country": "us", "language": "es", "date_posted": "week"}
+
+
+@pytest.mark.asyncio
+async def test_scan_jsearch_defaults_country_language_and_omits_date_posted(jsearch_source):
+    _, calls, _ = await _scan_jsearch_with(jsearch_source(), [(200, _jsearch_body([]))])
+    assert calls[0]["params"]["country"] == "gb"
+    assert calls[0]["params"]["language"] == "en"
+    assert "date_posted" not in calls[0]["params"]
+
+
+@pytest.mark.asyncio
+async def test_scan_jsearch_uses_its_own_45s_timeout(jsearch_source):
+    timeouts = []
+    real_init = httpx.AsyncClient.__init__
+
+    def spy_init(self, *args, **kwargs):
+        timeouts.append(kwargs.get("timeout"))
+        real_init(self, *args, **kwargs)
+
+    with patch.object(httpx.AsyncClient, "__init__", spy_init):
+        await _scan_jsearch_with(jsearch_source(), [(200, _jsearch_body([]))])
+    assert timeouts == [45]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("num_pages, expected_calls", [(None, 1), (2, 2), (3, 3), (5, 3), (0, 1)])
+async def test_scan_jsearch_caps_num_pages(jsearch_source, num_pages, expected_calls):
+    config = {} if num_pages is None else {"num_pages": num_pages}
+    pages = [(200, _jsearch_body([_jsearch_job(job_title=f"Job {i}")], cursor=f"c{i + 1}")) for i in range(5)]
+    postings, calls, _ = await _scan_jsearch_with(jsearch_source(config), pages)
+    assert len(calls) == expected_calls
+    assert [c["params"].get("cursor") for c in calls] == [None, "c1", "c2"][:expected_calls]
+    assert all("page" not in c["params"] and "num_pages" not in c["params"] for c in calls)
+    assert len(postings) == expected_calls
+
+
+@pytest.mark.asyncio
+async def test_scan_jsearch_sends_the_previous_cursor_on_page_2(jsearch_source):
+    pages = [
+        (200, _jsearch_body([_jsearch_job(job_title="Job 1")], cursor="abc123==")),
+        (200, _jsearch_body([_jsearch_job(job_title="Job 2")], cursor=None)),
+    ]
+    postings, calls, problems = await _scan_jsearch_with(jsearch_source({"country": "us", "num_pages": 3}), pages)
+    assert len(calls) == 2
+    assert "cursor" not in calls[0]["params"]
+    assert calls[1]["params"] == {"query": "BPO", "country": "us", "language": "en", "cursor": "abc123=="}
+    assert [p.job_title for p in postings] == ["Job 1", "Job 2"]
+    assert problems == []
+
+
+@pytest.mark.asyncio
+async def test_scan_jsearch_two_keywords_are_two_queries(jsearch_source):
+    pages = [
+        (200, _jsearch_body([_jsearch_job(job_title="Agent A", employer_name="Acme")], cursor=None)),
+        (200, _jsearch_body([_jsearch_job(job_title="Agent B", employer_name="Globex")], cursor=None)),
+    ]
+    postings, calls, problems = await _scan_jsearch_with(
+        jsearch_source(), pages, keywords=["customer service", "call center"],
+    )
+    assert [c["params"]["query"] for c in calls] == ["customer service", "call center"]
+    assert all("cursor" not in c["params"] for c in calls)
+    assert [p.job_title for p in postings] == ["Agent A", "Agent B"]
+    assert problems == []
+
+
+@pytest.mark.asyncio
+async def test_scan_jsearch_dedupes_the_same_offer_across_queries(jsearch_source):
+    pages = [
+        (200, _jsearch_body([_jsearch_job(job_title="Customer Service Agent", employer_name="Acme Ltd"),
+                             _jsearch_job(job_title="Team Lead", employer_name="Acme Ltd")], cursor=None)),
+        (200, _jsearch_body([_jsearch_job(job_title="customer service agent ", employer_name="ACME LTD",
+                                          job_apply_link="https://other.example.com/dup"),
+                             _jsearch_job(job_title="Back Office", employer_name="Globex")], cursor=None)),
+    ]
+    postings, calls, _ = await _scan_jsearch_with(jsearch_source(), pages, keywords=["kw1", "kw2"])
+    assert len(calls) == 2
+    assert [(p.job_title, p.company_name) for p in postings] == [
+        ("Customer Service Agent", "Acme Ltd"), ("Team Lead", "Acme Ltd"), ("Back Office", "Globex"),
+    ]
+    assert postings[0].job_url == "https://acme.example.com/apply/1"  # the first occurrence wins
+
+
+@pytest.mark.asyncio
+async def test_scan_jsearch_8_keywords_are_8_queries(jsearch_source):
+    keywords = [f"kw{i}" for i in range(1, 9)]
+    pages = [(200, _jsearch_body([_jsearch_job(job_title=f"Job {i}")], cursor=None)) for i in range(8)]
+    postings, calls, problems = await _scan_jsearch_with(jsearch_source(), pages, keywords=keywords)
+    assert [c["params"]["query"] for c in calls] == keywords
+    assert len(postings) == 8
+    assert problems == []
+
+
+@pytest.mark.asyncio
+async def test_scan_jsearch_uses_only_the_first_8_keywords_and_warns(jsearch_source):
+    keywords = ["a", " ", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k"]  # 11 non-blank
+    pages = [(200, _jsearch_body([_jsearch_job(job_title=f"Job {i}")], cursor=None)) for i in range(11)]
+    postings, calls, problems = await _scan_jsearch_with(jsearch_source(), pages, keywords=keywords)
+    assert [c["params"]["query"] for c in calls] == ["a", "b", "c", "d", "e", "f", "g", "h"]
+    assert len(postings) == 8
+    assert problems == [{"message": "se usaron las 8 primeras palabras clave", "fatal": False}]
+
+
+@pytest.mark.asyncio
+async def test_scan_all_sources_more_than_8_keywords_warns_without_stopping_the_run(jsearch_source):
+    async def fake_generate_text(prompt, **kwargs):
+        return json.dumps([{"id": i, "relevance_score": 0.9, "matched_keywords": []} for i in range(8)])
+
+    keywords = [f"kw{i}" for i in range(1, 11)]
+    with (
+        patch.object(httpx.AsyncClient, "stream", _stream_by_url({
+            "https://jsearch.p.rapidapi.com": (200, _jsearch_body([_jsearch_job()], cursor=None)),
+        })),
+        patch.object(svc, "_is_duplicate", new_callable=AsyncMock, return_value=False),
+        patch.object(svc.deepseek_service, "generate_text", fake_generate_text),
+        patch.object(svc.leads_repo, "create", new_callable=AsyncMock),
+    ):
+        result = await svc.scan_all_sources(
+            fake_pipeline_config({"keywords": keywords, "sources": [jsearch_source()]}), "run-1",
+        )
+    assert [e["message"] for e in result["errors"]] == ["se usaron las 8 primeras palabras clave"]
+    assert result["all_sources_failed"] is False
+    assert result["leads_new"] == 1  # the same offer for every keyword is kept once
+
+
+@pytest.mark.asyncio
+async def test_scan_jsearch_total_cap_of_8_requests_spent_page_1_first(jsearch_source):
+    def page(name):
+        return (200, _jsearch_body([_jsearch_job(job_title=name)], cursor=f"{name}-next"))
+    keywords = ["kw1", "kw2", "kw3"]
+    pages = [page(f"{kw}-p{n}") for n in (1, 2, 3) for kw in keywords]  # 9 available
+    postings, calls, _ = await _scan_jsearch_with(jsearch_source({"num_pages": 3}), pages, keywords=keywords)
+    # Rounds: page 1 of each keyword, then page 2, then page 3 until 8 requests.
+    assert [(c["params"]["query"], c["params"].get("cursor")) for c in calls] == [
+        ("kw1", None), ("kw2", None), ("kw3", None),
+        ("kw1", "kw1-p1-next"), ("kw2", "kw2-p1-next"), ("kw3", "kw3-p1-next"),
+        ("kw1", "kw1-p2-next"), ("kw2", "kw2-p2-next"),
+    ]
+    assert len(postings) == 8
+
+
+@pytest.mark.asyncio
+async def test_scan_jsearch_8_keywords_never_ask_for_a_second_page(jsearch_source):
+    keywords = [f"kw{i}" for i in range(1, 9)]
+    pages = [(200, _jsearch_body([_jsearch_job(job_title=f"Job {i}")], cursor="more")) for i in range(16)]
+    _, calls, _ = await _scan_jsearch_with(jsearch_source({"num_pages": 3}), pages, keywords=keywords)
+    assert [(c["params"]["query"], c["params"].get("cursor")) for c in calls] == [(kw, None) for kw in keywords]
+
+
+@pytest.mark.asyncio
+async def test_scan_jsearch_a_failing_query_does_not_stop_the_others(jsearch_source):
+    pages = [
+        (403, b'{"message": "You are not subscribed to this API."}'),
+        (200, _jsearch_body([_jsearch_job(job_title="Agent B", employer_name="Globex")], cursor=None)),
+    ]
+    postings, calls, problems = await _scan_jsearch_with(jsearch_source(), pages, keywords=["kw1", "kw2"])
+    assert len(calls) == 2
+    assert [p.job_title for p in postings] == ["Agent B"]
+    assert problems == [{
+        "message": "palabra clave «kw1»: clave de API inválida o sin suscripción a JSearch (HTTP 403): "
+                   "You are not subscribed to this API.",
+        "fatal": False,
+    }]
+
+
+@pytest.mark.asyncio
+async def test_scan_jsearch_source_is_down_only_when_every_query_fails(jsearch_source):
+    pages = [(429, b'{"message": "Too many requests"}'), (httpx.ReadTimeout("timed out"))]
+    postings, calls, problems = await _scan_jsearch_with(jsearch_source(), pages, keywords=["kw1", "kw2"])
+    assert postings == []
+    assert len(calls) == 2
+    assert problems == [
+        {"message": "palabra clave «kw1»: cuota de JSearch agotada (HTTP 429): Too many requests", "fatal": True},
+        {"message": "palabra clave «kw2»: tiempo de espera agotado (45 s)", "fatal": True},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_scan_jsearch_stops_all_queries_when_the_run_budget_is_exhausted(jsearch_source):
+    pages = [(200, _jsearch_body([_jsearch_job(job_title=f"Job {i}")], cursor=None)) for i in range(3)]
+    token = svc._run_deadline.set(svc.time.monotonic() - 1)
+    try:
+        postings, calls, problems = await _scan_jsearch_with(jsearch_source(), pages, keywords=["kw1", "kw2", "kw3"])
+    finally:
+        svc._run_deadline.reset(token)
+    assert (postings, calls) == ([], [])
+    assert problems == [{
+        "message": "presupuesto de tiempo de la ejecución agotado: no se consultaron 3 palabra(s) clave (kw1, kw2, kw3)",
+        "fatal": False,
+    }]
+
+
+@pytest.mark.asyncio
+async def test_scan_jsearch_budget_cuts_the_remaining_queries_without_breaking(jsearch_source):
+    pages = [(200, _jsearch_body([_jsearch_job(job_title=f"Job {i}")], cursor=None)) for i in range(4)]
+    budget = iter([100.0, 50.0, 4.0])  # seconds left before each request
+    with patch.object(svc, "_run_budget_left", side_effect=lambda: next(budget)):
+        postings, calls, problems = await _scan_jsearch_with(
+            jsearch_source(), pages, keywords=["kw1", "kw2", "kw3", "kw4"],
+        )
+    assert [c["params"]["query"] for c in calls] == ["kw1", "kw2"]
+    assert [p.job_title for p in postings] == ["Job 0", "Job 1"]
+    assert problems == [{
+        "message": "presupuesto de tiempo de la ejecución agotado: no se consultaron 2 palabra(s) clave (kw3, kw4)",
+        "fatal": False,
+    }]
+
+
+@pytest.mark.asyncio
+async def test_scan_jsearch_request_time_limit_is_bounded_by_the_budget_left(jsearch_source):
+    limits = []
+    real_wait_for = asyncio.wait_for
+
+    async def spy_wait_for(awaitable, timeout):
+        limits.append(timeout)
+        return await real_wait_for(awaitable, timeout)
+
+    pages = [(200, _jsearch_body([_jsearch_job(job_title=f"Job {i}")], cursor=None)) for i in range(3)]
+    budget = iter([200.0, 12.5])
+    with (
+        patch.object(svc, "_run_budget_left", side_effect=lambda: next(budget)),
+        patch.object(svc.asyncio, "wait_for", spy_wait_for),
+    ):
+        await _scan_jsearch_with(jsearch_source(), pages, keywords=["kw1", "kw2"])
+    assert limits == [45, 12.5]
+
+
+@pytest.mark.asyncio
+async def test_scan_jsearch_request_cut_by_the_budget_is_a_clear_problem(jsearch_source):
+    async def slow(*args, **kwargs):
+        await asyncio.sleep(1)
+
+    with (
+        patch.object(svc, "JSEARCH_MIN_REQUEST_SECONDS", 0),
+        patch.object(svc, "_run_budget_left", return_value=0.01),  # 10 ms left, the request needs 1 s
+        patch.object(svc.url_safety, "safe_get_bytes", slow),
+    ):
+        postings, _, problems = await _scan_jsearch_with(jsearch_source(), [])
+    assert postings == []
+    assert problems == [{
+        "message": "palabra clave «BPO»: presupuesto de tiempo de la ejecución agotado durante la consulta",
+        "fatal": True,
+    }]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cursor", [None, "", "   "])
+async def test_scan_jsearch_stops_when_a_page_has_no_cursor(jsearch_source, cursor):
+    pages = [(200, _jsearch_body([_jsearch_job()], cursor=cursor)), (200, _jsearch_body([_jsearch_job()]))]
+    postings, calls, problems = await _scan_jsearch_with(jsearch_source({"num_pages": 3}), pages)
+    assert len(calls) == 1
+    assert len(postings) == 1
+    assert problems == []
+
+
+@pytest.mark.asyncio
+async def test_scan_jsearch_data_as_a_list_has_no_cursor_so_paging_stops(jsearch_source):
+    pages = [(200, _jsearch_body([_jsearch_job()], as_list=True)), (200, _jsearch_body([_jsearch_job()]))]
+    postings, calls, _ = await _scan_jsearch_with(jsearch_source({"num_pages": 3}), pages)
+    assert (len(calls), len(postings)) == (1, 1)
+
+
+@pytest.mark.asyncio
+async def test_scan_jsearch_stops_paging_on_an_empty_page(jsearch_source):
+    pages = [(200, _jsearch_body([_jsearch_job()])), (200, _jsearch_body([])), (200, _jsearch_body([_jsearch_job()]))]
+    postings, calls, problems = await _scan_jsearch_with(jsearch_source({"num_pages": 3}), pages)
+    assert len(calls) == 2
+    assert len(postings) == 1
+    assert problems == []
+
+
+@pytest.mark.asyncio
+async def test_scan_jsearch_keeps_at_most_5_postings_per_keyword_so_every_keyword_adds(jsearch_source):
+    keywords = [f"kw{i}" for i in range(1, 9)]
+    pages = [
+        (200, _jsearch_body([_jsearch_job(job_title=f"{kw} job {n}") for n in range(10)], cursor="more"))
+        for kw in keywords
+    ]
+    postings, calls, _ = await _scan_jsearch_with(jsearch_source({"num_pages": 3}), pages, keywords=keywords)
+    assert len(calls) == 8  # page 1 of each keyword; each one already gave its 5
+    assert len(postings) == svc.JSEARCH_MAX_RESULTS_PER_SOURCE == 40
+    for kw in keywords:
+        assert [p.job_title for p in postings if p.job_title.startswith(f"{kw} ")] == [f"{kw} job {n}" for n in range(5)]
+
+
+@pytest.mark.asyncio
+async def test_scan_jsearch_per_keyword_cap_counts_only_new_offers(jsearch_source):
+    shared = [_jsearch_job(job_title=f"Shared {n}") for n in range(3)]
+    pages = [
+        (200, _jsearch_body(shared + [_jsearch_job(job_title=f"A {n}") for n in range(5)], cursor=None)),
+        (200, _jsearch_body(shared + [_jsearch_job(job_title=f"B {n}") for n in range(5)], cursor=None)),
+    ]
+    postings, _, _ = await _scan_jsearch_with(jsearch_source(), pages, keywords=["kwA", "kwB"])
+    assert [p.job_title for p in postings] == [
+        "Shared 0", "Shared 1", "Shared 2", "A 0", "A 1",  # kwA: 5 kept
+        "B 0", "B 1", "B 2", "B 3", "B 4",  # kwB: repeats skipped, then 5 new
+    ]
+
+
+@pytest.mark.asyncio
+async def test_scan_jsearch_keyword_with_few_offers_asks_for_its_next_page(jsearch_source):
+    pages = [
+        (200, _jsearch_body([_jsearch_job(job_title="kw1 a")], cursor="kw1-next")),
+        (200, _jsearch_body([_jsearch_job(job_title=f"kw2 {n}") for n in range(6)], cursor="kw2-next")),
+        (200, _jsearch_body([_jsearch_job(job_title="kw1 b")], cursor=None)),
+    ]
+    postings, calls, _ = await _scan_jsearch_with(jsearch_source({"num_pages": 2}), pages, keywords=["kw1", "kw2"])
+    # kw2 already has its 5 on page 1, so only kw1 gets a page 2.
+    assert [(c["params"]["query"], c["params"].get("cursor")) for c in calls] == [
+        ("kw1", None), ("kw2", None), ("kw1", "kw1-next"),
+    ]
+    assert [p.job_title for p in postings] == ["kw1 a", "kw2 0", "kw2 1", "kw2 2", "kw2 3", "kw2 4", "kw1 b"]
+
+
+@pytest.mark.asyncio
+async def test_scan_all_sources_keeps_40_jsearch_postings_but_30_for_other_sources(jsearch_source):
+    keywords = [f"kw{i}" for i in range(1, 9)]
+    api_body = json.dumps({"data": [{"title": f"api {n}", "company": "Globex"} for n in range(50)]}).encode()
+    captured = []
+
+    async def fake_score(postings, keywords):
+        captured.extend(postings)
+        return {i: {"relevance_score": 0.0} for i in range(len(postings))}
+
+    calls = {"n": 0}
+
+    def fake_stream(self, method, url, headers=None, params=None, **kwargs):
+        if str(url).startswith("https://jsearch.p.rapidapi.com"):
+            calls["n"] += 1
+            body = _jsearch_body([_jsearch_job(job_title=f"{params['query']} {n}") for n in range(10)], cursor=None)
+            return _FakeStreamCtx(_stream_response(200, content=body, url=str(url)))
+        return _FakeStreamCtx(_stream_response(200, content=api_body, url=str(url)))
+
+    api = fake_source({"id": "api", "config": {"base_url": "https://api.example.com/jobs"}})
+    with (
+        patch.object(httpx.AsyncClient, "stream", fake_stream),
+        patch.object(svc, "_is_duplicate", new_callable=AsyncMock, return_value=False),
+        patch.object(svc, "score_relevance_batch", side_effect=fake_score),
+        patch.object(svc.leads_repo, "create", new_callable=AsyncMock),
+    ):
+        result = await svc.scan_all_sources(
+            fake_pipeline_config({"keywords": keywords, "sources": [jsearch_source(), api]}), "run-1",
+        )
+    assert calls["n"] == 8
+    assert len([p for p in captured if p.source_id == "jsearch-1"]) == 40
+    assert len([p for p in captured if p.source_id == "api"]) == 30
+    assert result["leads_found"] == 70
+
+
+@pytest.mark.asyncio
+async def test_scan_jsearch_does_not_request_extra_page_when_run_budget_is_exhausted(jsearch_source):
+    pages = [(200, _jsearch_body([_jsearch_job(job_title=f"Job {i}")])) for i in range(3)]
+    budget = iter([100.0, 1.0])
+    with patch.object(svc, "_run_budget_left", side_effect=lambda: next(budget)):
+        postings, calls, problems = await _scan_jsearch_with(jsearch_source({"num_pages": 3}), pages)
+    assert len(calls) == 1
+    assert len(postings) == 1
+    assert problems == []  # the keyword was queried; only its extra pages were skipped
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("response, expected", [
+    ((403, b'{"message": "You are not subscribed to this API."}'),
+     "clave de API inválida o sin suscripción a JSearch (HTTP 403): You are not subscribed to this API."),
+    ((429, b'{"message": "Too many requests"}'), "cuota de JSearch agotada (HTTP 429): Too many requests"),
+    ((404, b'{"message": "Endpoint \'/search\' does not exist"}'),
+     "JSearch respondió HTTP 404: Endpoint '/search' does not exist"),
+    ((404, b'{"error": {"code": 404, "message": "Not Found"}}'), "JSearch respondió HTTP 404: Not Found"),
+    ((500, b"oops"), "JSearch respondió HTTP 500"),
+    ((500, b'{"status": "ERROR"}'), "JSearch respondió HTTP 500"),
+    ((200, b"<html>not json</html>"), "la respuesta no es JSON válido"),
+    (httpx.ReadTimeout("timed out"), "tiempo de espera agotado (45 s)"),
+    (httpx.ConnectError("refused"), "error de red (ConnectError)"),
+])
+async def test_scan_jsearch_reports_failures_clearly(jsearch_source, caplog, response, expected):
+    with caplog.at_level("DEBUG"):
+        postings, _, problems = await _scan_jsearch_with(jsearch_source(), [response])
+    assert postings == []
+    assert problems == [{"message": f"palabra clave «BPO»: {expected}", "fatal": True}]
+    assert JSEARCH_KEY not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_scan_jsearch_provider_reason_is_cut_to_200_chars_and_never_shows_the_key(jsearch_source):
+    reason = f"Invalid key {JSEARCH_KEY} " + "x" * 500
+    postings, _, problems = await _scan_jsearch_with(
+        jsearch_source(), [(401, json.dumps({"message": reason, "headers": {"X-RapidAPI-Key": JSEARCH_KEY}}).encode())],
+    )
+    message = problems[0]["message"]
+    prefix = "palabra clave «BPO»: JSearch respondió HTTP 401: "
+    assert message.startswith(prefix + "Invalid key *** xxx")
+    assert len(message) == len(prefix) + 200
+    assert JSEARCH_KEY not in message
+
+
+@pytest.mark.asyncio
+async def test_scan_jsearch_failure_on_a_later_page_keeps_earlier_postings(jsearch_source):
+    pages = [(200, _jsearch_body([_jsearch_job()])), (429, b"{}")]
+    postings, calls, problems = await _scan_jsearch_with(jsearch_source({"num_pages": 3}), pages)
+    assert len(postings) == 1
+    assert len(calls) == 2
+    assert problems == [{"message": "palabra clave «BPO», página 2: cuota de JSearch agotada (HTTP 429)", "fatal": False}]
+
+
+@pytest.mark.asyncio
+async def test_scan_jsearch_without_api_key_or_keywords(jsearch_source):
+    no_key = jsearch_source()
+    no_key["config_encrypted"] = {}
+    postings, calls, problems = await _scan_jsearch_with(no_key, [])
+    assert (postings, calls) == ([], [])
+    assert problems == [{"message": "falta la clave de API (api_key)", "fatal": True}]
+
+    postings, calls, problems = await _scan_jsearch_with(jsearch_source(), [], keywords=["", "  "])
+    assert (postings, calls) == ([], [])
+    assert problems == [{"message": "no hay palabras clave configuradas para la búsqueda", "fatal": True}]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status_code, expected", [
+    (403, "clave de API inválida o sin suscripción a JSearch (HTTP 403): nope"),
+    (429, "cuota de JSearch agotada (HTTP 429): nope"),
+])
+async def test_scan_all_sources_jsearch_403_429_do_not_break_the_run(jsearch_source, caplog, status_code, expected):
+    sources = [jsearch_source(source_id="js"), _rss_source("vacia", "https://vacia.example.com/feed")]
+    responses = {
+        "https://jsearch.p.rapidapi.com": (status_code, b'{"message": "nope"}'),
+        "https://vacia.example.com": (200, EMPTY_RSS),
+    }
+    with caplog.at_level("DEBUG"):
+        result = await _scan_with(sources, responses)
+
+    assert result["partial"] is True
+    assert result["all_sources_failed"] is False
+    assert len(result["errors"]) == 1
+    error = result["errors"][0]
+    assert (error["source_id"], error["source_name"], error["message"]) == ("js", "Fuente js", f"palabra clave «BPO»: {expected}")
+    assert JSEARCH_KEY not in json.dumps(result)
+    assert JSEARCH_KEY not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_scan_all_sources_jsearch_postings_become_leads(jsearch_source):
+    async def fake_generate_text(prompt, **kwargs):
+        return json.dumps([{"id": 0, "relevance_score": 0.9, "matched_keywords": ["BPO"], "reasoning": "x"}])
+
+    with (
+        patch.object(httpx.AsyncClient, "stream", _stream_by_url({
+            "https://jsearch.p.rapidapi.com": (200, _jsearch_body([_jsearch_job()])),
+        })),
+        patch.object(svc, "_is_duplicate", new_callable=AsyncMock, return_value=False),
+        patch.object(svc.deepseek_service, "generate_text", fake_generate_text),
+        patch.object(svc.leads_repo, "create", new_callable=AsyncMock) as mock_create,
+    ):
+        result = await svc.scan_all_sources(fake_pipeline_config({"sources": [jsearch_source()]}), "run-1")
+
+    assert result["leads_new"] == 1
+    lead = mock_create.call_args.args[0]
+    assert lead["job_url"] == "https://acme.example.com/apply/1"
+    assert lead["location"] == "London, GB"
+    assert lead["source_id"] == "jsearch-1"
+    assert svc._run_deadline.get() is None
+
+# ── RF14-D-001: la misma vacante dentro de una ejecución da un solo lead ─────
+@pytest.mark.asyncio
+async def test_scan_all_sources_dedupes_repeated_posting_within_the_same_run():
+    """Mismo cargo y empresa en distinta ubicación, en la misma fuente y en otra fuente
+    de la misma ejecución: la huella (empresa + cargo) deja un solo lead, el primero."""
+    santiago = fake_posting(company_name="QA Duplicada SpA", job_title="Agente de contact center", location="Santiago")
+    concepcion = fake_posting(company_name="QA Duplicada SpA", job_title="Agente de contact center", location="Concepción")
+    otra_fuente = fake_posting(company_name="qa duplicada spa", job_title="Agente de Contact Center", location="Valparaíso", source_id="source-b")
+    config = fake_pipeline_config({"sources": [fake_source({"id": "source-a"}), fake_source({"id": "source-b"})]})
+
+    async def fake_scan_source(source, keywords):
+        return [santiago, concepcion] if source["id"] == "source-a" else [otra_fuente]
+
+    async def fake_score(postings, keywords):
+        return {i: {"relevance_score": 0.9, "matched_keywords": []} for i in range(len(postings))}
+
+    with (
+        patch.object(svc, "_scan_source", side_effect=fake_scan_source),
+        patch.object(svc, "_is_duplicate", new_callable=AsyncMock, return_value=False),
+        patch.object(svc, "score_relevance_batch", side_effect=fake_score) as mock_score,
+        patch.object(svc.leads_repo, "create", new_callable=AsyncMock) as mock_create,
+    ):
+        result = await svc.scan_all_sources(config, "run-1")
+
+    assert result["leads_new"] == 1
+    mock_create.assert_awaited_once()
+    assert mock_create.call_args.args[0]["location"] == "Santiago"
+    assert sum(len(call.args[0]) for call in mock_score.call_args_list) == 1  # el repetido no va al modelo
+
+
+# ── RF14-D-002: formato declarable «Cargo - Empresa» (separa en el ÚLTIMO « - ») ──
+@pytest.mark.parametrize("title,expected", [
+    ("Agente de back office - QA Formato B", ("Agente de back office", "QA Formato B")),
+    ("Ejecutivo - Turno noche - Acme SpA", ("Ejecutivo - Turno noche", "Acme SpA")),  # el cargo puede llevar guiones
+    ("Sin separador", ("Sin separador", "")),        # no coincide con el formato: entero y sin empresa
+    (" - Acme", (" - Acme".strip(), "")),             # cargo vacío: no se adivina
+    ("Analista - ", ("Analista -", "")),              # empresa vacía: no se adivina
+])
+def test_split_rss_title_title_dash_company(title, expected):
+    assert svc._split_rss_title(title, "title_dash_company") == expected
+
+
+# ── RF14-D-005: relevance prompt (lead definition, exclusion rule, scale) ────
+
+def _prompt_lines(prompt: str, prefix: str) -> list:
+    return [line for line in prompt.splitlines() if line.startswith(prefix)]
+
+
+def test_score_prompt_defines_a_lead_as_a_potential_client_company():
+    prompt = svc._score_prompt([fake_posting()], ["customer service"])
+    assert "Qué es un lead: una EMPRESA CLIENTE POTENCIAL que publica una vacante" in prompt
+    assert "servicio externalizado" in prompt
+    assert "CLIENTES POTENCIALES de NoonDalton" in svc._SCORE_SYSTEM_PROMPT
+    assert "empresa de outsourcing/BPO" in svc._SCORE_SYSTEM_PROMPT
+
+
+# RF14-D-006: recruitment/staffing agencies are direct competitors too.
+def test_score_prompt_exclusion_rule_caps_every_direct_competitor_at_0_2():
+    prompt = svc._score_prompt([fake_posting()], ["customer service"])
+    [rule] = _prompt_lines(prompt, "Regla de exclusión: ")
+    assert rule == (
+        "Regla de exclusión: si la empresa que publica la vacante es ella misma un BPO, un call center, "
+        "una empresa de outsourcing o una agencia de reclutamiento, selección de personal o staffing "
+        "(competidores directos de NoonDalton, que también ofrece servicios de recursos humanos), "
+        "asigna un relevance_score máximo de 0.2, aunque el cargo encaje con los servicios."
+    )
+    for competitor in ["un BPO", "un call center", "una empresa de outsourcing",
+                       "agencia de reclutamiento", "selección de personal", "staffing"]:
+        assert competitor in rule
+
+
+def test_score_prompt_no_longer_spares_recruitment_or_staffing_agencies():
+    prompt = svc._score_prompt([fake_posting()], ["customer service"])
+    assert "NO se excluyen" not in prompt
+    assert "califícalas según el cargo" not in prompt
+
+
+def test_score_prompt_has_the_scale_and_the_fixed_list_of_services():
+    prompt = svc._score_prompt([fake_posting()], ["customer service"])
+    assert "- 0.8 a 1.0: cargos operativos o de volumen en los servicios que NoonDalton ofrece" in prompt
+    assert "- 0.6 a 0.79: cargos relacionados con esos servicios, pero con una relación débil." in prompt
+    assert "- Menos de 0.6: cargos directivos o estratégicos, o de áreas que NoonDalton no cubre." in prompt
+    [services_line] = _prompt_lines(prompt, "Servicios de NoonDalton: ")
+    for service in [
+        "atención al cliente y call center", "sales support (calificación de leads, seguimiento, CRM)",
+        "reclutamiento y RR. HH.", "desarrollo de software, infraestructura y soporte técnico",
+        "procesamiento de datos y back office",
+        "underwriting de préstamos", "operaciones de e-commerce (pedidos, inventario, envíos)",
+        "procesamiento de seguros (reclamos, renovaciones)",
+    ]:
+        assert service in services_line
+
+
+def test_services_include_software_development_and_infrastructure():
+    [services_line] = _prompt_lines(svc._score_prompt([fake_posting()], []), "Servicios de NoonDalton: ")
+    assert "desarrollo de software, infraestructura y soporte técnico" in services_line
+    assert "soporte técnico y de software" not in services_line
+
+
+def test_score_prompt_services_line_does_not_contain_the_keywords():
+    keywords = ["warehouse picker", "night shift nurse via linkedin"]
+    prompt = svc._score_prompt([fake_posting()], keywords)
+    [services_line] = _prompt_lines(prompt, "Servicios de NoonDalton: ")
+    assert "warehouse picker" not in services_line
+    assert "night shift nurse" not in services_line
+    assert "via" not in services_line
+
+
+def test_score_prompt_strips_via_site_only_in_the_prompt_and_leaves_keywords_untouched():
+    keywords = [
+        "customer service jobs in London via linkedin",
+        "customer service jobs in London VIA Indeed",
+        "data entry",
+        "  ",
+        "help desk via glassdoor.co.uk",
+    ]
+    original = list(keywords)
+    prompt = svc._score_prompt([fake_posting()], keywords)
+
+    assert keywords == original  # the list the sources are queried with is not modified
+    [keywords_line] = _prompt_lines(prompt, "Palabras clave de búsqueda (solo para matched_keywords): ")
+    assert keywords_line == (
+        "Palabras clave de búsqueda (solo para matched_keywords): "
+        "customer service jobs in London, data entry, help desk"
+    )
+    assert "via" not in keywords_line.lower()
+
+
+def test_score_prompt_keeps_a_via_inside_the_keyword():
+    prompt = svc._score_prompt([fake_posting()], ["sales via phone support"])
+    assert "(solo para matched_keywords): sales via phone" in prompt
+
+
+def test_score_prompt_without_keywords_has_no_keywords_line():
+    prompt = svc._score_prompt([fake_posting()], [])
+    assert _prompt_lines(prompt, "Palabras clave de búsqueda") == []
+    assert _prompt_lines(prompt, "Servicios de NoonDalton: ")
+
+
+def test_score_prompt_keeps_the_json_output_format_and_the_postings():
+    long_description = "d" * svc.POSTING_DESCRIPTION_MAX_CHARS
+    postings = [fake_posting(job_description=long_description), fake_posting(job_title="Back Office", company_name="Globex")]
+    prompt = svc._score_prompt(postings, ["BPO"])
+
+    assert prompt.endswith(
+        'Responde con un array JSON, un objeto por cada "id" de arriba, en este formato exacto:\n'
+        '[\n'
+        '  {"id": 0, "relevance_score": 0.0, "matched_keywords": ["keyword1"], '
+        '"reasoning": "Explicación breve", "suggested_value_prop": "Propuesta de valor"}\n'
+        ']'
+    )
+    items = json.loads(prompt.split("Vacantes:\n", 1)[1].split("\n\n", 1)[0])
+    assert items == [
+        {"id": 0, "job_title": "Data Entry Specialist", "company": "Acme Corp", "description": long_description},
+        {"id": 1, "job_title": "Back Office", "company": "Globex", "description": postings[1].job_description},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_scoring_sends_the_new_system_prompt_and_still_parses_the_same_json():
+    captured = {}
+
+    async def fake_generate_text(prompt, **kwargs):
+        captured["prompt"] = prompt
+        captured["system_prompt"] = kwargs.get("system_prompt")
+        return json.dumps([{"id": 0, "relevance_score": 0.15, "matched_keywords": [], "reasoning": "Es un BPO: exclusión"}])
+
+    with patch.object(svc.deepseek_service, "generate_text", fake_generate_text):
+        scores = await svc.score_relevance_batch([fake_posting()], ["customer service via linkedin"])
+
+    assert captured["system_prompt"] == svc._SCORE_SYSTEM_PROMPT
+    assert "Regla de exclusión" in captured["prompt"]
+    assert scores[0]["relevance_score"] == 0.15
+
+
+@pytest.mark.asyncio
+async def test_scoring_fallback_stops_calling_deepseek_once_the_run_budget_is_spent():
+    calls = []
+
+    async def fake_generate_text(prompt, **kwargs):
+        calls.append(prompt)
+        return "not json"  # the batch fails to parse -> per-item fallback
+
+    postings = [fake_posting(job_title=f"Job {i}") for i in range(3)]
+    token = svc._run_deadline.set(svc.time.monotonic() - 1)
+    try:
+        with patch.object(svc.deepseek_service, "generate_text", fake_generate_text):
+            scores = await svc.score_relevance_batch(postings, ["BPO"])
+    finally:
+        svc._run_deadline.reset(token)
+
+    assert len(calls) == 1  # only the batch call; no per-item calls out of budget
+    assert scores == {i: {"relevance_score": 0.0, "matched_keywords": [], "reasoning": "run_budget_exhausted"}
+                      for i in range(3)}
+
+
+@pytest.mark.asyncio
+async def test_scan_all_sources_scoring_runs_under_the_run_deadline():
+    seen = []
+
+    async def fake_score(postings, keywords):
+        seen.append(svc._run_deadline.get())
+        return {i: {"relevance_score": 0.0} for i in range(len(postings))}
+
+    with (
+        patch.object(svc, "_scan_source", new_callable=AsyncMock, return_value=[fake_posting()]),
+        patch.object(svc, "_is_duplicate", new_callable=AsyncMock, return_value=False),
+        patch.object(svc, "score_relevance_batch", side_effect=fake_score),
+    ):
+        await svc.scan_all_sources(fake_pipeline_config(), "run-1")
+
+    assert len(seen) == 1 and seen[0] is not None
+    assert svc._run_deadline.get() is None  # reset after scoring
+
+
+def test_relevance_threshold_is_still_0_6():
+    assert svc.RELEVANCE_SCORE_THRESHOLD == 0.6

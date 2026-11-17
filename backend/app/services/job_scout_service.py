@@ -19,9 +19,11 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
 import time
 import urllib.robotparser
-from typing import Any, Dict, List
+from contextvars import ContextVar
+from typing import Any, Dict, List, Optional
 from urllib.parse import urljoin, urlparse
 
 import feedparser
@@ -31,6 +33,19 @@ from pydantic import ValidationError
 
 from app.core import url_safety
 from app.core.pipeline_constants import (
+    NOONDALTON_SERVICES,
+    JSEARCH_API_HOST,
+    JSEARCH_DEFAULT_COUNTRY,
+    JSEARCH_DEFAULT_LANGUAGE,
+    JSEARCH_DEFAULT_NUM_PAGES,
+    JSEARCH_FETCH_TIMEOUT_SECONDS,
+    JSEARCH_MAX_KEYWORDS,
+    JSEARCH_MAX_NUM_PAGES,
+    JSEARCH_MAX_PAGES,
+    JSEARCH_MAX_RESULTS_PER_KEYWORD,
+    JSEARCH_MAX_RESULTS_PER_SOURCE,
+    JSEARCH_MIN_REQUEST_SECONDS,
+    JSEARCH_SEARCH_URL,
     MAX_RESULTS_PER_RUN,
     MAX_RESULTS_PER_SOURCE,
     MAX_SOURCE_RESPONSE_BYTES,
@@ -48,6 +63,7 @@ from app.schemas.lead import LeadStatus, RawJobPosting
 from app.schemas.pipeline import (
     RSS_TITLE_FORMAT_COMPANY_COLON_TITLE,
     RSS_TITLE_FORMAT_NONE,
+    RSS_TITLE_FORMAT_TITLE_DASH_COMPANY,
     SOURCE_TYPE_SECRET_CONFIG_FIELDS,
     PipelineRunStatus,
     SourceType,
@@ -59,8 +75,69 @@ logger = logging.getLogger("marketgen.pipeline.job_scout")
 
 _SCORE_SYSTEM_PROMPT = (
     "Eres un analista de ventas B2B para NoonDalton, empresa de outsourcing/BPO. "
+    "Tu tarea es calificar vacantes publicadas por otras empresas para encontrar "
+    "CLIENTES POTENCIALES de NoonDalton. "
     "Respondes ÚNICAMENTE con un array JSON válido, sin texto adicional antes ni después."
 )
+
+# What NoonDalton sells, for the relevance prompt (RF14-D-005). One source
+# with the prospecting email (pipeline_constants.NOONDALTON_SERVICES).
+_NOONDALTON_SERVICES = "; ".join(NOONDALTON_SERVICES)
+
+# A trailing " via <site>" only steers the search to a job board; it is not
+# part of what the posting matched.
+_VIA_SITE_SUFFIX = re.compile(r"\s+via\s+\S+\s*$", re.IGNORECASE)
+
+
+# ── Problems of the source being scanned (RF13-D-003) ───────────────────────
+# The adapters keep their contract (a source that fails returns []), but say
+# why through this list, which scan_all_sources opens for each source and turns
+# into run.errors. A fatal problem means nothing could be read from the source;
+# a non-fatal one (truncated response) still keeps what was read.
+_source_problems: ContextVar[Optional[List[Dict[str, Any]]]] = ContextVar("job_scout_source_problems", default=None)
+
+
+# Monotonic deadline of the run being scanned (RUN_TIME_BUDGET_SECONDS from
+# its start), set by scan_all_sources around each source. An adapter that
+# makes several requests (JSearch pages) checks it before each extra one.
+# Unset (None) outside a run, e.g. in the /sources/{id}/test probe.
+_run_deadline: ContextVar[Optional[float]] = ContextVar("job_scout_run_deadline", default=None)
+
+
+def _run_budget_exhausted() -> bool:
+    deadline = _run_deadline.get()
+    return deadline is not None and time.monotonic() >= deadline
+
+
+def _run_budget_left() -> Optional[float]:
+    """Seconds left in the run's budget, or None outside a run."""
+    deadline = _run_deadline.get()
+    return None if deadline is None else deadline - time.monotonic()
+
+
+def _report_source_problem(message: str, *, fatal: bool = True) -> None:
+    problems = _source_problems.get()
+    if problems is not None:
+        problems.append({"message": message, "fatal": fatal})
+
+
+def _fetch_failure_message(exc: Exception) -> str:
+    if isinstance(exc, url_safety.UnsafeUrlError):
+        return f"URL bloqueada por seguridad: {exc}"
+    if isinstance(exc, json.JSONDecodeError):
+        return "la respuesta no es JSON válido"
+    if isinstance(exc, httpx.HTTPError):
+        return f"error de red ({type(exc).__name__})"
+    return str(exc) or type(exc).__name__
+
+
+def _report_if_truncated(body: bytes) -> None:
+    # safe_get_bytes stops reading past MAX_SOURCE_RESPONSE_BYTES and returns
+    # the body cut to that size.
+    if len(body) >= MAX_SOURCE_RESPONSE_BYTES:
+        _report_source_problem(
+            f"respuesta truncada: superó el máximo de {MAX_SOURCE_RESPONSE_BYTES} bytes", fatal=False,
+        )
 
 
 # ── Secrets ──────────────────────────────────────────────────────────────────
@@ -153,6 +230,7 @@ async def _scan_api(source: Dict[str, Any], keywords: List[str]) -> List[RawJobP
     config = source.get("config") or {}
     base_url = config.get("base_url")
     if not base_url:
+        _report_source_problem("falta la URL de la fuente (base_url)")
         return []
     secrets = _resolve_source_secrets(source)
     headers = dict(config.get("headers") or {})
@@ -170,9 +248,11 @@ async def _scan_api(source: Dict[str, Any], keywords: List[str]) -> List[RawJobP
             )
             if status_code >= 400:
                 raise ValueError(f"HTTP {status_code}")
+            _report_if_truncated(body)
             payload = json.loads(body)
     except Exception as exc:
         logger.warning("job_scout: API source %s failed: %s", source.get("id"), exc)
+        _report_source_problem(_fetch_failure_message(exc))
         return []
 
     items = payload if isinstance(payload, list) else (
@@ -205,11 +285,17 @@ def _split_rss_title(title: str, title_format: str) -> tuple[str, str]:
     RSS_TITLE_FORMAT_NONE — or any unknown value — never splits: returns
     (title, ""). RSS_TITLE_FORMAT_COMPANY_COLON_TITLE splits "Company: Job
     Title" on the FIRST ": " only, so a colon inside the job title survives.
+    RSS_TITLE_FORMAT_TITLE_DASH_COMPANY splits "Job Title - Company" on the
+    LAST " - " only, so a dash inside the job title survives.
     A title that doesn't match its declared format isn't guessed at either:
     it comes back whole, with an empty company."""
     title = title.strip()
     if title_format == RSS_TITLE_FORMAT_COMPANY_COLON_TITLE:
         company, sep, job_title = title.partition(": ")
+        if sep and company.strip() and job_title.strip():
+            return job_title.strip(), company.strip()
+    elif title_format == RSS_TITLE_FORMAT_TITLE_DASH_COMPANY:
+        job_title, sep, company = title.rpartition(" - ")
         if sep and company.strip() and job_title.strip():
             return job_title.strip(), company.strip()
     return title, ""
@@ -243,6 +329,7 @@ async def _scan_rss(source: Dict[str, Any], keywords: List[str]) -> List[RawJobP
     config = source.get("config") or {}
     feed_url = config.get("feed_url")
     if not feed_url:
+        _report_source_problem("falta la URL del feed (feed_url)")
         return []
     title_format = config.get("title_format") or RSS_TITLE_FORMAT_NONE
 
@@ -261,7 +348,9 @@ async def _scan_rss(source: Dict[str, Any], keywords: List[str]) -> List[RawJobP
                 raise ValueError(f"HTTP {status_code}")
     except Exception as exc:
         logger.warning("job_scout: RSS source %s failed to fetch: %s", source.get("id"), exc)
+        _report_source_problem(_fetch_failure_message(exc))
         return []
+    _report_if_truncated(feed_content)
 
     try:
         parsed = await asyncio.wait_for(
@@ -270,6 +359,11 @@ async def _scan_rss(source: Dict[str, Any], keywords: List[str]) -> List[RawJobP
         )
     except Exception as exc:
         logger.warning("job_scout: RSS source %s failed to parse: %s", source.get("id"), exc)
+        _report_source_problem(f"no se pudo leer el feed: {exc}")
+        return []
+    # feedparser doesn't raise on HTML or garbage: it just finds no feed version.
+    if not getattr(parsed, "version", "") and not getattr(parsed, "entries", None):
+        _report_source_problem("el contenido no es un feed RSS/Atom válido")
         return []
 
     postings: List[RawJobPosting] = []
@@ -351,10 +445,12 @@ async def _scan_scraper(source: Dict[str, Any], keywords: List[str]) -> List[Raw
     url = config.get("url")
     selectors = config.get("selectors") or {}
     if not url or not selectors.get("item"):
+        _report_source_problem("falta la URL o el selector de avisos (url, selectors.item)")
         return []
 
     if not await _robots_txt_allows(url):
         logger.warning("job_scout: scraper source %s blocked by robots.txt", source.get("id"))
+        _report_source_problem("bloqueada por robots.txt")
         return []
 
     html: bytes = b""
@@ -368,8 +464,10 @@ async def _scan_scraper(source: Dict[str, Any], keywords: List[str]) -> List[Raw
             )
             if status_code >= 400:
                 raise ValueError(f"HTTP {status_code}")
+            _report_if_truncated(html)
     except Exception as exc:
         logger.warning("job_scout: scraper source %s failed: %s", source.get("id"), exc)
+        _report_source_problem(_fetch_failure_message(exc))
         return []
     finally:
         # Courtesy delay even on failure — keep request cadence to this host
@@ -404,6 +502,270 @@ async def _scan_scraper(source: Dict[str, Any], keywords: List[str]) -> List[Raw
     return postings
 
 
+# JSearch (RapidAPI) aggregates LinkedIn, Indeed and other boards. Unlike the
+# generic API adapter, its URL and auth headers are fixed here — the user only
+# supplies the api_key (encrypted at rest) and a few query settings.
+def _jsearch_cursor(payload: Any) -> str:
+    """The cursor for the next page (`data.cursor`); empty when there is none."""
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if isinstance(data, dict) and isinstance(data.get("cursor"), str):
+        return data["cursor"].strip()
+    return ""
+
+
+def _jsearch_jobs(payload: Any) -> List[Any]:
+    """The postings of one JSearch response: `data.jobs`, or `data` itself
+    when the provider returns it as a list."""
+    if not isinstance(payload, dict):
+        return []
+    data = payload.get("data")
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict) and isinstance(data.get("jobs"), list):
+        return data["jobs"]
+    return []
+
+
+def _jsearch_apply_link(item: Dict[str, Any]) -> str:
+    link = str(item.get("job_apply_link") or "").strip()
+    if link:
+        return link
+    options = item.get("apply_options")
+    if isinstance(options, list) and options and isinstance(options[0], dict):
+        return str(options[0].get("apply_link") or "").strip()
+    return ""
+
+
+def _jsearch_location(item: Dict[str, Any]) -> Optional[str]:
+    """`City, Country` when both are given, else `job_location`; None when
+    nothing usable is left (empty, or the provider's "Anywhere")."""
+    city = str(item.get("job_city") or "").strip()
+    country = str(item.get("job_country") or "").strip()
+    location = f"{city}, {country}" if city and country else str(item.get("job_location") or "").strip()
+    if not location or location.lower() == "anywhere":
+        return None
+    return location
+
+
+def _jsearch_failure_message(exc: Exception) -> str:
+    # Never includes the request itself: its headers carry the api_key.
+    if isinstance(exc, httpx.TimeoutException):
+        return f"tiempo de espera agotado ({JSEARCH_FETCH_TIMEOUT_SECONDS} s)"
+    return _fetch_failure_message(exc)
+
+
+_JSEARCH_PROVIDER_DETAIL_MAX_CHARS = 200
+
+
+def _jsearch_provider_detail(body: bytes, api_key: str) -> str:
+    """The provider's own reason for an error: only `message` or
+    `error.message` of a JSON body, cut to 200 characters. Never the
+    request (its headers carry the key), and the key is masked in case
+    the provider echoes it back."""
+    try:
+        payload = json.loads(body)
+    except Exception:
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    detail = payload.get("message")
+    if not isinstance(detail, str) and isinstance(payload.get("error"), dict):
+        detail = payload["error"].get("message")
+    if not isinstance(detail, str):
+        return ""
+    detail = " ".join(detail.split())
+    if api_key:
+        detail = detail.replace(api_key, "***")
+    return detail[:_JSEARCH_PROVIDER_DETAIL_MAX_CHARS]
+
+
+def _jsearch_status_message(status_code: int, detail: str = "") -> str:
+    if status_code == 403:
+        message = "clave de API inválida o sin suscripción a JSearch (HTTP 403)"
+    elif status_code == 429:
+        message = "cuota de JSearch agotada (HTTP 429)"
+    else:
+        message = f"JSearch respondió HTTP {status_code}"
+    return f"{message}: {detail}" if detail else message
+
+
+async def _fetch_jsearch_page(
+    client: httpx.AsyncClient, headers: Dict[str, str], params: Dict[str, Any], api_key: str,
+    time_limit: Optional[float] = None,
+) -> "tuple[Optional[Any], Optional[str]]":
+    """One JSearch request: (payload, None) on success, (None, message) on
+    failure. The message never carries the request (its headers hold the key).
+    `time_limit` (what is left of the run budget) cuts the request short of
+    JSEARCH_FETCH_TIMEOUT_SECONDS so it cannot overrun the run."""
+    try:
+        status_code, body = await asyncio.wait_for(
+            url_safety.safe_get_bytes(
+                client, JSEARCH_SEARCH_URL, headers=headers, params=params,
+                max_bytes=MAX_SOURCE_RESPONSE_BYTES,
+            ),
+            timeout=time_limit,
+        )
+        if status_code >= 400:
+            return None, _jsearch_status_message(status_code, _jsearch_provider_detail(body, api_key))
+        _report_if_truncated(body)
+        return json.loads(body), None
+    except asyncio.TimeoutError:
+        return None, "presupuesto de tiempo de la ejecución agotado durante la consulta"
+    except Exception as exc:
+        return None, _jsearch_failure_message(exc)
+
+
+async def _scan_jsearch(source: Dict[str, Any], keywords: List[str]) -> List[RawJobPosting]:
+    config = source.get("config") or {}
+    api_key = _resolve_source_secrets(source).get("api_key")
+    if not api_key:
+        _report_source_problem("falta la clave de API (api_key)")
+        return []
+    # JSearch matches the whole `query` as one phrase, so joining keywords
+    # finds almost nothing: each keyword is its own query instead.
+    all_queries = [str(k).strip() for k in keywords if str(k).strip()]
+    queries = all_queries[:JSEARCH_MAX_KEYWORDS]
+    if not queries:
+        _report_source_problem("no hay palabras clave configuradas para la búsqueda")
+        return []
+    if len(all_queries) > JSEARCH_MAX_KEYWORDS:
+        _report_source_problem(f"se usaron las {JSEARCH_MAX_KEYWORDS} primeras palabras clave", fatal=False)
+
+    # num_pages is the depth per keyword; JSEARCH_MAX_PAGES caps the requests
+    # of the whole source, spent in rounds: page 1 of every keyword first,
+    # then further pages while the cap allows.
+    try:
+        num_pages = int(config.get("num_pages") or JSEARCH_DEFAULT_NUM_PAGES)
+    except (TypeError, ValueError):
+        num_pages = JSEARCH_DEFAULT_NUM_PAGES
+    num_pages = max(1, min(num_pages, JSEARCH_MAX_NUM_PAGES))
+    base_params: Dict[str, Any] = {
+        "country": config.get("country") or JSEARCH_DEFAULT_COUNTRY,
+        "language": config.get("language") or JSEARCH_DEFAULT_LANGUAGE,
+    }
+    if config.get("date_posted"):
+        base_params["date_posted"] = config["date_posted"]
+    headers = {"X-RapidAPI-Key": api_key, "X-RapidAPI-Host": JSEARCH_API_HOST}
+
+    postings: List[RawJobPosting] = []
+    seen_fingerprints: set = set()
+    cursors: Dict[str, str] = {}
+    finished: set = set()
+    first_page_failures: List[str] = []
+    later_page_failures: List[str] = []
+    kept_per_query: Dict[str, int] = {}
+    requests_made = 0
+    answered_queries = 0
+    out_of_budget = False
+
+    async with httpx.AsyncClient(timeout=JSEARCH_FETCH_TIMEOUT_SECONDS) as client:
+        for page in range(1, num_pages + 1):
+            for query in queries:
+                if query in finished:
+                    continue
+                if page > 1 and not cursors.get(query):
+                    finished.add(query)
+                    continue
+                if kept_per_query.get(query, 0) >= JSEARCH_MAX_RESULTS_PER_KEYWORD:
+                    finished.add(query)
+                    continue
+                # Checked before paying for each request after the first one.
+                if requests_made and (
+                    requests_made >= JSEARCH_MAX_PAGES
+                    or len(postings) >= JSEARCH_MAX_RESULTS_PER_SOURCE
+                ):
+                    break
+                budget_left = _run_budget_left()
+                if budget_left is not None and budget_left < JSEARCH_MIN_REQUEST_SECONDS:
+                    out_of_budget = True
+                    break
+                params = {"query": query, **base_params}
+                if page > 1:
+                    params["cursor"] = cursors[query]
+                requests_made += 1
+                payload, message = await _fetch_jsearch_page(
+                    client, headers, params, api_key,
+                    time_limit=None if budget_left is None else min(JSEARCH_FETCH_TIMEOUT_SECONDS, budget_left),
+                )
+                if message is not None:
+                    logger.warning(
+                        "job_scout: JSearch source %s keyword %r page %d failed: %s",
+                        source.get("id"), query, page, message,
+                    )
+                    if page == 1:
+                        first_page_failures.append(f"palabra clave «{query}»: {message}")
+                    else:
+                        later_page_failures.append(f"palabra clave «{query}», página {page}: {message}")
+                    finished.add(query)
+                    continue
+
+                answered_queries += 1
+                jobs = _jsearch_jobs(payload)
+                cursors[query] = _jsearch_cursor(payload)
+                if not jobs:
+                    finished.add(query)  # no more results: later pages would be empty too
+                    continue
+                for item in jobs:
+                    if (
+                        len(postings) >= JSEARCH_MAX_RESULTS_PER_SOURCE
+                        or kept_per_query.get(query, 0) >= JSEARCH_MAX_RESULTS_PER_KEYWORD
+                    ):
+                        break
+                    if not isinstance(item, dict):
+                        continue
+                    title = str(item.get("job_title") or "").strip()
+                    company = str(item.get("employer_name") or "").strip()
+                    if not title or not company:
+                        continue
+                    # The same posting often comes back for several keywords.
+                    fingerprint = compute_fingerprint(company, title)
+                    if fingerprint in seen_fingerprints:
+                        continue
+                    seen_fingerprints.add(fingerprint)
+                    kept_per_query[query] = kept_per_query.get(query, 0) + 1
+                    # A missing, empty, invalid or platform employer_website
+                    # (normalize_domain never raises) just leaves no domain.
+                    company_domain = company_domain_service.normalize_domain(item.get("employer_website"))
+                    postings.append(RawJobPosting(
+                        job_title=title,
+                        company_name=company,
+                        job_description=str(item.get("job_description") or "")[:POSTING_DESCRIPTION_MAX_CHARS],
+                        job_url=_sanitize_job_url(_jsearch_apply_link(item)),
+                        location=_jsearch_location(item),
+                        source_id=source["id"],
+                        company_domain=company_domain,
+                        company_domain_source="jsearch_employer_website" if company_domain else None,
+                        source_job_id=str(item.get("job_id") or "").strip() or None,
+                    ))
+            else:
+                continue
+            break  # a cap was reached inside the round: no more requests at all
+
+    # The source is down only when no keyword got an answer; otherwise a
+    # failing keyword is a warning and the others' postings stay.
+    all_failed = answered_queries == 0
+    for message in first_page_failures:
+        _report_source_problem(message, fatal=all_failed)
+    for message in later_page_failures:
+        _report_source_problem(message, fatal=False)
+    if out_of_budget:
+        not_queried = [q for q in queries if q not in cursors and q not in finished]
+        if not_queried:
+            _report_source_problem(
+                f"presupuesto de tiempo de la ejecución agotado: no se consultaron {len(not_queried)} "
+                f"palabra(s) clave ({', '.join(not_queried)})",
+                fatal=False,
+            )
+    return postings
+
+
+def _max_results_for(source: Dict[str, Any]) -> int:
+    """Postings kept per source: JSearch gathers several keywords' worth."""
+    if source.get("source_type") == SourceType.JSEARCH.value:
+        return JSEARCH_MAX_RESULTS_PER_SOURCE
+    return MAX_RESULTS_PER_SOURCE
+
+
 async def _scan_source(source: Dict[str, Any], keywords: List[str]) -> List[RawJobPosting]:
     source_type = SourceType(source["source_type"])
     if source_type == SourceType.API:
@@ -412,6 +774,8 @@ async def _scan_source(source: Dict[str, Any], keywords: List[str]) -> List[RawJ
         return await _scan_rss(source, keywords)
     if source_type == SourceType.SCRAPER:
         return await _scan_scraper(source, keywords)
+    if source_type == SourceType.JSEARCH:
+        return await _scan_jsearch(source, keywords)
     return []  # WEBHOOK is push, not pull — nothing to scan here.
 
 
@@ -425,8 +789,24 @@ def _clean_json_response(text: str) -> str:
     return cleaned.strip()
 
 
+def _prompt_keywords(keywords: List[str]) -> List[str]:
+    """Keywords as shown to the model: without the " via <site>" suffix and
+    without the repeats that leaves. Returns a new list; `keywords` (what
+    the sources are queried with) is never modified."""
+    cleaned: List[str] = []
+    for keyword in keywords:
+        text = _VIA_SITE_SUFFIX.sub("", str(keyword)).strip()
+        if text and text.lower() not in (seen.lower() for seen in cleaned):
+            cleaned.append(text)
+    return cleaned
+
+
 def _score_prompt(postings: List[RawJobPosting], keywords: List[str]) -> str:
-    services = ", ".join(keywords) if keywords else "outsourcing/BPO en general"
+    prompt_keywords = _prompt_keywords(keywords)
+    keywords_line = (
+        f"Palabras clave de búsqueda (solo para matched_keywords): {', '.join(prompt_keywords)}\n\n"
+        if prompt_keywords else ""
+    )
     items = [
         {
             "id": idx,
@@ -437,11 +817,24 @@ def _score_prompt(postings: List[RawJobPosting], keywords: List[str]) -> str:
         for idx, posting in enumerate(postings)
     ]
     return (
-        f"Servicios de NoonDalton: {services}\n\n"
-        "Analiza cada una de estas vacantes y determina si la empresa podría "
-        "beneficiarse de los servicios de NoonDalton (es decir, si la vacante "
-        "indica que la empresa busca talento que NoonDalton podría proveer "
-        "como servicio externalizado).\n\n"
+        f"Servicios de NoonDalton: {_NOONDALTON_SERVICES}.\n\n"
+        f"{keywords_line}"
+        "Qué es un lead: una EMPRESA CLIENTE POTENCIAL que publica una vacante para "
+        "un cargo que NoonDalton podría cubrir como servicio externalizado, en lugar "
+        "de que la empresa contrate directamente a esa persona. Califica si la empresa "
+        "que publica la vacante es un buen cliente potencial para esos servicios.\n\n"
+        "Regla de exclusión: si la empresa que publica la vacante es ella misma un BPO, "
+        "un call center, una empresa de outsourcing o una agencia de reclutamiento, "
+        "selección de personal o staffing (competidores directos de NoonDalton, que "
+        "también ofrece servicios de recursos humanos), asigna un relevance_score máximo "
+        "de 0.2, aunque el cargo encaje con los servicios.\n\n"
+        "Escala de relevance_score (de 0.0 a 1.0):\n"
+        "- 0.8 a 1.0: cargos operativos o de volumen en los servicios que NoonDalton "
+        "ofrece (la lista de arriba).\n"
+        "- 0.6 a 0.79: cargos relacionados con esos servicios, pero con una relación débil.\n"
+        "- Menos de 0.6: cargos directivos o estratégicos, o de áreas que NoonDalton no cubre.\n\n"
+        'En "reasoning" explica brevemente el puntaje y, si aplicaste la regla de '
+        "exclusión, indícalo.\n\n"
         f"Vacantes:\n{json.dumps(items, ensure_ascii=False)}\n\n"
         'Responde con un array JSON, un objeto por cada "id" de arriba, en este formato exacto:\n'
         '[\n'
@@ -492,6 +885,10 @@ async def score_relevance_batch(
 
     results = {}
     for idx, posting in enumerate(postings):
+        if _run_budget_exhausted():
+            # Out of run budget: the rest are not scored (score 0, discarded).
+            results[idx] = {"relevance_score": 0.0, "matched_keywords": [], "reasoning": "run_budget_exhausted"}
+            continue
         single = await _call_deepseek_for_scores([posting], keywords)
         if single and isinstance(single[0], dict):
             results[idx] = single[0]
@@ -503,7 +900,7 @@ async def score_relevance_batch(
 # ── Orchestration for one PipelineConfig ────────────────────────────────────
 async def scan_all_sources(pipeline_config: Dict[str, Any], run_id: str) -> Dict[str, Any]:
     """Scan every enabled source of a PipelineConfig, score and persist new
-    leads. Returns {leads_found, leads_new, errors, partial}.
+    leads. Returns {leads_found, leads_new, errors, partial, all_sources_failed}.
 
     `pipeline_config` is the raw Firestore document (has "id" and "userId",
     not the snake_case PipelineConfig schema field names — matches how
@@ -527,6 +924,10 @@ async def scan_all_sources(pipeline_config: Dict[str, Any], run_id: str) -> Dict
     leads_new = 0
     errors: List[Dict[str, Any]] = []
     partial = False
+    failed_sources = 0
+    # Fingerprints already seen in this run: _is_duplicate only knows leads saved
+    # before it, so a posting repeated within this run would become a second lead.
+    seen_fingerprints: set = set()
 
     for source in sources:
         if evaluated_count >= MAX_RESULTS_PER_RUN:
@@ -542,20 +943,40 @@ async def scan_all_sources(pipeline_config: Dict[str, Any], run_id: str) -> Dict
             })
             break
 
+        problems: List[Dict[str, Any]] = []
+        problems_token = _source_problems.set(problems)
+        deadline_token = _run_deadline.set(started_at + RUN_TIME_BUDGET_SECONDS)
         try:
             postings = await _scan_source(source, keywords)
         except Exception as exc:
             partial = True
+            failed_sources += 1
             logger.warning("job_scout: source %s raised: %s", source.get("id"), exc)
             errors.append({
                 "agent": "job_scout",
                 "source_id": source.get("id"),
+                "source_name": source.get("name"),
                 "message": str(exc),
                 "timestamp": now_utc().isoformat(),
             })
             continue
+        finally:
+            _source_problems.reset(problems_token)
+            _run_deadline.reset(deadline_token)
 
-        postings = postings[:MAX_RESULTS_PER_SOURCE]
+        for problem in problems:
+            partial = True
+            errors.append({
+                "agent": "job_scout",
+                "source_id": source.get("id"),
+                "source_name": source.get("name"),
+                "message": problem["message"],
+                "timestamp": now_utc().isoformat(),
+            })
+        if any(problem["fatal"] for problem in problems):
+            failed_sources += 1
+
+        postings = postings[:_max_results_for(source)]
         postings = [p for p in postings if p.company_name.strip().lower() not in excluded_companies]
 
         candidates: List[tuple] = []
@@ -564,6 +985,9 @@ async def scan_all_sources(pipeline_config: Dict[str, Any], run_id: str) -> Dict
                 partial = True
                 break
             fingerprint = compute_fingerprint(posting.company_name, posting.job_title)
+            if fingerprint in seen_fingerprints:
+                continue
+            seen_fingerprints.add(fingerprint)
             known_fingerprints = [fingerprint]
             if posting.raw_title is not None:
                 known_fingerprints.append(_legacy_rss_fingerprint(posting.raw_title))
@@ -582,7 +1006,11 @@ async def scan_all_sources(pipeline_config: Dict[str, Any], run_id: str) -> Dict
                 })
                 break
             batch = candidates[batch_start:batch_start + RELEVANCE_SCORING_BATCH_SIZE]
-            scores = await score_relevance_batch([c[0] for c in batch], keywords)
+            deadline_token = _run_deadline.set(started_at + RUN_TIME_BUDGET_SECONDS)
+            try:
+                scores = await score_relevance_batch([c[0] for c in batch], keywords)
+            finally:
+                _run_deadline.reset(deadline_token)
             for idx, (posting, fingerprint) in enumerate(batch):
                 result = scores.get(idx, {})
                 try:
@@ -614,6 +1042,7 @@ async def scan_all_sources(pipeline_config: Dict[str, Any], run_id: str) -> Dict
                     "raw_title": posting.raw_title,
                     "company_domain": posting.company_domain,
                     "company_domain_source": posting.company_domain_source,
+                    "source_job_id": posting.source_job_id,
                 })
                 leads_new += 1
 
@@ -622,6 +1051,7 @@ async def scan_all_sources(pipeline_config: Dict[str, Any], run_id: str) -> Dict
         "leads_new": leads_new,
         "errors": errors,
         "partial": partial,
+        "all_sources_failed": bool(sources) and failed_sources == len(sources),
     }
 
 
@@ -631,9 +1061,12 @@ async def scan_all_sources(pipeline_config: Dict[str, Any], run_id: str) -> Dict
 # regardless of who invoked scan_all_sources.
 async def finalize_run(run_id: str, result: Dict[str, Any]) -> None:
     """Write scan_all_sources' result onto its PipelineRun doc."""
-    status_value = (
-        PipelineRunStatus.PARTIAL.value if result["partial"] else PipelineRunStatus.COMPLETED.value
-    )
+    if result.get("all_sources_failed"):
+        status_value = PipelineRunStatus.FAILED.value
+    elif result["partial"]:
+        status_value = PipelineRunStatus.PARTIAL.value
+    else:
+        status_value = PipelineRunStatus.COMPLETED.value
     await pipeline_runs_repo.update(run_id, {
         "status": status_value,
         "leads_found": result["leads_found"],
