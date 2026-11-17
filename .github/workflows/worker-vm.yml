@@ -1,0 +1,90 @@
+name: Worker VM (encender / apagar)
+
+# Control manual de la VM del worker de Celery + Redis del entorno dev (proyecto marketgen-dev).
+# Uso: pestaña Actions > "Worker VM (encender / apagar)" > Run workflow > elegir la acción.
+# Encendida cuesta ~US$0,02 por hora; apagada solo el disco. Con la VM apagada la API sigue funcionando y la
+# generación de propuestas cae a ejecución inline; las tareas largas (libros, exportaciones) necesitan el worker.
+# Solo corre desde main (la federación con Google solo acepta esa rama): ver infra/gcp/setup_cicd.py.
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "Qué hacer con la VM del worker"
+        type: choice
+        required: true
+        default: status
+        options:
+          - status
+          - start
+          - stop
+
+concurrency:
+  group: worker-vm
+  cancel-in-progress: false
+
+env:
+  PROJECT: marketgen-dev
+  ZONE: us-central1-a
+  VM: marketgen-worker
+  WIF_PROVIDER: projects/156520322318/locations/global/workloadIdentityPools/github/providers/github-actions
+  DEPLOYER: marketgen-deployer@marketgen-dev.iam.gserviceaccount.com
+
+jobs:
+  vm:
+    name: ${{ inputs.action }} worker
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.DEPLOYER }}
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Estado actual
+        id: before
+        run: |
+          status=$(gcloud compute instances describe $VM --zone=$ZONE --project=$PROJECT --format='value(status)')
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          echo "La VM $VM está: $status"
+
+      - name: Encender y esperar a que Redis y el worker estén arriba
+        if: inputs.action == 'start'
+        run: |
+          if [ "${{ steps.before.outputs.status }}" != "RUNNING" ]; then
+            gcloud compute instances start $VM --zone=$ZONE --project=$PROJECT --quiet
+          else
+            echo "Ya estaba encendida; solo se comprueba que el worker esté arriba."
+          fi
+          for i in $(seq 1 24); do
+            if gcloud compute instances get-serial-port-output $VM --zone=$ZONE --project=$PROJECT 2>/dev/null | grep -q "worker y redis iniciados"; then
+              echo "Redis y worker iniciados (intento $i)."
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "La VM está encendida pero no vi el mensaje de arranque del worker en 4 minutos."
+          exit 1
+
+      - name: Apagar
+        if: inputs.action == 'stop'
+        run: |
+          if [ "${{ steps.before.outputs.status }}" = "TERMINATED" ]; then
+            echo "Ya estaba apagada."
+          else
+            gcloud compute instances stop $VM --zone=$ZONE --project=$PROJECT --quiet
+          fi
+
+      - name: Resumen
+        if: always()
+        run: |
+          status=$(gcloud compute instances describe $VM --zone=$ZONE --project=$PROJECT --format='value(status)')
+          {
+            echo "### Worker VM"
+            echo "- Acción pedida: \`${{ inputs.action }}\`"
+            echo "- Estado antes: \`${{ steps.before.outputs.status }}\`"
+            echo "- Estado ahora: \`$status\`"
+            [ "$status" = "RUNNING" ] && echo "- Encendida: cuesta ~US\$0,02 por hora. Apágala cuando no haya demos."
+          } >> "$GITHUB_STEP_SUMMARY"
