@@ -71,6 +71,13 @@ jobs:
           service_account: ${{ env.DEPLOYER }}
       - uses: google-github-actions/setup-gcloud@v2
 
+      - name: DIAGNOSTICO TEMPORAL (acceso al bucket de Cloud Build)
+        continue-on-error: true
+        run: |
+          gcloud auth list
+          gcloud config list
+          gcloud storage buckets describe gs://marketgen-dev_cloudbuild --project=$PROJECT --verbosity=debug 2>&1 | tail -40
+
       - name: Construir la imagen de la API
         working-directory: backend
         run: |
