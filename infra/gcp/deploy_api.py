@@ -28,6 +28,8 @@ vars_.update({
     "GOOGLE_CLOUD_PROJECT": "marketgen-dev",
     "BACKEND_CORS_ORIGINS": CORS,
     "FRONTEND_URL": FRONT,
+    "STORAGE_BACKEND": "gcs",            # los archivos van a Google Cloud Storage (Supabase ya no existe)
+    "GCS_BUCKET": "marketgen-dev-assets",
 })
 path = os.path.join(os.path.dirname(__file__), "env_api.yaml")
 with open(path, "w", encoding="utf-8") as f:

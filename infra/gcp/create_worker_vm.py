@@ -70,7 +70,8 @@ for line in open(ENV, encoding="utf-8"):
 copiar = ["APP_NAME", "GEMINI_DEFAULT_MODEL", "DEEPSEEK_BASE_URL", "DEEPSEEK_MODEL", "SUPABASE_URL",
           "SUPABASE_STORAGE_BUCKET", "GOOGLE_OAUTH_CLIENT_ID", "ACCESS_TOKEN_EXPIRE_MINUTES", "REFRESH_TOKEN_EXPIRE_DAYS"]
 lines = [f"{k}={env[k]}" for k in copiar if env.get(k)]
-lines += ["APP_ENV=production", "APP_DEBUG=false", "LOCAL_DEV_AUTH_ENABLED=false", f"GOOGLE_CLOUD_PROJECT={PROJECT}", "CELERY_CONCURRENCY=2"]
+lines += ["APP_ENV=production", "APP_DEBUG=false", "LOCAL_DEV_AUTH_ENABLED=false", f"GOOGLE_CLOUD_PROJECT={PROJECT}", "CELERY_CONCURRENCY=2",
+          "STORAGE_BACKEND=gcs", "GCS_BUCKET=marketgen-dev-assets"]
 fd, worker_env = tempfile.mkstemp(suffix=".env")
 with os.fdopen(fd, "w", encoding="utf-8") as f:
     f.write("\n".join(lines) + "\n")
