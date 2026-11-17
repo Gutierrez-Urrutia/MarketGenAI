@@ -723,72 +723,78 @@ export default function PipelineSettingsTab({ isDark = false }) {
             {mailbox && !oauthConfigured && (
               <p role="note" className="mb-2 text-xs text-amber-800" data-testid="mailbox-oauth-off">{t("settings.pipelineTab.mailboxOauthNotConfigured")}</p>
             )}
-            {(mailboxState === "connected" || mailboxState === "reconnect") && (
-              <div className="mb-2 text-xs" data-testid="mailbox-account">
-                <p className="text-gray-500">{t("settings.pipelineTab.mailboxAccountLabel")}</p>
-                {mailbox.display_name && <p className="font-medium text-gray-800" data-testid="mailbox-display-name">{mailbox.display_name}</p>}
-                <p className="text-gray-700 [overflow-wrap:anywhere]" data-testid="mailbox-address">{mailbox.address || "—"}</p>
-              </div>
-            )}
             {mailboxState === "reconnect" && (
               <p role="alert" className="mb-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800" data-testid="mailbox-reconnect-note">
                 {t("settings.pipelineTab.mailboxReconnectNote")}
               </p>
             )}
-            <p id={mailboxConsentId} className="mb-2 text-xs text-gray-500" data-testid="mailbox-consent">{t("settings.pipelineTab.mailboxConsent")}</p>
-            <div className="mb-[18px] flex flex-wrap justify-end gap-1.5">
-              {mailboxState === "not_connected" && (
-                <Btn
-                  small
-                  className="disabled:opacity-50 disabled:cursor-not-allowed"
-                  icon={busyIcon("connect", Mail)}
-                  onClick={connectMailbox}
-                  disabled={Boolean(mailboxBusy) || !oauthConfigured}
-                  aria-busy={mailboxBusy === "connect" || undefined}
-                  aria-describedby={mailboxConsentId}
-                >
-                  {t("settings.pipelineTab.mailboxConnectButton")}
-                </Btn>
-              )}
-              {mailboxState === "reconnect" && (
-                <Btn
-                  small
-                  className="disabled:opacity-50 disabled:cursor-not-allowed"
-                  icon={busyIcon("connect", RefreshCw)}
-                  onClick={connectMailbox}
-                  disabled={Boolean(mailboxBusy) || !oauthConfigured}
-                  aria-busy={mailboxBusy === "connect" || undefined}
-                  aria-describedby={mailboxConsentId}
-                >
-                  {t("settings.pipelineTab.mailboxReconnectButton")}
-                </Btn>
-              )}
-              {mailboxState === "connected" && (
-                <Btn
-                  variant="secondary"
-                  small
-                  className="disabled:opacity-50 disabled:cursor-not-allowed"
-                  icon={busyIcon("test", Plug)}
-                  onClick={testMailbox}
-                  disabled={Boolean(mailboxBusy)}
-                  aria-busy={mailboxBusy === "test" || undefined}
-                >
-                  {mailboxBusy === "test" ? t("settings.pipelineTab.mailboxTesting") : t("settings.pipelineTab.mailboxTestButton")}
-                </Btn>
-              )}
-              {(mailboxState === "connected" || mailboxState === "reconnect") && (
-                <Btn
-                  variant="secondary"
-                  small
-                  className="disabled:opacity-50 disabled:cursor-not-allowed"
-                  icon={busyIcon("disconnect", Trash2)}
-                  onClick={() => setConfirmDisconnect(true)}
-                  disabled={Boolean(mailboxBusy)}
-                  aria-busy={mailboxBusy === "disconnect" || undefined}
-                >
-                  {t("settings.pipelineTab.mailboxDisconnectButton")}
-                </Btn>
-              )}
+            {/* Connection: the account and the consent text on the left, its
+                buttons on the right, centred on one row (stacked when narrow). */}
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
+              <div className="min-w-0 space-y-2 sm:flex-1">
+                {(mailboxState === "connected" || mailboxState === "reconnect") && (
+                  <div className="text-xs" data-testid="mailbox-account">
+                    <p className="text-gray-500">{t("settings.pipelineTab.mailboxAccountLabel")}</p>
+                    {mailbox.display_name && <p className="font-medium text-gray-800" data-testid="mailbox-display-name">{mailbox.display_name}</p>}
+                    <p className="text-gray-700 [overflow-wrap:anywhere]" data-testid="mailbox-address">{mailbox.address || "—"}</p>
+                  </div>
+                )}
+                <p id={mailboxConsentId} className="text-xs text-gray-500" data-testid="mailbox-consent">{t("settings.pipelineTab.mailboxConsent")}</p>
+              </div>
+              <div className="flex flex-wrap gap-1.5 sm:shrink-0 sm:justify-end">
+                {mailboxState === "not_connected" && (
+                  <Btn
+                    small
+                    className="disabled:opacity-50 disabled:cursor-not-allowed"
+                    icon={busyIcon("connect", Mail)}
+                    onClick={connectMailbox}
+                    disabled={Boolean(mailboxBusy) || !oauthConfigured}
+                    aria-busy={mailboxBusy === "connect" || undefined}
+                    aria-describedby={mailboxConsentId}
+                  >
+                    {t("settings.pipelineTab.mailboxConnectButton")}
+                  </Btn>
+                )}
+                {mailboxState === "reconnect" && (
+                  <Btn
+                    small
+                    className="disabled:opacity-50 disabled:cursor-not-allowed"
+                    icon={busyIcon("connect", RefreshCw)}
+                    onClick={connectMailbox}
+                    disabled={Boolean(mailboxBusy) || !oauthConfigured}
+                    aria-busy={mailboxBusy === "connect" || undefined}
+                    aria-describedby={mailboxConsentId}
+                  >
+                    {t("settings.pipelineTab.mailboxReconnectButton")}
+                  </Btn>
+                )}
+                {mailboxState === "connected" && (
+                  <Btn
+                    variant="secondary"
+                    small
+                    className="disabled:opacity-50 disabled:cursor-not-allowed"
+                    icon={busyIcon("test", Plug)}
+                    onClick={testMailbox}
+                    disabled={Boolean(mailboxBusy)}
+                    aria-busy={mailboxBusy === "test" || undefined}
+                  >
+                    {mailboxBusy === "test" ? t("settings.pipelineTab.mailboxTesting") : t("settings.pipelineTab.mailboxTestButton")}
+                  </Btn>
+                )}
+                {(mailboxState === "connected" || mailboxState === "reconnect") && (
+                  <Btn
+                    variant="secondary"
+                    small
+                    className="disabled:opacity-50 disabled:cursor-not-allowed"
+                    icon={busyIcon("disconnect", Trash2)}
+                    onClick={() => setConfirmDisconnect(true)}
+                    disabled={Boolean(mailboxBusy)}
+                    aria-busy={mailboxBusy === "disconnect" || undefined}
+                  >
+                    {t("settings.pipelineTab.mailboxDisconnectButton")}
+                  </Btn>
+                )}
+              </div>
             </div>
             <ConfirmDialog
               open={confirmDisconnect}
@@ -799,10 +805,13 @@ export default function PipelineSettingsTab({ isDark = false }) {
               onCancel={() => setConfirmDisconnect(false)}
               onConfirm={disconnectMailbox}
             />
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-1.5">
+            {/* Sending: two equal columns aligned at the top (one when narrow). */}
+            <div className="my-3 border-t border-gray-100" aria-hidden="true" />
+            <div className="grid grid-cols-1 items-start gap-x-4 sm:grid-cols-2">
               <Field label={t("settings.pipelineTab.dailyLimitLabel")} hint={t("settings.pipelineTab.dailyLimitHint")} hintBelow hintId={dailyLimitHintId}>
-                <div className="flex gap-1.5">
+                <div className="flex items-center gap-1.5">
                   <Input
+                    className="min-w-0 flex-1"
                     type="number"
                     min={1}
                     max={DAILY_LIMIT_MAX}
@@ -817,7 +826,7 @@ export default function PipelineSettingsTab({ isDark = false }) {
                   </Btn>
                 </div>
               </Field>
-              <div className="mb-[18px]">
+              <div className="mb-[18px] min-w-0">
                 <div className="flex items-center gap-2">
                   <button
                     type="button"
