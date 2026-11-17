@@ -50,6 +50,7 @@ from app.rendering.html_flowables import (
     text_or_markdown_to_html,
 )
 from app.rendering.infographic import build_infographic_pdf
+from app.rendering.whitepaper import build_whitepaper_pdf
 
 logger = logging.getLogger(__name__)
 
@@ -136,34 +137,15 @@ _whitepaper_page_decoration = _page_decoration()  # versión en inglés, por com
 
 
 def _build_whitepaper_pdf(book: Dict[str, Any], chapters: List[Dict[str, Any]], language: str = "en") -> bytes:
-    styles = _whitepaper_styles()
-
-    story = [
-        Spacer(1, 200),
-        Paragraph(escape(book.get("title", "")), styles["coverTitle"]),
-        Paragraph(escape(book.get("description", "")), styles["coverSubtitle"]),
-        PageBreak(),
+    """Whitepaper con portada, índice y capítulos; el diseño vive en ``app.rendering.whitepaper``."""
+    prepared = [
+        {
+            "title": ch.get("title", ""),
+            "content": _strip_duplicate_chapter_heading(ch.get("content", ""), ch.get("title", "")),
+        }
+        for ch in chapters
     ]
-
-    for i, ch in enumerate(chapters):
-        if i > 0:
-            story.append(PageBreak())
-        content = _strip_duplicate_chapter_heading(ch.get("content", ""), ch.get("title", ""))
-        story.append(Paragraph(escape(f"{i + 1}. {ch.get('title', '')}"), styles["chapterTitle"]))
-        story.append(HRFlowable(width="100%", thickness=1.4, color=colors.HexColor(BRAND_PRIMARY_INDIGO), spaceAfter=12, hAlign="LEFT"))
-        story.extend(_chapter_flowables(content, styles))
-
-    buffer = BytesIO()
-    pdf = SimpleDocTemplate(
-        buffer,
-        pagesize=LETTER,
-        leftMargin=56,
-        rightMargin=56,
-        topMargin=50,
-        bottomMargin=60,
-    )
-    pdf.build(story, onFirstPage=_page_decoration(language), onLaterPages=_page_decoration(language))
-    return buffer.getvalue()
+    return build_whitepaper_pdf(book, prepared, language)
 
 
 # ── One-Pager ─────────────────────────────────────────────────────────────────
