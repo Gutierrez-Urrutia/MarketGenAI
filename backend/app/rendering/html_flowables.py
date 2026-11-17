@@ -100,6 +100,7 @@ def html_to_flowables(
     styles: dict,
     *,
     class_renderers: dict[str, Callable] | None = None,
+    accent_color: str = BRAND_PRIMARY_INDIGO,
 ) -> list:
     """Convert semantic HTML or Markdown to flowables, with optional class-based render hooks."""
     story = []
@@ -166,7 +167,7 @@ def html_to_flowables(
                     start="circle",
                     leftIndent=16,
                     bulletFontSize=7,
-                    bulletColor=colors.HexColor(BRAND_PRIMARY_INDIGO),
+                    bulletColor=colors.HexColor(accent_color),
                 ))
                 story.append(Spacer(1, 6))
         elif tag.name == "ol":
