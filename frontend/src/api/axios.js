@@ -1,6 +1,11 @@
 import axios from 'axios'
 import toast from 'react-hot-toast'
 
+import { REDACTED, describeApiError, logApiError, loggableBody, redactSecrets } from './apiLogging'
+
+// Re-exported for callers that already import from here.
+export { describeApiError, logApiError, redactSecrets }
+
 export const API_BASE_URL =
   import.meta.env.VITE_API_URL ||
   (import.meta.env.PROD ? '/api/v1' : 'http://127.0.0.1:8000/api/v1')
@@ -21,6 +26,59 @@ export const AUTH_REFRESH_TIMEOUT_MS = 30_000
 // backend RUN_CONSIDERED_DEAD_AFTER_SECONDS: the client never gives up on a
 // scan the server still considers alive.
 export const SCAN_REQUEST_TIMEOUT_MS = 360_000
+// POST /leads/{id}/contacts/search waits for Hunter inside the request (backend
+// CONTACT_SEARCH_TIME_BUDGET_SECONDS = 45 s). 90 s leaves margin for the network
+// and the backend's own close-out; only that call uses it.
+export const CONTACT_SEARCH_TIMEOUT_MS = 90_000
+// POST /outreach-emails and PATCH .../regenerate wait for the LLM inside the
+// request; the backend sets no LLM timeout, so this is the only bound. A
+// generation cut here may still finish on the server (the UI says so).
+export const GENERATION_TIMEOUT_MS = 120_000
+// POST /outreach-emails/{id}/send talks to Microsoft Graph inside the request:
+// renewing the token, creating the draft, sending it and, when the send is
+// uncertain, reading it once — each call bounded by the backend's
+// MAIL_HTTP_TIMEOUT_SECONDS = 20 s. 90 s leaves margin for those calls and the
+// Firestore writes around them. A send cut here may still have gone out: the
+// UI reloads the email to see its real state.
+export const SEND_TIMEOUT_MS = 90_000
+// POST /mail-connection/start and /test: at most a token renewal and a read
+// of the mailbox (20 s each on the backend).
+export const MAILBOX_TIMEOUT_MS = 60_000
+// Per-call flag: keep this call's own timeout even when its URL matches a
+// generative keyword below (e.g. /outreach-emails contains "outreach").
+const EXPLICIT_TIMEOUT = { explicitTimeout: true }
+
+// Requests marked `logBody: false` are logged without their request or
+// response body (method, URL, status and duration only): passwords and tokens
+// (auth), API keys and secrets (CRM, social, JSearch sources, Hunter), the
+// mailbox connection (its authorization URL and address) and contacts'
+// personal data. These logs run in production builds too.
+const NO_BODY_LOG = { logBody: false }
+const logsBody = (config) => config?.logBody !== false
+
+// Before an error reaches the caller (which may console.error it), drop what
+// must never be printed: the session token, the request body of a logBody:false
+// call (redacted otherwise) and the XHR objects, which keep the raw response
+// text. error.response.data stays (callers read `detail`), redacted.
+function sanitizeAxiosError(error) {
+  try {
+    const config = error?.config
+    if (config?.headers?.Authorization) config.headers.Authorization = REDACTED
+    if (config && config.data !== undefined) {
+      config.data = logsBody(config) ? JSON.stringify(loggableBody(config.data)) : REDACTED
+    }
+    if (error?.response) {
+      if (error.response.data && typeof error.response.data === 'object') {
+        error.response.data = redactSecrets(error.response.data, { allInputs: !logsBody(config) })
+      }
+      error.response.request = undefined
+    }
+    if (error && 'request' in error) error.request = undefined
+  } catch {
+    // Never let the clean-up hide the original error.
+  }
+  return error
+}
 
 const emitMarketgenEvent = (name) => {
   if (typeof window !== 'undefined') {
@@ -182,7 +240,7 @@ api.interceptors.request.use(async (config) => {
     'outreach',
     'jobs'
   ]
-  if (config.url && generativeKeywords.some((kw) => config.url.toLowerCase().includes(kw))) {
+  if (!config.explicitTimeout && config.url && generativeKeywords.some((kw) => config.url.toLowerCase().includes(kw))) {
     config.timeout = 0
   }
 
@@ -194,7 +252,7 @@ api.interceptors.request.use(async (config) => {
   if (token) {
     config.headers.Authorization = `Bearer ${token}`
   }
-  console.log(`📡 [API ->] ${config.method?.toUpperCase()} ${config.url}`, config.data || '')
+  console.log(`📡 [API ->] ${config.method?.toUpperCase()} ${config.url}`, logsBody(config) ? (loggableBody(config.data) || '') : '')
   config._startTime = Date.now()
   return config
 })
@@ -202,12 +260,12 @@ api.interceptors.request.use(async (config) => {
 api.interceptors.response.use(
   (response) => {
     const duration = response.config._startTime ? `${Date.now() - response.config._startTime}ms` : ''
-    console.log(`✅ [API <-] ${response.status} ${response.config.method?.toUpperCase()} ${response.config.url} (${duration})`, response.data)
+    console.log(`✅ [API <-] ${response.status} ${response.config.method?.toUpperCase()} ${response.config.url} (${duration})`, logsBody(response.config) ? redactSecrets(response.data) : '')
     return response
   },
   async (error) => {
     const duration = error.config?._startTime ? `${Date.now() - error.config._startTime}ms` : ''
-    console.error(`❌ [API Error] ${error.config?.method?.toUpperCase()} ${error.config?.url} (${duration}) - Status: ${error.response?.status || 'TIMEOUT/NETWORK_ERR'}:`, error.response?.data || error.message)
+    console.error(`❌ [API Error] ${error.config?.method?.toUpperCase()} ${error.config?.url} (${duration}) - Status: ${error.response?.status || 'TIMEOUT/NETWORK_ERR'}:`, logsBody(error.config) ? (redactSecrets(error.response?.data) || error.message) : (error.code || ''))
     const status = error.response?.status
     const originalRequest = error.config
 
@@ -248,7 +306,7 @@ api.interceptors.response.use(
       toast.error('Server error. Please try again.')
     }
 
-    return Promise.reject(error)
+    return Promise.reject(sanitizeAxiosError(error))
   },
 )
 
@@ -256,7 +314,7 @@ export default api
 
 export const authApi = {
   register: async (data, options = {}) => {
-    const response = await api.post('/auth/register', data)
+    const response = await api.post('/auth/register', data, NO_BODY_LOG)
     if (!options.noSession) authTokenStore.setTokens(response.data, options)
     return response
   },
@@ -264,7 +322,7 @@ export const authApi = {
     const payload = { usernameOrEmail, password }
 
     try {
-      const response = await api.post('/auth/login', payload)
+      const response = await api.post('/auth/login', payload, NO_BODY_LOG)
       authTokenStore.setTokens(response.data, options)
       return response
     } catch (error) {
@@ -273,7 +331,7 @@ export const authApi = {
 
       if (!canRetryWithEmail) throw error
 
-      const response = await api.post('/auth/login', { email: usernameOrEmail, password })
+      const response = await api.post('/auth/login', { email: usernameOrEmail, password }, NO_BODY_LOG)
       authTokenStore.setTokens(response.data, options)
       return response
     }
@@ -282,14 +340,14 @@ export const authApi = {
     const refreshToken = authTokenStore.getRefreshToken()
     try {
       if (refreshToken && refreshToken !== MOCK_REFRESH_TOKEN) {
-        await api.post('/auth/logout', { refreshToken })
+        await api.post('/auth/logout', { refreshToken }, NO_BODY_LOG)
       }
     } finally {
       authTokenStore.clear()
     }
   },
-  forgotPassword: (data) => api.post('/auth/forgot-password', data),
-  resetPassword: (data) => api.post('/auth/reset-password', data),
+  forgotPassword: (data) => api.post('/auth/forgot-password', data, NO_BODY_LOG),
+  resetPassword: (data) => api.post('/auth/reset-password', data, NO_BODY_LOG),
 }
 
 export const booksApi = {
@@ -464,22 +522,25 @@ export const assetsApi = {
 
 export const settingsApi = {
   get: () => api.get('/settings'),
-  update: (data) => api.put('/settings', data),
-  put: (data) => api.put('/settings', data),
+  // May carry crm.apiKey (legacy Settings form): never logged.
+  update: (data) => api.put('/settings', data, NO_BODY_LOG),
+  put: (data) => api.put('/settings', data, NO_BODY_LOG),
 }
 
 export const crmApi = {
   status: () => api.get('/settings/crm/status'),
-  testConnection: (data) => api.post('/settings/crm/test-connection', data),
-  connect: (provider, data) => api.post(`/settings/crm/${provider}/connect`, data),
+  // CRM API keys / consumer secrets: never logged.
+  testConnection: (data) => api.post('/settings/crm/test-connection', data, NO_BODY_LOG),
+  connect: (provider, data) => api.post(`/settings/crm/${provider}/connect`, data, NO_BODY_LOG),
   disconnect: (provider) => api.delete(`/settings/crm/${provider}`),
   setActiveProvider: (activeProvider) => api.put('/settings/crm/active-provider', { activeProvider }),
 }
 
 export const socialApi = {
   status: () => api.get('/settings/social/status'),
-  connectFacebook: () => api.post('/settings/social/facebook/connect'),
-  connectManual: (platform, data) => api.post(`/settings/social/${platform}/manual`, data),
+  // OAuth URL (with its state) and provider access tokens: never logged.
+  connectFacebook: () => api.post('/settings/social/facebook/connect', undefined, NO_BODY_LOG),
+  connectManual: (platform, data) => api.post(`/settings/social/${platform}/manual`, data, NO_BODY_LOG),
   disconnect: (platform) => api.delete(`/settings/social/${platform}`),
   disconnectFacebook: () => api.delete('/settings/social/facebook'),
   publish: (data) => api.post('/settings/social/publish', data),
@@ -503,10 +564,12 @@ export const analysisApi = {
 
 export const pipelineApi = {
   getConfig: () => api.get('/pipeline/config'),
-  updateConfig: (data) => api.put('/pipeline/config', data),
+  // hunter_api_key travels in this body: never logged.
+  updateConfig: (data) => api.put('/pipeline/config', data, NO_BODY_LOG),
   updateKeywords: (data) => api.put('/pipeline/config/keywords', data),
-  createSource: (data) => api.post('/pipeline/config/sources', data),
-  updateSource: (id, data) => api.put(`/pipeline/config/sources/${id}`, data),
+  // Source config may carry an api_key (JSearch): never logged.
+  createSource: (data) => api.post('/pipeline/config/sources', data, NO_BODY_LOG),
+  updateSource: (id, data) => api.put(`/pipeline/config/sources/${id}`, data, NO_BODY_LOG),
   deleteSource: (id) => api.delete(`/pipeline/config/sources/${id}`),
   testSource: (id) => api.post(`/pipeline/config/sources/${id}/test`),
   // Fase 2 — Agente 1, siempre disparado a mano (ver job_scout_service.py)
@@ -519,6 +582,77 @@ export const pipelineApi = {
 export const leadsApi = {
   list: (params) => api.get('/leads', { params, timeout: READ_TIMEOUT_MS }),
   get: (id) => api.get(`/leads/${id}`, { timeout: READ_TIMEOUT_MS }),
+  // RF15 — contacts of one lead (names and addresses: bodies never logged).
+  // `force` is sent only when the user explicitly asks for a new Hunter search.
+  searchContacts: (id, { force = false } = {}) => api.post(
+    `/leads/${id}/contacts/search`,
+    force ? { force: true } : undefined,
+    { ...NO_BODY_LOG, timeout: CONTACT_SEARCH_TIMEOUT_MS, suppressPermissionToast: true, suppressServerErrorToast: true },
+  ),
+  listContacts: (id, { includeRejected = false } = {}) => api.get(`/leads/${id}/contacts`, {
+    ...NO_BODY_LOG,
+    params: includeRejected ? { include_rejected: true } : undefined,
+    timeout: READ_TIMEOUT_MS,
+    suppressPermissionToast: true,
+    suppressServerErrorToast: true,
+  }),
+  reviewContact: (id, contactId, decision) => api.patch(
+    `/leads/${id}/contacts/${contactId}/review`,
+    { decision },
+    { ...NO_BODY_LOG, timeout: READ_TIMEOUT_MS, suppressPermissionToast: true, suppressServerErrorToast: true },
+  ),
+}
+
+// RF-VTA-16 — prospecting emails (Agente 3). Bodies carry names and addresses:
+// never logged. Every call keeps its own timeout (EXPLICIT_TIMEOUT). `language`
+// (en / es / pt) is sent only when given; the backend defaults to en and, on
+// regenerate, keeps the email's own.
+const OUTREACH_EMAIL_OPTIONS = { ...NO_BODY_LOG, ...EXPLICIT_TIMEOUT, suppressPermissionToast: true, suppressServerErrorToast: true }
+export const outreachEmailsApi = {
+  generate: (leadId, contactId, language) => api.post(
+    '/outreach-emails',
+    { lead_id: leadId, contact_id: contactId, ...(language ? { language } : {}) },
+    { ...OUTREACH_EMAIL_OPTIONS, timeout: GENERATION_TIMEOUT_MS },
+  ),
+  list: (params) => api.get('/outreach-emails', { ...OUTREACH_EMAIL_OPTIONS, params, timeout: READ_TIMEOUT_MS }),
+  approve: (id) => api.patch(`/outreach-emails/${id}/approve`, undefined, { ...OUTREACH_EMAIL_OPTIONS, timeout: READ_TIMEOUT_MS }),
+  reject: (id) => api.patch(`/outreach-emails/${id}/reject`, undefined, { ...OUTREACH_EMAIL_OPTIONS, timeout: READ_TIMEOUT_MS }),
+  markSent: (id) => api.patch(`/outreach-emails/${id}/mark-sent`, undefined, { ...OUTREACH_EMAIL_OPTIONS, timeout: READ_TIMEOUT_MS }),
+  regenerate: (id, language) => api.patch(
+    `/outreach-emails/${id}/regenerate`,
+    language ? { language } : undefined,
+    { ...OUTREACH_EMAIL_OPTIONS, timeout: GENERATION_TIMEOUT_MS },
+  ),
+  // Real send from the connected mailbox. `force_retry` is sent only for an explicit retry of a
+  // send whose outcome is unknown (the user confirmed it twice).
+  send: (id, { confirmToEmail, forceRetry = false } = {}) => api.post(
+    `/outreach-emails/${id}/send`,
+    { confirm_to_email: confirmToEmail, ...(forceRetry ? { force_retry: true } : {}) },
+    { ...OUTREACH_EMAIL_OPTIONS, timeout: SEND_TIMEOUT_MS },
+  ),
+  sendStatus: () => api.get('/outreach-emails/send-status', { ...OUTREACH_EMAIL_OPTIONS, timeout: READ_TIMEOUT_MS }),
+  listDoNotContact: () => api.get('/outreach-emails/do-not-contact', { ...OUTREACH_EMAIL_OPTIONS, timeout: READ_TIMEOUT_MS }),
+  // The server reads the recipient from the email: no address is sent.
+  addDoNotContact: ({ emailId }) => api.post(
+    '/outreach-emails/do-not-contact',
+    { email_id: emailId },
+    { ...OUTREACH_EMAIL_OPTIONS, timeout: READ_TIMEOUT_MS },
+  ),
+  removeDoNotContact: (id) => api.delete(`/outreach-emails/do-not-contact/${id}`, { ...OUTREACH_EMAIL_OPTIONS, timeout: READ_TIMEOUT_MS }),
+}
+
+// RF-VTA-16 — the user's Microsoft 365 / Outlook mailbox, connected by OAuth.
+// start returns Microsoft's authorization URL (it carries the OAuth state) and
+// status / test the mailbox address: bodies never logged. The callback is not
+// called from here: Microsoft posts it to the backend, which redirects the
+// browser back with ?mail_connection=connected or ?mail_connection_error=<code>.
+const MAILBOX_OPTIONS = { ...NO_BODY_LOG, ...EXPLICIT_TIMEOUT, suppressPermissionToast: true, suppressServerErrorToast: true }
+export const mailConnectionApi = {
+  start: () => api.post('/mail-connection/start', undefined, { ...MAILBOX_OPTIONS, timeout: MAILBOX_TIMEOUT_MS }),
+  status: () => api.get('/mail-connection/status', { ...MAILBOX_OPTIONS, timeout: READ_TIMEOUT_MS }),
+  // Reads the mailbox (GET /me on Microsoft's side); nothing is sent.
+  test: () => api.post('/mail-connection/test', undefined, { ...MAILBOX_OPTIONS, timeout: MAILBOX_TIMEOUT_MS }),
+  delete: () => api.delete('/mail-connection', { ...MAILBOX_OPTIONS, timeout: READ_TIMEOUT_MS }),
 }
 
 export const publishingApi = {

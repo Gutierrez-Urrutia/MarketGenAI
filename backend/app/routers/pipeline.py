@@ -8,11 +8,16 @@ analisis-worker-serverless.md). `POST /pipeline/runs` es la única forma de
 disparar un escaneo: siempre manual, a pedido de quien lo llame.
 
 One PipelineConfig document per user (doc_id == user.sub), same pattern as
-SettingsRepo. smtp_password is write-only: it is encrypted with
+SettingsRepo. hunter_api_key (Agente 2) is write-only: it is encrypted with
 app.services.encryption_service before being persisted as
-`smtp_password_encrypted`, and the API never returns it — only a
-`smtp_password_configured` boolean so the frontend can show "configured"
+`hunter_api_key_encrypted`, and the API never returns it — only a
+`hunter_api_key_configured` boolean so the frontend can show "configured"
 without ever getting the secret back.
+
+Real sending of prospecting emails: the user's switch and daily limit live
+here; the mailbox it is sent from is connected apart (routers/
+mail_connection.py). The settings of the removed SMTP sending, which older
+documents still hold, are never returned nor accepted (RETIRED_CONFIG_FIELDS).
 """
 
 import asyncio
@@ -23,6 +28,10 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, sta
 
 from app.core import url_safety
 from app.core.pipeline_constants import (
+    OUTREACH_DAILY_SEND_LIMIT_DEFAULT,
+    RETIRED_SMTP_CONFIG_FIELDS,
+    JSEARCH_DATE_POSTED_OPTIONS,
+    JSEARCH_MAX_NUM_PAGES,
     RUN_CONSIDERED_DEAD_AFTER_SECONDS,
     TASK_ENQUEUE_TIMEOUT_SECONDS,
 )
@@ -42,7 +51,7 @@ from app.schemas.pipeline import (
     PipelineRunStatus,
     SourceType,
 )
-from app.services import encryption_service, job_scout_service
+from app.services import encryption_service, job_scout_service, outreach_send_rules
 from app.services.firestore_service import (
     new_id,
     now_utc,
@@ -57,20 +66,28 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/pipeline", tags=["Pipeline"])
 
 
+# Removed settings that existing pipeline_configs docs may still hold: the
+# "automation thresholds" and the SMTP account of the removed SMTP sending.
+# They are ignored, never returned, and never written by PUT /config (its
+# body model does not have them).
+RETIRED_CONFIG_FIELDS = ("auto_send_threshold", "max_emails_per_day") + RETIRED_SMTP_CONFIG_FIELDS
+
+
 def _default_config() -> Dict[str, Any]:
     return {
         "keywords": [],
         "industries": [],
         "excluded_companies": [],
         "sources": [],
-        "smtp_host": "",
-        "smtp_port": 587,
-        "smtp_user": "",
-        "sender_email": "",
-        "sender_name": "",
-        "auto_send_threshold": 0.80,
-        "max_emails_per_day": 50,
+        # Real sending of prospecting emails (RF-VTA-16): off until the user
+        # switches it on (and the server's master switch is on too).
+        "outreach_real_send_enabled": False,
+        "outreach_daily_send_limit": OUTREACH_DAILY_SEND_LIMIT_DEFAULT,
+        # Kept for the scheduled scan of RF-VTA-17; not shown in the UI.
         "scan_frequency_hours": 24,
+        # Kept for RF-VTA-17; not shown in the UI and read by nothing today.
+        # Older docs may hold is_active=False from the removed toggle (see
+        # PipelineConfig in schemas/pipeline.py).
         "is_active": True,
     }
 
@@ -117,6 +134,32 @@ def _validate_source_title_format(source_type: SourceType, config: Dict[str, Any
         )
 
 
+
+def _validate_jsearch_config(source_type: SourceType, config: Dict[str, Any]) -> None:
+    """For JSearch sources, the optional query settings must be values the
+    provider accepts: `num_pages` an integer 1..JSEARCH_MAX_NUM_PAGES,
+    `date_posted` one of JSEARCH_DATE_POSTED_OPTIONS, and `country` /
+    `language` two-letter codes. Absent fields fall back to the adapter's
+    defaults (job_scout_service._scan_jsearch)."""
+    if source_type != SourceType.JSEARCH:
+        return
+    config = config or {}
+
+    def _reject(detail: str) -> None:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=detail)
+
+    if "num_pages" in config:
+        value = config["num_pages"]
+        if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= JSEARCH_MAX_NUM_PAGES:
+            _reject(f"num_pages must be an integer between 1 and {JSEARCH_MAX_NUM_PAGES}.")
+    if config.get("date_posted") not in (None, "") and config["date_posted"] not in JSEARCH_DATE_POSTED_OPTIONS:
+        _reject(f"Invalid date_posted {config['date_posted']!r}; expected one of {list(JSEARCH_DATE_POSTED_OPTIONS)}.")
+    for field in ("country", "language"):
+        if field in config:
+            value = config[field]
+            if not (isinstance(value, str) and len(value) == 2 and value.isascii() and value.isalpha()):
+                _reject(f"{field} must be a two-letter code (e.g. 'gb', 'en').")
+
 def _split_source_config(
     source_type: SourceType, config: Dict[str, Any]
 ) -> tuple[Dict[str, Any], Dict[str, str]]:
@@ -125,7 +168,7 @@ def _split_source_config(
     Fields listed in SOURCE_TYPE_SECRET_CONFIG_FIELDS for this source_type
     (e.g. `api_key` for source_type=api) are encrypted with Fernet and moved
     out of the plaintext config — same treatment as
-    PipelineConfig.smtp_password. Everything else stays in plaintext (e.g.
+    PipelineConfig.hunter_api_key. Everything else stays in plaintext (e.g.
     `base_url`, `feed_url`, scraper selectors — not secrets).
     """
     secret_fields = set(SOURCE_TYPE_SECRET_CONFIG_FIELDS.get(source_type, []))
@@ -171,13 +214,20 @@ def _public_source(source: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _to_public(doc: Dict[str, Any], user_id: str) -> Dict[str, Any]:
-    """Strip secrets, add a userId, and never leak smtp_password_encrypted."""
+    """Strip secrets, add a userId, and never leak hunter_api_key_encrypted
+    nor any retired field (e.g. the old smtp_password_encrypted)."""
     base = _default_config()
     public = {**base, **doc}
     public["userId"] = user_id
-    public["smtp_password_configured"] = bool(public.get("smtp_password_encrypted"))
-    public.pop("smtp_password_encrypted", None)
+    public["outreach_real_send_server_enabled"] = outreach_send_rules.server_send_enabled()
+    # Never stored in plaintext, but never returned even if it were.
     public.pop("smtp_password", None)
+    public["hunter_api_key_configured"] = bool(public.get("hunter_api_key_encrypted"))
+    public.pop("hunter_api_key_encrypted", None)
+    public.pop("hunter_api_key", None)
+    # Retired settings that older documents still carry (they had no effect).
+    for retired in RETIRED_CONFIG_FIELDS:
+        public.pop(retired, None)
     public["sources"] = [_public_source(s) for s in public.get("sources") or []]
     return public
 
@@ -210,24 +260,22 @@ async def update_config(
     body: PipelineConfigUpdate,
     user: CurrentUser = Depends(get_current_user),
 ):
-    payload = body.model_dump(exclude_unset=True, exclude={"smtp_password"})
+    payload = body.model_dump(exclude_unset=True, exclude={"hunter_api_key"})
 
-    if body.smtp_password is not None:
-        # smtp_password is never stripped (its own spaces can be meaningful),
-        # but a whitespace-only value is not a real password: treat it as
-        # "not provided" and keep whatever is already stored. Only a true
-        # empty string ("") is an explicit request to clear it.
-        if body.smtp_password.strip():
+    if body.hunter_api_key is not None:
+        # Stripped (its surrounding spaces are never part of it). A
+        # whitespace-only value is "not provided": whatever is stored stays.
+        # Only a true empty string ("") is an explicit request to clear it.
+        if body.hunter_api_key.strip():
             try:
-                payload["smtp_password_encrypted"] = encryption_service.encrypt(body.smtp_password)
+                payload["hunter_api_key_encrypted"] = encryption_service.encrypt(body.hunter_api_key.strip())
             except encryption_service.EncryptionNotConfiguredError as exc:
                 raise HTTPException(
                     status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                     detail=str(exc),
                 ) from exc
-        elif body.smtp_password == "":
-            # Explicit empty string clears a previously configured password.
-            payload["smtp_password_encrypted"] = ""
+        elif body.hunter_api_key == "":
+            payload["hunter_api_key_encrypted"] = ""
 
     await _get_or_create_doc(user.sub)
     doc = await pipeline_configs_repo.upsert_for_user(user.sub, payload)
@@ -253,6 +301,7 @@ async def create_source(
     sources = list(doc.get("sources") or [])
     await _validate_source_url(body.source_type, body.config)
     _validate_source_title_format(body.source_type, body.config)
+    _validate_jsearch_config(body.source_type, body.config)
     plaintext_config, encrypted_config = _split_source_config(body.source_type, body.config)
     new_source = {
         "id": new_id(),
@@ -286,7 +335,20 @@ async def update_source(
         effective_type = SourceType(updates.get("source_type", source["source_type"]))
         await _validate_source_url(effective_type, updates["config"])
         _validate_source_title_format(effective_type, updates["config"])
+        _validate_jsearch_config(effective_type, updates["config"])
         plaintext_config, encrypted_config = _split_source_config(effective_type, updates["config"])
+        # The screen never gets a stored secret back, so a secret field that is
+        # absent or empty here means "keep it" — not "delete it". A legacy
+        # plaintext value is kept too, and gets encrypted on this save.
+        old_encrypted = source.get("config_encrypted") or {}
+        old_plaintext = source.get("config") or {}
+        for field in SOURCE_TYPE_SECRET_CONFIG_FIELDS.get(effective_type, []):
+            if field in encrypted_config:
+                continue
+            if old_encrypted.get(field):
+                encrypted_config[field] = old_encrypted[field]
+            elif old_plaintext.get(field):
+                encrypted_config.update(_split_source_config(effective_type, {field: old_plaintext[field]})[1])
         updates["config"] = plaintext_config
         updates["config_encrypted"] = encrypted_config
     source.update(updates)
@@ -312,11 +374,13 @@ async def test_source(
     source_id: str,
     user: CurrentUser = Depends(get_current_user),
 ):
-    """Validate the source has the config fields its source_type needs.
+    """Check the source's config fields, then actually read it with the same
+    adapter a scan uses (SSRF-checked fetch, robots.txt for scrapers) —
+    without scoring or saving anything, so no model call is made.
 
-    This is a static shape check only — no external call is made. A real
-    connectivity check happens when the source is actually scanned, as part
-    of a run (POST /pipeline/runs → JobScoutService).
+    Returns {ok, postings_read, reason, warnings}; the screen builds the
+    message in the user's language. A source that doesn't respond or isn't
+    a valid feed/JSON/page comes back with ok=false and the reason.
     """
     doc = await _get_or_create_doc(user.sub)
     sources = list(doc.get("sources") or [])
@@ -340,7 +404,27 @@ async def test_source(
             },
         )
 
-    return {"ok": True, "message": f"Source '{source['name']}' has all required fields for {source_type.value}."}
+    problems: List[Dict[str, Any]] = []
+    problems_token = job_scout_service._source_problems.set(problems)
+    try:
+        keywords = doc.get("keywords") or []
+        if source_type == SourceType.JSEARCH:
+            # Each JSearch keyword is a billed request: the probe only needs one.
+            keywords = [k for k in keywords if str(k).strip()][:1]
+        postings = await job_scout_service._scan_source(source, keywords)
+    except Exception as exc:  # noqa: BLE001 — a probe reports, it never 500s
+        problems.append({"message": str(exc) or type(exc).__name__, "fatal": True})
+        postings = []
+    finally:
+        job_scout_service._source_problems.reset(problems_token)
+
+    fatal = [problem["message"] for problem in problems if problem["fatal"]]
+    return {
+        "ok": not fatal,
+        "postings_read": len(postings),
+        "reason": "; ".join(fatal),
+        "warnings": [problem["message"] for problem in problems if not problem["fatal"]],
+    }
 
 
 # ── Pipeline runs (Fase 2 — Agente 1 only, always manual) ──────────────────
@@ -404,6 +488,17 @@ async def create_run(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="No enabled sources configured for this pipeline.",
+        )
+    # Without keywords the relevance prompt falls back to a generic criterion
+    # the user never chose, so the run isn't started (RF13-D-002). `code` lets
+    # the screen show the message in the user's language.
+    if not any(str(keyword).strip() for keyword in (config.get("keywords") or [])):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "code": "no_keywords",
+                "message": "Agrega al menos una palabra clave antes de lanzar una ejecución.",
+            },
         )
 
     # One active run per config, enforced here (not just in the UI) with a

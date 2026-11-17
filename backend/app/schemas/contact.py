@@ -1,12 +1,15 @@
-"""Schemas for lead contacts (Agente 2 output). Router/service land in Fase 3."""
+"""Schemas for lead contacts (Agente 2 output). Router/service land in Fase 3;
+the provider-reported email fields (email_type, verification, sources) in RF15."""
 from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import Optional
+from typing import List, Literal, Optional
 from urllib.parse import urlparse
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
+
+from app.schemas.lead import ContactsSearchState, LeadStatus
 
 
 class ContactRole(str, Enum):
@@ -14,7 +17,40 @@ class ContactRole(str, Enum):
     HR_RECRUITER = "hr_recruiter"
     DEPARTMENT_HEAD = "department_head"
     PROCUREMENT = "procurement"
+    EXECUTIVE = "executive"  # CEO / founder / owner (RF15)
     UNKNOWN = "unknown"
+
+
+EmailType = Literal["personal", "generic"]
+
+
+class ReviewStatus(str, Enum):
+    """Whether the user must look at a contact before it is used (RF15).
+    pending: adjusted confidence below CONTACT_REVIEW_CONFIDENCE_THRESHOLD.
+    A rejection is per lead and reversible (rejected → approved); while
+    rejected, a contact is not offered again for that lead nor copied to
+    another lead. A global "do not contact" list is a future improvement
+    (Agente 3 / RF-VTA-16, at send time), not part of this phase."""
+
+    NOT_REQUIRED = "not_required"
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+
+
+def http_url_or_none(value: Optional[str]) -> Optional[str]:
+    """`value` stripped when it is an http(s) URL, else None (also for a
+    malformed URL such as "http://[abc"). Never raises."""
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    try:
+        scheme = urlparse(value).scheme.lower()
+    except ValueError:
+        return None
+    if scheme in ("http", "https"):
+        return value
+    return None
 
 
 class ContactBase(BaseModel):
@@ -36,6 +72,23 @@ class ContactBase(BaseModel):
     role: ContactRole = ContactRole.UNKNOWN
     confidence_score: float = Field(0.0, ge=0.0, le=1.0)
     source: str
+    # What the provider reports about the address (RF15). email_verification_status
+    # is the provider's own check (Hunter: valid / accept_all / unknown), not
+    # ContactCreate.verified, which is this system's own verification.
+    email_type: Optional[EmailType] = None
+    email_verification_status: Optional[str] = None
+    email_verified_at: Optional[datetime] = None
+    seniority: Optional[str] = None
+    department: Optional[str] = None
+    # Public pages where the provider found the address (http/https only).
+    source_urls: List[str] = Field(default_factory=list)
+    source_last_seen_at: Optional[datetime] = None
+    # confidence_score is the ranked (adjusted) confidence; this is the
+    # provider's own, before any adjustment. None on contacts saved before RF15.
+    provider_confidence_score: Optional[float] = Field(None, ge=0.0, le=1.0)
+    # Where email_verification_status came from ("hunter_domain_search",
+    # "hunter_email_verifier"); None when there is no status.
+    email_verification_source: Optional[str] = None
 
     @field_validator("full_name", "company", "source")
     @classmethod
@@ -60,14 +113,20 @@ class ContactBase(BaseModel):
     @field_validator("linkedin_url")
     @classmethod
     def _only_http_linkedin_url(cls, value: Optional[str]) -> Optional[str]:
-        value = (value or "").strip()
-        try:
-            scheme = urlparse(value).scheme.lower()
-        except ValueError:  # malformed URL, e.g. "http://[abc": drop the URL, keep the contact
+        # A malformed URL, e.g. "http://[abc", drops the URL, not the contact.
+        return http_url_or_none(value)
+
+    @field_validator("email_verification_status", "seniority", "department", "email_verification_source")
+    @classmethod
+    def _blank_text_to_none(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
             return None
-        if scheme in ("http", "https"):
-            return value
-        return None
+        return value.strip() or None
+
+    @field_validator("source_urls")
+    @classmethod
+    def _only_http_source_urls(cls, value: List[str]) -> List[str]:
+        return [url for url in (http_url_or_none(item) for item in value) if url]
 
 
 class ContactCreate(ContactBase):
@@ -96,7 +155,72 @@ class Contact(BaseModel):
     confidence_score: float = Field(0.0, ge=0.0, le=1.0)
     source: str
     verified: bool = False
+    # None / empty on contacts saved before RF15.
+    email_type: Optional[EmailType] = None
+    email_verification_status: Optional[str] = None
+    email_verified_at: Optional[datetime] = None
+    seniority: Optional[str] = None
+    department: Optional[str] = None
+    source_urls: List[str] = Field(default_factory=list)
+    source_last_seen_at: Optional[datetime] = None
+    provider_confidence_score: Optional[float] = Field(None, ge=0.0, le=1.0)
+    email_verification_source: Optional[str] = None
+    # Review and origin (RF15, Fase 5). Contacts saved before it have none:
+    # they read as not_required, unranked, not copied.
+    review_status: ReviewStatus = ReviewStatus.NOT_REQUIRED
+    reviewed_at: Optional[datetime] = None
+    rank: Optional[int] = None  # 1..RANK_TOP_N in the last search; None once out of the top
+    search_id: Optional[str] = None
+    reused_from_lead_id: Optional[str] = None
+    reused_from_contact_id: Optional[str] = None
     # Firestore stores createdAt/updatedAt (FirestoreRepo.create). Accept both
     # spellings on input only: the JSON key stays created_at/updated_at.
     created_at: Optional[datetime] = Field(None, validation_alias=AliasChoices("created_at", "createdAt"))
     updated_at: Optional[datetime] = Field(None, validation_alias=AliasChoices("updated_at", "updatedAt"))
+
+    @field_validator("review_status", mode="before")
+    @classmethod
+    def _missing_review_status(cls, value):
+        return ReviewStatus.NOT_REQUIRED if value is None else value
+
+
+class ContactReviewResponse(Contact):
+    """PATCH .../review: the updated contact, plus the lead's status after the
+    review (recomputed when it was new / contacts_found). Additive: every
+    Contact field is unchanged."""
+
+    lead_status: Optional[LeadStatus] = None
+
+
+class ContactListResponse(BaseModel):
+    items: List[Contact]
+    total: int
+
+
+class ContactSearchRequest(BaseModel):
+    # True repeats the search even within the cooldown, and searches Hunter
+    # instead of reusing another lead's contacts.
+    force: bool = False
+
+
+class ContactReviewRequest(BaseModel):
+    decision: Literal["approved", "rejected"]
+
+
+class ContactSearchResponse(BaseModel):
+    """Result of POST /leads/{id}/contacts/search. `reason` is a code, never
+    free text. credits_remaining is Hunter's balance after the search when it
+    is known (None otherwise)."""
+
+    lead_id: str
+    search_id: str
+    state: ContactsSearchState
+    reason: Optional[str] = None
+    lead_status: LeadStatus
+    contacts: List[Contact]
+    credits_used: float = 0.0
+    credits_remaining: Optional[float] = None
+    reused: bool = False
+    reused_from_lead_id: Optional[str] = None
+    searched_at: datetime
+    next_search_allowed_at: Optional[datetime] = None

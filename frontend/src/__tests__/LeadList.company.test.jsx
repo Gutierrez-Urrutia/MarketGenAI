@@ -13,6 +13,7 @@ vi.mock("react-hot-toast", () => {
 
 import { leadsApi, pipelineApi } from "@/api/axios";
 import LeadList from "@/pages/pipeline/LeadList";
+import { translations } from "@/i18n/translations";
 
 const flush = () => act(async () => { await Promise.resolve(); });
 
@@ -32,20 +33,17 @@ describe("LeadList company column", () => {
     ["only whitespace", { company_name: "   " }],
     ["null", { company_name: null }],
     ["a missing field", {}],
-  ])("shows a visual em dash plus screen-reader text when company_name is %s", async (_label, overrides) => {
+  ])("shows a visible «company not provided» text when company_name is %s (RF14-D-003)", async (_label, overrides) => {
     leadsApi.list.mockResolvedValue({ data: { items: [lead(overrides)] } });
     render(<LeadList />);
     await flush();
 
     const cell = companyCell("Dev");
-    // The dash is decorative: hidden from assistive tech.
-    const dash = within(cell).getByText("—");
-    expect(dash.getAttribute("aria-hidden")).toBe("true");
-    expect(dash.getAttribute("title")).toBe("leads.unknownCompany");
-    // What a screen reader announces instead.
-    const srText = within(cell).getByText("leads.unknownCompany");
-    expect(srText.className).toContain("sr-only");
-    expect(srText.getAttribute("aria-hidden")).toBeNull();
+    // Visible for everyone (not only screen readers) and no bare dash.
+    const text = within(cell).getByText("leads.unknownCompany");
+    expect(text.className).not.toContain("sr-only");
+    expect(text.getAttribute("aria-hidden")).toBeNull();
+    expect(within(cell).queryByText("—")).toBeNull();
   });
 
   it("shows the company name when there is one", async () => {
@@ -57,5 +55,11 @@ describe("LeadList company column", () => {
     expect(cell.textContent).toBe("Acme");
     expect(within(cell).queryByText("—")).toBeNull();
     expect(within(cell).queryByText("leads.unknownCompany")).toBeNull();
+  });
+});
+
+describe("LeadList company-not-provided text (RF14-D-003)", () => {
+  it.each([["es", "Empresa no indicada"], ["en", "Company not provided"], ["pt", "Empresa não informada"]])("reads %s → %s", (lang, texto) => {
+    expect(translations[lang].leads.unknownCompany).toBe(texto);
   });
 });

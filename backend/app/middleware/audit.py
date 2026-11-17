@@ -14,6 +14,11 @@ SKIP_METHODS = ["OPTIONS"]
 
 def _infer_action(method: str, path: str) -> str:
     rules = [
+        ("POST",  "/outreach-emails",       "",          "generated_prospecting_email"),
+        ("PATCH", "/outreach-emails",       "approve",   "approved_prospecting_email"),
+        ("PATCH", "/outreach-emails",       "reject",    "rejected_prospecting_email"),
+        ("PATCH", "/outreach-emails",       "regenerate","regenerated_prospecting_email"),
+        ("PATCH", "/outreach-emails",       "mark-sent", "sent_marked_prospecting_email"),
         # RF-VTA-06: antes caían en «created_proposal» / «deleted_proposal» (el orden importa: va primero).
         # RF-VTA-11: guardar y restaurar versiones también caían en «created_proposal».
         ("POST",  "/versions",              "restore",  "restored_proposal_version"),

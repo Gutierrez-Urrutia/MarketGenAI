@@ -1,4 +1,4 @@
-"""Symmetric encryption for secrets at rest (SMTP passwords, provider API keys).
+"""Symmetric encryption for secrets at rest (provider API keys, mailbox OAuth tokens).
 
 Uses Fernet (AES-128-CBC + HMAC) with a dedicated key — PIPELINE_ENCRYPTION_KEY
 — separate from APP_SECRET_KEY, which signs JWTs and has a different rotation

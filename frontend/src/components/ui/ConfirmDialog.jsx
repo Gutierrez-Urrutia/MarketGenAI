@@ -2,15 +2,19 @@
  * ConfirmDialog — confirmación accesible que se abre sobre otros modales.
  * El foco inicial va en Cancelar; Escape cancela; Enter solo activa el botón enfocado.
  * Con `busy`, Confirmar queda deshabilitado y no se puede cancelar.
+ * `details` (opcional) es contenido estructurado (p. ej. filas Para / Desde /
+ * Asunto) que va bajo `message` y también describe el diálogo.
  */
 import { useEffect, useId, useRef } from "react";
 import { createPortal } from "react-dom";
 import { Btn } from "@/components/dashboard/ui";
 
-export function ConfirmDialog({ open, title, message, warning, cancelLabel, confirmLabel, onCancel, onConfirm, busy = false }) {
+export function ConfirmDialog({ open, title, message, details, warning, cancelLabel, confirmLabel, onCancel, onConfirm, busy = false }) {
   const dialogRef = useRef(null);
   const titleId = useId();
   const messageId = useId();
+  const detailsId = useId();
+  const describedBy = [message && messageId, details && detailsId].filter(Boolean).join(" ") || undefined;
 
   useEffect(() => {
     if (!open) return undefined;
@@ -55,11 +59,12 @@ export function ConfirmDialog({ open, title, message, warning, cancelLabel, conf
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
-        aria-describedby={messageId}
+        aria-describedby={describedBy}
         className="w-full max-w-sm rounded-2xl bg-white p-5 shadow-2xl dark:border dark:border-white/10 dark:bg-slate-800"
       >
         <h2 id={titleId} className="text-base font-semibold text-gray-900 dark:text-white">{title}</h2>
-        <p id={messageId} className="mt-2 text-sm text-gray-600 dark:text-slate-300">{message}</p>
+        {message && <p id={messageId} className="mt-2 text-sm text-gray-600 dark:text-slate-300">{message}</p>}
+        {details && <div id={detailsId} className="mt-3">{details}</div>}
         {warning && (
           <p className="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-xs font-medium text-amber-800 dark:bg-amber-500/10 dark:text-amber-200">
             {warning}

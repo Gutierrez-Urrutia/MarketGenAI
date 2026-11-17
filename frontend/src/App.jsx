@@ -5,6 +5,7 @@ import { API_BASE_URL, authApi, authTokenStore, refreshAuthSession } from "./api
 import Dashboard from "./Dashboard";
 import { LanguageProvider, useLanguage } from "./context/LanguageContext";
 import { ThemeProvider } from "./context/ThemeContext";
+import { captureMailConnectionRedirect } from "./features/mailConnection/redirectResult";
 import { AuthBrandPanel } from "./components/shell/AuthBrandPanel";
 import { BrandLogo } from "./components/shell/BrandLogo";
 import { useI18n } from "./hooks/useI18n";
@@ -1007,6 +1008,14 @@ function App() {
     window.history.replaceState({}, "", "/dashboard");
     setAuthState("authenticated");
   };
+
+  // Connecting the sending mailbox (Settings › Pipeline) redirects back here
+  // with ?mail_connection=… or ?mail_connection_error=…. Captured before the
+  // session check below sends "/" on to "/dashboard" without the query; the
+  // mailbox card shows the result once.
+  useEffect(() => {
+    captureMailConnectionRedirect();
+  }, []);
 
   // Linking a social account (Settings) redirects back here with
   // ?social_connected=facebook or ?social_error=... — unlike the

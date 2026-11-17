@@ -3,7 +3,9 @@ import axios from "axios";
 
 import api, {
   authTokenStore,
+  GENERATION_TIMEOUT_MS,
   leadsApi,
+  outreachEmailsApi,
   pipelineApi,
   refreshAuthSession,
   READ_TIMEOUT_MS,
@@ -47,6 +49,38 @@ describe("per-route timeouts", () => {
     expect(captured.url).toBe(url);
     expect(captured.timeout).toBe(READ_TIMEOUT_MS);
     expect(READ_TIMEOUT_MS).toBe(30_000);
+  });
+
+  it.each([
+    ["POST /outreach-emails", () => outreachEmailsApi.generate("l1", "c1", "es"), "/outreach-emails", GENERATION_TIMEOUT_MS],
+    ["PATCH .../regenerate", () => outreachEmailsApi.regenerate("e1", "pt"), "/outreach-emails/e1/regenerate", GENERATION_TIMEOUT_MS],
+    ["GET /outreach-emails", () => outreachEmailsApi.list({ lead_id: "l1" }), "/outreach-emails", READ_TIMEOUT_MS],
+    ["PATCH .../approve", () => outreachEmailsApi.approve("e1"), "/outreach-emails/e1/approve", READ_TIMEOUT_MS],
+    ["PATCH .../reject", () => outreachEmailsApi.reject("e1"), "/outreach-emails/e1/reject", READ_TIMEOUT_MS],
+    ["PATCH .../mark-sent", () => outreachEmailsApi.markSent("e1"), "/outreach-emails/e1/mark-sent", READ_TIMEOUT_MS],
+  ])("%s keeps its own timeout although the URL contains 'outreach' (RF-VTA-16)", async (_name, call, url, timeout) => {
+    await call();
+    expect(captured.url).toBe(url);
+    expect(captured.timeout).toBe(timeout);
+    expect(captured.logBody).toBe(false);
+  });
+
+  it("the prospecting generation limit is 2 minutes", () => {
+    expect(GENERATION_TIMEOUT_MS).toBe(120_000);
+  });
+
+  it("sends language only when given", async () => {
+    await outreachEmailsApi.generate("l1", "c1", "pt");
+    expect(JSON.parse(captured.data)).toEqual({ lead_id: "l1", contact_id: "c1", language: "pt" });
+    await outreachEmailsApi.generate("l1", "c1");
+    expect(JSON.parse(captured.data)).toEqual({ lead_id: "l1", contact_id: "c1" });
+  });
+
+  it("other URLs with 'outreach' stay without limit, as before", async () => {
+    await api.patch("/outreach/review-queue/x/regenerate", {});
+    expect(captured.timeout).toBe(0);
+    await api.get("/outreach", { timeout: 5_000 });
+    expect(captured.timeout).toBe(0);
   });
 
   it("does not change routes it does not own (no default timeout added)", async () => {

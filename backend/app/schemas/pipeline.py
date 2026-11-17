@@ -11,8 +11,9 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from email_validator import EmailNotValidError, validate_email
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field
+
+from app.core.pipeline_constants import OUTREACH_DAILY_SEND_LIMIT_DEFAULT, OUTREACH_DAILY_SEND_LIMIT_MAX
 
 
 class SourceType(str, Enum):
@@ -20,6 +21,7 @@ class SourceType(str, Enum):
     RSS = "rss"
     SCRAPER = "scraper"
     WEBHOOK = "webhook"
+    JSEARCH = "jsearch"
 
 
 # Fields each source_type needs in `JobSource.config` for /sources/{id}/test
@@ -30,28 +32,33 @@ SOURCE_TYPE_REQUIRED_CONFIG_FIELDS: Dict[SourceType, List[str]] = {
     SourceType.RSS: ["feed_url"],
     SourceType.SCRAPER: ["url", "selectors"],
     SourceType.WEBHOOK: [],
+    SourceType.JSEARCH: ["api_key"],
 }
 
 # Config fields that hold secrets (API keys, tokens) and must be encrypted at
 # rest with app.services.encryption_service before being persisted, same
-# treatment as PipelineConfig.smtp_password. Never returned in plaintext by
+# treatment as PipelineConfig.hunter_api_key. Never returned in plaintext by
 # the API — see routers/pipeline.py `_split_source_config` / `_public_source`.
 SOURCE_TYPE_SECRET_CONFIG_FIELDS: Dict[SourceType, List[str]] = {
     SourceType.API: ["api_key"],
     SourceType.RSS: [],
     SourceType.SCRAPER: [],
     SourceType.WEBHOOK: [],
+    SourceType.JSEARCH: ["api_key"],
 }
 
 # The `config` field that holds the URL a source fetches from, per
 # source_type. Validated for SSRF safety (app.core.url_safety) both at
 # save time (routers/pipeline.py) and at fetch time (job_scout_service.py).
 # WEBHOOK has none — it's push, this system never initiates a request to it.
+# JSEARCH has none either: its endpoint is fixed in code
+# (pipeline_constants.JSEARCH_SEARCH_URL), never taken from the user.
 SOURCE_TYPE_URL_FIELDS: Dict[SourceType, Optional[str]] = {
     SourceType.API: "base_url",
     SourceType.RSS: "feed_url",
     SourceType.SCRAPER: "url",
     SourceType.WEBHOOK: None,
+    SourceType.JSEARCH: None,
 }
 
 # How an RSS source's entry titles are split into (job_title, company),
@@ -60,7 +67,8 @@ SOURCE_TYPE_URL_FIELDS: Dict[SourceType, Optional[str]] = {
 # no global guess, each feed's format has to be declared explicitly.
 RSS_TITLE_FORMAT_NONE = "none"
 RSS_TITLE_FORMAT_COMPANY_COLON_TITLE = "company_colon_title"  # "Company: Job Title" (weworkremotely.com)
-RSS_TITLE_FORMATS = (RSS_TITLE_FORMAT_NONE, RSS_TITLE_FORMAT_COMPANY_COLON_TITLE)
+RSS_TITLE_FORMAT_TITLE_DASH_COMPANY = "title_dash_company"  # "Job Title - Company", split on the LAST " - "
+RSS_TITLE_FORMATS = (RSS_TITLE_FORMAT_NONE, RSS_TITLE_FORMAT_COMPANY_COLON_TITLE, RSS_TITLE_FORMAT_TITLE_DASH_COMPANY)
 
 
 class JobSource(BaseModel):
@@ -97,18 +105,26 @@ class PipelineConfig(BaseModel):
     excluded_companies: List[str] = Field(default_factory=list)
     sources: List[JobSource] = Field(default_factory=list)
 
-    # Email settings. smtp_password is never returned by the API — see
-    # PipelineConfigOut / encryption_service.py.
-    smtp_host: str = ""
-    smtp_port: int = 587
-    smtp_user: str = ""
-    sender_email: str = ""
-    sender_name: str = ""
-    smtp_password_configured: bool = False
+    # Real sending of prospecting emails (RF-VTA-16): the user's switch (off by
+    # default) and daily cap. Sending also needs the server's master switch
+    # (OUTREACH_REAL_SEND_ENABLED), reported read-only here, and a connected
+    # mailbox (schemas/mail_connection.py).
+    outreach_real_send_enabled: bool = False
+    outreach_real_send_server_enabled: bool = False
+    outreach_daily_send_limit: int = Field(OUTREACH_DAILY_SEND_LIMIT_DEFAULT, ge=1, le=OUTREACH_DAILY_SEND_LIMIT_MAX)
 
-    auto_send_threshold: float = Field(0.80, ge=0.0, le=1.0)
-    max_emails_per_day: int = Field(50, ge=1)
+    # Hunter.io API key (Agente 2): stored encrypted as
+    # hunter_api_key_encrypted, never returned by the API.
+    hunter_api_key_configured: bool = False
+
+    # Not shown in the UI and not used yet: kept for the scheduled scan of
+    # RF-VTA-17 (deferred).
     scan_frequency_hours: int = Field(24, ge=1)
+    # Same: no control in the UI (the on/off toggle was removed, it had no
+    # effect) and nothing reads it; kept for RF-VTA-17. Warning for RF-VTA-17:
+    # users who switched the old toggle off still have is_active=False stored,
+    # so honouring it as-is would silently skip their scheduled scans — show
+    # the control again or reset the value when that feature is built.
     is_active: bool = True
 
     created_at: Optional[datetime] = None
@@ -116,46 +132,24 @@ class PipelineConfig(BaseModel):
 
 
 class PipelineConfigUpdate(BaseModel):
-    """PUT /pipeline/config — partial update, smtp_password write-only."""
+    """PUT /pipeline/config — partial update, hunter_api_key write-only.
+    Fields not listed here (e.g. the retired SMTP settings) are ignored."""
 
     keywords: Optional[List[str]] = None
     industries: Optional[List[str]] = None
     excluded_companies: Optional[List[str]] = None
 
-    smtp_host: Optional[str] = None
-    smtp_port: Optional[int] = Field(None, ge=1, le=65535)
-    smtp_user: Optional[str] = None
-    smtp_password: Optional[str] = None
-    sender_email: Optional[str] = None
-    sender_name: Optional[str] = None
+    outreach_real_send_enabled: Optional[bool] = None
+    outreach_daily_send_limit: Optional[int] = Field(None, ge=1, le=OUTREACH_DAILY_SEND_LIMIT_MAX)
 
-    auto_send_threshold: Optional[float] = Field(None, ge=0.0, le=1.0)
-    max_emails_per_day: Optional[int] = Field(None, ge=1)
+    # Not stripped here: routers/pipeline.py strips it, and tells a
+    # whitespace-only value ("unchanged") from "" ("clear").
+    hunter_api_key: Optional[str] = None
+
+    # Kept for RF-VTA-17 (scheduled scan); no UI field sends it today.
     scan_frequency_hours: Optional[int] = Field(None, ge=1)
+    # Kept for RF-VTA-17 too; no UI control sends it today (see PipelineConfig).
     is_active: Optional[bool] = None
-
-    # smtp_user/sender_name are free text: only strip incidental leading/
-    # trailing whitespace. smtp_password is intentionally NOT stripped here —
-    # a password's own spaces can be meaningful; see routers/pipeline.py for
-    # how a whitespace-only password is treated as "unchanged".
-    @field_validator("smtp_user", "sender_name", mode="after")
-    @classmethod
-    def _strip_free_text(cls, value: Optional[str]) -> Optional[str]:
-        return value.strip() if value is not None else value
-
-    @field_validator("sender_email", mode="after")
-    @classmethod
-    def _strip_and_validate_sender_email(cls, value: Optional[str]) -> Optional[str]:
-        if value is None:
-            return value
-        value = value.strip()
-        if not value:
-            return value
-        try:
-            validate_email(value, check_deliverability=False)
-        except EmailNotValidError as exc:
-            raise ValueError(f"sender_email must be a valid email address: {exc}") from exc
-        return value
 
 
 class PipelineKeywordsUpdate(BaseModel):
