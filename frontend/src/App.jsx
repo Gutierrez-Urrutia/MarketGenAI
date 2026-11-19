@@ -14,7 +14,7 @@ import { useI18n } from "./hooks/useI18n";
 // editing a proposal) unmounts the whole app and leaves a blank screen with
 // no way to recover except a hard refresh. This surfaces the real error
 // instead so it can be diagnosed and offers a way back without losing data.
-class ErrorBoundary extends Component {
+export class ErrorBoundary extends Component {
   constructor(props) {
     super(props);
     this.state = { error: null, componentStack: "" };

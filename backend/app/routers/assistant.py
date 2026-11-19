@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 
 from app.core.rate_limit import limiter
 from app.dependencies.auth import CurrentUser, get_current_user
-from app.core.errors import LLM_TIMEOUT
+from app.core.errors import LLM_TIMEOUT, LLM_UNAVAILABLE
 from app.services import assistant_context_service, deepseek_service
 from app.services.deepseek_service import LLMTimeoutError
 
@@ -112,6 +112,6 @@ async def assistant_chat(
         raise HTTPException(status.HTTP_504_GATEWAY_TIMEOUT, LLM_TIMEOUT)
     except Exception:
         logger.exception("Assistant: LLM call failed")
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, "Noa is not available right now.")
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, LLM_UNAVAILABLE)   # RNF-04: mismo aviso en español que el resto de la IA
 
     return AssistantChatResponse(reply=reply)

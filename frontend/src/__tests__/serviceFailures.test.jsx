@@ -124,3 +124,29 @@ describe("sondeo de tareas (useJobPolling) con el backend caído", () => {
     vi.useRealTimers();
   });
 });
+
+// ── ErrorBoundary: en producción no muestra trazas ──
+describe("ErrorBoundary (RNF-04)", () => {
+  const Rompe = () => { throw new Error("falla interna en /src/views/X.jsx:42"); };
+
+  it("en desarrollo muestra el detalle del error para diagnosticarlo", async () => {
+    vi.stubEnv("PROD", false);
+    const { ErrorBoundary } = await import("@/App");
+    const { render, screen } = await import("@testing-library/react");
+    render(<ErrorBoundary><Rompe /></ErrorBoundary>);
+    expect(screen.getByText(/falla interna en/)).toBeTruthy();
+    expect(screen.getByText("Copiar error")).toBeTruthy();
+    vi.unstubAllEnvs();
+  });
+
+  it("en producción no muestra trazas ni rutas; solo un aviso y «Recargar»", async () => {
+    vi.stubEnv("PROD", true);
+    const { ErrorBoundary } = await import("@/App");
+    const { render, screen } = await import("@testing-library/react");
+    render(<ErrorBoundary><Rompe /></ErrorBoundary>);
+    expect(document.body.textContent).not.toMatch(/falla interna|\.jsx|Copiar error/);
+    expect(screen.getByText(/avisa al administrador/)).toBeTruthy();
+    expect(screen.getByText("Recargar")).toBeTruthy();
+    vi.unstubAllEnvs();
+  });
+});
