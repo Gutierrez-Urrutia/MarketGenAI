@@ -13,7 +13,9 @@ from pydantic import BaseModel, Field
 
 from app.core.rate_limit import limiter
 from app.dependencies.auth import CurrentUser, get_current_user
+from app.core.errors import LLM_TIMEOUT
 from app.services import assistant_context_service, deepseek_service
+from app.services.deepseek_service import LLMTimeoutError
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +106,10 @@ async def assistant_chat(
             timeout=None,
             messages=messages,
         )
+    except LLMTimeoutError:
+        # RNF-04: el tiempo agotado se informa distinto de una caída del modelo, y se puede reintentar
+        logger.warning("Assistant: LLM timeout")
+        raise HTTPException(status.HTTP_504_GATEWAY_TIMEOUT, LLM_TIMEOUT)
     except Exception:
         logger.exception("Assistant: LLM call failed")
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, "Noa is not available right now.")

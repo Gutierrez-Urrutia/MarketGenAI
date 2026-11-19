@@ -22,6 +22,7 @@ from app.services import audit_service, deepseek_service
 from app.services.customer_profile_service import SIZE_RANGES, industry_label, size_label
 from app.services.firestore_service import jobs_repo, proposals_repo
 from app.services.rag_proposal_service import get_rag_context_and_sources
+from app.core.errors import safe_error_message
 
 logger = logging.getLogger(__name__)
 
@@ -602,5 +603,5 @@ def task_generate_proposal(
     except Exception as exc:
         logger.exception("task_generate_proposal failed: job=%s proposal=%s", job_id, proposal_id)
         _run(proposals_repo.update(proposal_id, {"status": "error"}))
-        _run(jobs_repo.fail_job(job_id, str(exc)))
+        _run(jobs_repo.fail_job(job_id, safe_error_message(exc)))
         raise self.retry(exc=exc)

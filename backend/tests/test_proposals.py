@@ -5,6 +5,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+# RNF-04: el job guarda un mensaje seguro; el texto real de la excepción va solo al log
+from app.core.errors import GENERIC as GENERIC_JOB_ERROR
 from app.routers.proposals import _generate_proposal_content
 from app.schemas.proposal import GenerateProposalRequest
 from tests.conftest import FAKE_USER_SUB, fake_job
@@ -153,7 +155,7 @@ async def test_generate_proposal_by_id_fallback_failure_fails_job(client):
                 "language": "en",
             })
     update_mock.assert_awaited_once_with("proposal-001", {"status": "error"})
-    fail_mock.assert_awaited_once_with(job["id"], "LLM failed")
+    fail_mock.assert_awaited_once_with(job["id"], GENERIC_JOB_ERROR)
 
 
 @pytest.mark.asyncio

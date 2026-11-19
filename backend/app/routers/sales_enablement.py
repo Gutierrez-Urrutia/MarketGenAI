@@ -25,7 +25,9 @@ from app.schemas.enablement import (
     EnablementGenerateRequest,
     EnablementType,
 )
+from app.core.errors import LLM_TIMEOUT
 from app.services import enablement_service
+from app.services.deepseek_service import LLMTimeoutError
 from app.services.firestore_service import enablement_drafts_repo, opportunities_repo
 
 logger = logging.getLogger(__name__)
@@ -80,6 +82,9 @@ async def generate_draft(
         )
     except enablement_service.NoSourcesError:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=NO_SOURCES_MESSAGE)
+    except LLMTimeoutError:
+        logger.warning("enablement generation: LLM timeout")
+        raise HTTPException(status_code=status.HTTP_504_GATEWAY_TIMEOUT, detail=LLM_TIMEOUT)
     except Exception:
         logger.exception("enablement generation failed")
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="No se pudo generar el borrador. Inténtalo de nuevo.")

@@ -1,11 +1,15 @@
 """Health check endpoint — no auth required."""
 from datetime import datetime, timezone
 
+import logging
+
 from fastapi import APIRouter
+from fastapi.responses import JSONResponse
 
 from app.services.firestore_service import check_firestore_connection
 
 router = APIRouter(tags=["Health"])
+logger = logging.getLogger(__name__)
 
 APP_VERSION = "1.0.0"
 
@@ -30,10 +34,12 @@ async def database_health_check():
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
     except Exception as exc:
-        return {
+        # RNF-04: 503 (los monitores lo ven como caído) y sin el texto de la excepción, que puede traer proyecto, credenciales o rutas
+        logger.error("Health /db: Firestore no responde: %r", exc)
+        return JSONResponse(status_code=503, content={
             "status": "error",
             "database": "firestore",
-            "error": str(exc),
+            "message": "La base de datos no está disponible.",
             "timestamp": datetime.now(timezone.utc).isoformat(),
-        }
+        })
 

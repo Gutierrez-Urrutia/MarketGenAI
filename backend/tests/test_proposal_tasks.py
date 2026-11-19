@@ -100,4 +100,6 @@ def test_task_generate_proposal_failure_retries_and_updates_status():
             )
     retry_mock.assert_called_once()
     update_mock.assert_awaited_once_with("prop-1", {"status": "error"})
-    fail_mock.assert_awaited_once_with("job-1", "LLM failure")
+    # RNF-04: el job guarda un mensaje seguro; el texto real de la excepción va solo al log
+    from app.core.errors import GENERIC
+    fail_mock.assert_awaited_once_with("job-1", GENERIC)

@@ -30,6 +30,7 @@ from app.workers.tasks.campaign_tasks import (
     generate_campaign_content_now,
     task_generate_campaign_content,
 )
+from app.core.errors import safe_error_message
 
 router = APIRouter(prefix="/campaigns", tags=["Campaigns"])
 logger = logging.getLogger(__name__)
@@ -129,7 +130,7 @@ async def generate_campaign_content(
                     "generatedAt": datetime.now(timezone.utc).isoformat(),
                 },
             })
-            await jobs_repo.fail_job(job["id"], str(exc))
+            await jobs_repo.fail_job(job["id"], safe_error_message(exc))
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail="Campaign was saved, but AI content generation failed.",
@@ -163,7 +164,7 @@ async def generate_campaign_content(
                     "generatedAt": datetime.now(timezone.utc).isoformat(),
                 },
             })
-            await jobs_repo.fail_job(job["id"], str(exc2))
+            await jobs_repo.fail_job(job["id"], safe_error_message(exc2))
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail="Campaign was saved, but AI content generation failed.",

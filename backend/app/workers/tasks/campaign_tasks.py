@@ -18,6 +18,7 @@ from celery import Task
 from app.workers.celery_app import celery_app
 from app.services import deepseek_service
 from app.services.firestore_service import assets_repo, campaigns_repo, jobs_repo
+from app.core.errors import safe_error_message
 
 logger = logging.getLogger(__name__)
 
@@ -206,5 +207,5 @@ def task_generate_campaign_content(
                 "generatedAt": datetime.now(timezone.utc).isoformat(),
             },
         }))
-        _run(jobs_repo.fail_job(job_id, str(exc)))
+        _run(jobs_repo.fail_job(job_id, safe_error_message(exc)))
         raise self.retry(exc=exc)

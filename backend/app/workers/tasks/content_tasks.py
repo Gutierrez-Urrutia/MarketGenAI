@@ -20,6 +20,7 @@ from app.config import settings
 from app.core.languages import normalize_language
 from app.services import book_ai_service, deepseek_service
 from app.services.firestore_service import books_repo, jobs_repo
+from app.core.errors import safe_error_message
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +87,7 @@ def task_generate_chapters(
 
     except Exception as exc:
         logger.exception("generate_chapters failed: job=%s", job_id)
-        _run(jobs_repo.fail_job(job_id, str(exc)))
+        _run(jobs_repo.fail_job(job_id, safe_error_message(exc)))
         raise self.retry(exc=exc)
 
 
@@ -164,7 +165,7 @@ def task_generate_all_content(
 
     except Exception as exc:
         logger.exception("generate_all_content fatal error: job=%s", job_id)
-        _run(jobs_repo.fail_job(job_id, str(exc)))
+        _run(jobs_repo.fail_job(job_id, safe_error_message(exc)))
         raise self.retry(exc=exc)
 
 
@@ -213,7 +214,7 @@ def task_generate_single_chapter(
 
     except Exception as exc:
         logger.exception("generate_single_chapter failed: job=%s", job_id)
-        _run(jobs_repo.fail_job(job_id, str(exc)))
+        _run(jobs_repo.fail_job(job_id, safe_error_message(exc)))
         raise self.retry(exc=exc)
 
 
@@ -312,7 +313,7 @@ CONTENT:
 
     except Exception as exc:
         logger.exception("translate_book fatal: job=%s", job_id)
-        _run(jobs_repo.fail_job(job_id, str(exc)))
+        _run(jobs_repo.fail_job(job_id, safe_error_message(exc)))
         raise self.retry(exc=exc)
 
 
@@ -467,5 +468,5 @@ def task_publish_book(
 
     except Exception as exc:
         logger.exception("publish_book fatal: job=%s", job_id)
-        _run(jobs_repo.fail_job(job_id, str(exc)))
+        _run(jobs_repo.fail_job(job_id, safe_error_message(exc)))
         raise self.retry(exc=exc)

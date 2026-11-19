@@ -5,11 +5,13 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from google.api_core import exceptions as google_exceptions
 from openai import OpenAIError
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
-from app.config import settings
+from app.config import missing_required, settings
+from app.core.errors import DB_QUOTA, DB_UNAVAILABLE, LLM_TIMEOUT, LLM_UNAVAILABLE
 from app.core.rate_limit import limiter
 from app.middleware.audit import AuditMiddleware
 from app.services.deepseek_service import LLMTimeoutError
@@ -47,6 +49,9 @@ from app.routers import (
 )
 
 logger = logging.getLogger("marketgen.main")
+_faltantes = missing_required(settings)
+if _faltantes:   # RNF-04: fuera de producción solo se avisa (en producción el arranque ya se detuvo en config.py)
+    logger.warning("Faltan variables de entorno obligatorias en producción: %s. Ver docs/MANUAL-DESPLIEGUE.md §3.", ", ".join(_faltantes))
 _is_prod = settings.app_env.lower() == "production"
 app = FastAPI(
     title="MarketGen AI API",
@@ -69,8 +74,8 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 
 # RNF-05: si la IA (DeepSeek) falla o no responde, el usuario recibe un aviso claro y la aplicación sigue
 # funcionando. Solo actúa sobre errores que ningún router manejó; antes terminaban en un 500 sin mensaje.
-_LLM_UNAVAILABLE = "El servicio de IA no está disponible en este momento. Inténtalo de nuevo en unos minutos."
-_LLM_TIMEOUT = "El servicio de IA tardó demasiado en responder. Inténtalo de nuevo."
+_LLM_UNAVAILABLE = LLM_UNAVAILABLE
+_LLM_TIMEOUT = LLM_TIMEOUT
 
 
 @app.exception_handler(LLMTimeoutError)
@@ -83,6 +88,21 @@ async def llm_timeout_handler(request: Request, exc: LLMTimeoutError):
 async def llm_error_handler(request: Request, exc: OpenAIError):
     logger.error("Falla del servicio de IA en %s %s: %r", request.method, request.url.path, exc)
     return JSONResponse(status_code=502, content={"detail": _LLM_UNAVAILABLE, "message": _LLM_UNAVAILABLE})
+
+
+# RNF-04: si Firestore no responde, el usuario recibe un 503 claro (con CORS, para que el navegador lo lea) en lugar de un 500 sin
+# mensaje; el detalle (proyecto, credenciales, rutas) queda solo en el log. /health sigue respondiendo.
+@app.exception_handler(google_exceptions.ResourceExhausted)
+async def db_quota_handler(request: Request, exc: google_exceptions.ResourceExhausted):
+    logger.error("Cuota de la base de datos agotada en %s %s: %r", request.method, request.url.path, exc)
+    return JSONResponse(status_code=503, content={"detail": DB_QUOTA, "message": DB_QUOTA, "code": "db_quota"})
+
+
+@app.exception_handler(google_exceptions.GoogleAPICallError)
+@app.exception_handler(google_exceptions.RetryError)
+async def db_unavailable_handler(request: Request, exc: Exception):
+    logger.error("Falla de la base de datos en %s %s: %r", request.method, request.url.path, exc)
+    return JSONResponse(status_code=503, content={"detail": DB_UNAVAILABLE, "message": DB_UNAVAILABLE, "code": "db_unavailable"})
 
 
 app.add_middleware(
