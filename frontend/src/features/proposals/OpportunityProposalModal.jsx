@@ -7,6 +7,8 @@ import { ProposalTemplateFields, useProposalTemplatePicker } from "@/features/pr
 import { announceProposalGeneration } from "@/features/proposals/generationNotifier";
 import { exportProposalDocument } from "@/features/proposals/proposalExport";
 import { proposalDocumentToHtml } from "@/features/proposals/proposalHtml";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
+import { losesCommercialTerms } from "@/utils/proposalSections";
 import { useEffect, useRef, useState } from "react";
 import { useI18n } from "@/hooks/useI18n";
 import { useLanguage } from "@/context/LanguageContext";
@@ -27,6 +29,7 @@ export function OpportunityProposalModal({ opportunity, onClose }) {
   const [generationModal, setGenerationModal] = useState(null);
   const [proposal, setProposal] = useState(null);
   const [draftContent, setDraftContent] = useState("");
+  const [noTermsPrompt, setNoTermsPrompt] = useState(false);   // RNF-03: aviso al guardar sin condiciones comerciales
   const [editingPreview, setEditingPreview] = useState(false);
   const [customerEmail, setCustomerEmail] = useState("");
   const [selectedCustomer, setSelectedCustomer] = useState(null); // RF-VTA-03: cliente propio al que se vincula la propuesta
@@ -393,7 +396,8 @@ export function OpportunityProposalModal({ opportunity, onClose }) {
     onClose();
   };
 
-  const saveDraft = async () => {
+  // `confirmed`: el usuario ya aceptó guardar sin condiciones comerciales (RNF-03).
+  const saveDraft = async ({ confirmed = false } = {}) => {
     if (!proposal) return;
     if (!proposal.id) {
       setToast({ type: "error", message: t("opportunitiesPage.proposalModal.errorGenerating") });
@@ -411,6 +415,10 @@ export function OpportunityProposalModal({ opportunity, onClose }) {
       totalAmount: total.totalAmount,
       updated: "Today",
     };
+    if (!confirmed && losesCommercialTerms(proposal.content, updatedProposal.content)) {
+      setNoTermsPrompt(true);
+      return;
+    }
     try {
       await updateProposal(proposal.id, {
         title: updatedProposal.title,
@@ -443,6 +451,16 @@ export function OpportunityProposalModal({ opportunity, onClose }) {
         onClose={removeToast}
         onMouseEnter={pauseToast}
         onMouseLeave={resumeToast}
+      />
+      {/* RNF-03: aviso antes de guardar una propuesta que se queda sin condiciones comerciales */}
+      <ConfirmDialog
+        open={noTermsPrompt}
+        title={t("contentLibrary.noCommercialTermsTitle")}
+        message={t("contentLibrary.noCommercialTermsMessage")}
+        cancelLabel={t("contentLibrary.noCommercialTermsKeep")}
+        confirmLabel={t("contentLibrary.noCommercialTermsConfirm")}
+        onCancel={() => setNoTermsPrompt(false)}
+        onConfirm={() => { setNoTermsPrompt(false); saveDraft({ confirmed: true }); }}
       />
       <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-4xl mx-4 max-h-[90vh] overflow-y-auto">
         <div className="flex items-center justify-between p-5 border-b border-gray-100">
@@ -595,7 +613,7 @@ export function OpportunityProposalModal({ opportunity, onClose }) {
                 <Btn variant="secondary" icon={<PenIcon size={12} />} onClick={() => setEditingPreview((current) => !current)}>
                   {editingPreview ? t("opportunitiesPage.proposalModal.doneEditing") : t("opportunitiesPage.proposalModal.edit")}
                 </Btn>
-                <Btn variant="secondary" icon={<SaveIcon size={12} />} onClick={saveDraft}>{t("opportunitiesPage.proposalModal.saveDraft")}</Btn>
+                <Btn variant="secondary" icon={<SaveIcon size={12} />} onClick={() => saveDraft()}>{t("opportunitiesPage.proposalModal.saveDraft")}</Btn>
                 <Btn variant="secondary" icon={<DownloadIcon size={12} />} onClick={() => downloadDraft("docx")}>{t("opportunitiesPage.proposalModal.exportDocx")}</Btn>
                 <Btn icon={<DownloadIcon size={12} />} onClick={() => downloadDraft("pdf")}>{t("opportunitiesPage.proposalModal.exportPdf")}</Btn>
                 <Btn variant="secondary" disabled>{t("opportunitiesPage.proposalModal.crmNext")}</Btn>
