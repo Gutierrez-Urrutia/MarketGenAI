@@ -14,6 +14,10 @@ services:
         value: production
       - key: APP_DEBUG
         value: "false"
+      # RNF-02: detrás del balanceador de Render, la IP de la conexión es la del balanceador;
+      # con esto el registro de auditoría usa el primer valor de X-Forwarded-For (ver DOCUMENTACION/RNF-02).
+      - key: TRUST_PROXY_HEADERS
+        value: "true"
       - key: REDIS_URL
         sync: false
       - key: CELERY_BROKER_URL

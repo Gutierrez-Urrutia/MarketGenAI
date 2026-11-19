@@ -61,7 +61,8 @@ from app.schemas.proposal import (
 )
 from app.services.auth_service import JWT_ALGORITHM
 from app.services.firestore_service import customers_repo, proposals_repo, jobs_repo, settings_repo
-from app.services import crm_service, deepseek_service
+from app.services import audit_service, crm_service, deepseek_service
+from app.core.client_ip import get_client_ip
 from app.services.storage_service import storage_service
 from app.services.template_service import classification_labels
 from app.workers.tasks.proposal_tasks import _lang_code, format_money, format_usd
@@ -1039,8 +1040,31 @@ async def get_proposals(
     return proposals
 
 
+async def _audit(
+    request: Request,
+    user: CurrentUser,
+    action: str,
+    proposal_id: Optional[str],
+    *,
+    status_: str = "success",
+    **details,
+) -> None:
+    """RNF-02: deja constancia de usuario, acción, fecha e IP de la acción sobre la propuesta."""
+    await audit_service.record(
+        action=action,
+        resource_id=proposal_id,
+        user_id=user.sub,
+        user_email=user.email,
+        roles=user.roles,
+        request=request,
+        status=status_,
+        details=details,
+    )
+
+
 @router.post("", response_model=ProposalOut, status_code=status.HTTP_201_CREATED)
 async def create_proposal(
+    request: Request,
     body: ProposalCreate,
     user: CurrentUser = Depends(get_current_user),
 ):
@@ -1082,7 +1106,9 @@ async def create_proposal(
         proposal["customerId"] = customer["id"]   # la copia del perfil la toma el servidor al generar
     if data.get("opportunity_id"):
         proposal["opportunity_id"] = data["opportunity_id"]
-    return await proposals_repo.create(proposal, doc_id=str(uuid.uuid4()))
+    created = await proposals_repo.create(proposal, doc_id=str(uuid.uuid4()))
+    await _audit(request, user, audit_service.PROPOSAL_CREATED, created["id"], title=created.get("title"))
+    return created
 
 
 @router.get("/{proposal_id}", response_model=ProposalOut)
@@ -1143,6 +1169,7 @@ async def generate_proposal_draft(
     options["userId"] = user.sub  # tras extra: el cliente no puede suplantarlo; el worker lo usa para recuperar el contexto RAG del usuario
     _apply_customer_options(options, customer)
     options["versionAuthor"] = _version_author(user)  # RF-VTA-11: autor de las versiones que deja la generación (tampoco suplantable)
+    options["auditIp"] = get_client_ip(request)  # RNF-02: el worker no tiene Request; lleva la IP original (no suplantable)
     await _apply_proposal_template(proposal, options, user)
 
     job = await jobs_repo.create_job(
@@ -1150,6 +1177,8 @@ async def generate_proposal_draft(
         user.sub,
         {"proposalId": proposal["id"], "title": title},
     )
+    await _audit(request, user, audit_service.PROPOSAL_GENERATED, proposal["id"],
+                 stage="requested", jobId=job["id"], newProposal=True)
 
     if getattr(body, "sync", False):
         try:
@@ -1210,6 +1239,7 @@ async def generate_proposal_by_id(
         options.update(body.model_extra)
     options["userId"] = user.sub  # tras extra: el cliente no puede suplantarlo; el worker lo usa para recuperar el contexto RAG del usuario
     options["versionAuthor"] = _version_author(user)  # RF-VTA-11: la regeneración deja el contenido anterior en el historial, a nombre de quien la pidió
+    options["auditIp"] = get_client_ip(request)  # RNF-02: el worker no tiene Request; lleva la IP original (no suplantable)
     _apply_customer_options(options, customer)
     if customer:
         # La copia del perfil se toma cada vez que se genera: la propuesta ya generada conserva
@@ -1222,6 +1252,8 @@ async def generate_proposal_by_id(
         user.sub,
         {"proposalId": proposal_id, "title": title},
     )
+    await _audit(request, user, audit_service.PROPOSAL_GENERATED, proposal_id,
+                 stage="requested", jobId=job["id"], newProposal=False)
 
     if getattr(body, "sync", False):
         try:
@@ -1282,6 +1314,7 @@ async def _auto_snapshot(before: dict, after: dict, changes: dict, user: Current
 
 @router.put("/{proposal_id}", response_model=ProposalOut)
 async def update_proposal(
+    request: Request,
     proposal_id: str,
     body: ProposalUpdate,
     user: CurrentUser = Depends(get_current_user),
@@ -1302,6 +1335,8 @@ async def update_proposal(
         return proposal
     updated = await proposals_repo.update(proposal_id, update_data)
     await _auto_snapshot(proposal, updated, update_data, user)
+    # Solo los nombres de los campos: el contenido ya queda en el historial de versiones.
+    await _audit(request, user, audit_service.PROPOSAL_UPDATED, proposal_id, fields=sorted(update_data))
     return updated
 
 
@@ -1334,7 +1369,8 @@ async def update_proposal_status(
         actor_is_admin=actor_is_admin,
         method=request.method,
         path=request.url.path,
-        ip=request.client.host if request.client else None,
+        ip=get_client_ip(request),
+        actor_email=current_user.email,
     )
     if outcome.get("not_found"):
         raise HTTPException(
@@ -1344,6 +1380,7 @@ async def update_proposal_status(
     if outcome.get("error"):
         error = outcome["error"]
         raise HTTPException(status_code=error.status_code, detail=error.detail)
+    audit_service.mark_handled(request)   # el registro ya se escribió en la transacción
     return public_proposal(outcome["proposal"])
 
 
@@ -1470,7 +1507,11 @@ async def download_signed_document(proposal_id: str, token: str = Query(...)):
 
 
 @router.delete("/{proposal_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_proposal(proposal_id: str, user: CurrentUser = Depends(get_current_user)):
+async def delete_proposal(
+    request: Request,
+    proposal_id: str,
+    user: CurrentUser = Depends(get_current_user),
+):
     proposal = await _get_proposal_for_user(proposal_id, user.sub)
     # Que no quede en el almacenamiento un contrato firmado sin propuesta.
     if proposal.get("signedDocumentPath"):
@@ -1481,6 +1522,9 @@ async def delete_proposal(proposal_id: str, user: CurrentUser = Depends(get_curr
         await proposals_repo.delete_versions(proposal_id)
     except Exception:
         logger.warning("No se pudieron borrar las versiones de la propuesta %s", proposal_id, exc_info=True)
+    # La propuesta ya no existe: el registro conserva su título para poder identificarla después.
+    await _audit(request, user, audit_service.PROPOSAL_DELETED, proposal_id,
+                 title=proposal.get("title"), previousStatus=proposal.get("proposal_status"))
     return None
 
 
@@ -1566,6 +1610,8 @@ async def create_proposal_version(
     )
     if version is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Proposal '{proposal_id}' not found.")
+    await _audit(request, user, audit_service.PROPOSAL_VERSION_SAVED, proposal_id,
+                 versionId=version.get("id"), version=version.get("version"), label=body.label)
     return version
 
 
@@ -1605,6 +1651,8 @@ async def restore_proposal_version(
         )
     except Exception:
         logger.warning("No se pudo registrar la restauración de %s", proposal_id, exc_info=True)
+    await _audit(request, user, audit_service.PROPOSAL_VERSION_RESTORED, proposal_id,
+                 versionId=version_id, version=version.get("version"))
     return updated
 
 
@@ -1626,6 +1674,7 @@ async def _record_crm_failure(proposal_id: str, existing_sync: dict, provider: s
 
 @router.post("/{proposal_id}/send-to-crm")
 async def send_proposal_to_crm(
+    request: Request,
     proposal_id: str,
     body: SendToCrmRequest,
     user: CurrentUser = Depends(get_current_user),
@@ -1726,6 +1775,8 @@ async def send_proposal_to_crm(
         else:
             code = 502
         await _record_crm_failure(proposal_id, existing_sync, provider, str(exc), partial)
+        await _audit(request, user, audit_service.PROPOSAL_SENT_TO_CRM, proposal_id,
+                     status_="failed", provider=provider, error=str(exc))
         raise HTTPException(status_code=code, detail=str(exc)) from exc
     except httpx.HTTPError as exc:
         # CRM caído / sin red / DNS: antes escapaba como 500 sin mensaje.
@@ -1733,9 +1784,14 @@ async def send_proposal_to_crm(
         detail = f"No se pudo conectar con {label}. Revisa que el servicio esté disponible e inténtalo de nuevo."
         logger.warning("send-to-crm: fallo de conexión con %s: %r", label, exc)
         await _record_crm_failure(proposal_id, existing_sync, provider, detail, partial)
+        await _audit(request, user, audit_service.PROPOSAL_SENT_TO_CRM, proposal_id,
+                     status_="failed", provider=provider, error=detail)
         raise HTTPException(status_code=502, detail=detail) from exc
 
-    return public_proposal(await proposals_repo.update(proposal_id, {"crmSync": crm_sync}))
+    result = public_proposal(await proposals_repo.update(proposal_id, {"crmSync": crm_sync}))
+    await _audit(request, user, audit_service.PROPOSAL_SENT_TO_CRM, proposal_id,
+                 provider=provider, crmStatus=crm_sync["status"])
+    return result
 
 
 @router.post("/{proposal_id}/export")
