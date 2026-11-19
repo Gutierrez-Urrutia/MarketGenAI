@@ -187,3 +187,40 @@ async def test_export_defaults_executive_to_current_user(client, tmp_path):
     out = tmp_path / "out.pdf"
     out.write_bytes(resp.content)
     assert "PREPARADO POR" in _pdf_text(out) and "—" not in _pdf_text(out).split("PREPARADO POR")[1][:40]
+
+
+def _html_con_condiciones_de_plantilla(language: str = "es") -> tuple[str, list[str]]:
+    """Propuesta con el bloque de condiciones de la plantilla inyectado como lo hace el worker (RNF-03)."""
+    from app.services.template_service import default_commercial_terms, render_placeholders
+    from app.workers.tasks.proposal_tasks import COMMERCIAL_TERMS_MARKER, inject_commercial_terms
+
+    texto, _ = render_placeholders(default_commercial_terms(language), {"valida_hasta": "30-11-2026", "monto_total": "$18.750 USD"})
+    html = inject_commercial_terms(
+        "<h1>Propuesta</h1><h2>Resumen Ejecutivo</h2><p>Hola.</p>"
+        f"<h2>Precios y Condiciones Comerciales</h2><p>{COMMERCIAL_TERMS_MARKER}</p>"
+        "<h2>Condiciones Generales</h2><ul><li>Confidencialidad</li></ul>",
+        texto,
+    )
+    return html, [linea for linea in texto.splitlines() if linea.strip()]
+
+
+def test_RNF03_las_condiciones_comerciales_de_la_plantilla_salen_en_el_pdf(tmp_path):
+    html, lineas = _html_con_condiciones_de_plantilla()
+    out = tmp_path / "p.pdf"
+    pr._build_proposal_pdf(out, "Propuesta", html, pr._proposal_cover_fields(_proposal(content=html)))
+    plano = " ".join(_pdf_text(out).split())
+    for linea in lineas:
+        assert " ".join(linea.split()) in plano, linea
+    assert "{valida_hasta}" not in plano and "{monto_total}" not in plano   # las variables salen reemplazadas
+
+
+def test_RNF03_las_condiciones_comerciales_de_la_plantilla_salen_en_el_docx(tmp_path):
+    from docx import Document
+
+    html, lineas = _html_con_condiciones_de_plantilla()
+    out = tmp_path / "p.docx"
+    pr._build_proposal_docx(out, "Propuesta", html, pr._proposal_cover_fields(_proposal(content=html)))
+    doc = Document(str(out))
+    plano = " ".join(" ".join(p.text for p in doc.paragraphs).split())
+    for linea in lineas:
+        assert " ".join(linea.split()) in plano, linea
