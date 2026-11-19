@@ -79,7 +79,14 @@ jobs:
           tar -czf /tmp/api-src.tgz -C backend --exclude=tests --exclude=__pycache__ --exclude=.venv --exclude='.env*' --exclude='service-account*.json' .
           gcloud storage cp /tmp/api-src.tgz $SRC --project=$PROJECT
           gcloud builds submit $SRC --tag=$REGISTRY/api:dev --project=$PROJECT --gcs-log-dir=gs://${PROJECT}_cloudbuild/logs
-          gcloud artifacts docker tags add $REGISTRY/api:dev $REGISTRY/api:${GITHUB_SHA::7} --project=$PROJECT
+          # La etiqueta del commit solo informa (el despliegue usa :dev). Si ya existe (el mismo commit se desplegó antes: re-ejecución
+          # o ejecución manual), no se mueve: moverla exige artifactregistry.tags.delete, que este rol no tiene, y hacía fallar el paso.
+          SHA7=${GITHUB_SHA::7}
+          if gcloud artifacts docker tags list $REGISTRY/api --filter="tag:$SHA7" --format='value(tag.basename())' --project=$PROJECT 2>/dev/null | grep -qx "$SHA7"; then
+            echo "La etiqueta $SHA7 ya existe (mismo commit desplegado antes): no se mueve."
+          else
+            gcloud artifacts docker tags add $REGISTRY/api:dev $REGISTRY/api:$SHA7 --project=$PROJECT
+          fi
 
       - name: Desplegar la API en Cloud Run
         run: |
