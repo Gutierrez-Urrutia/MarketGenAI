@@ -4,11 +4,12 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, status
 
 from app.dependencies.auth import CurrentUser, get_current_user
 from app.routers.content_types import ContentItemsRepo
 from app.schemas.proposal import public_proposal
+from app.services import audit_service
 from app.services.firestore_service import (
     assets_repo,
     books_repo,
@@ -175,6 +176,7 @@ async def content_library(
 
 @router.post("/crm/proposals/{proposal_id}/send")
 async def send_proposal_to_crm(
+    request: Request,
     proposal_id: str,
     payload: dict = Body(default={}),
     user: CurrentUser = Depends(get_current_user),
@@ -192,6 +194,16 @@ async def send_proposal_to_crm(
             "syncedAt": datetime.now(timezone.utc),
         }
     })
+    # RNF-02: enviar al CRM también se audita por este camino.
+    await audit_service.record(
+        action=audit_service.PROPOSAL_SENT_TO_CRM,
+        resource_id=proposal_id,
+        user_id=user.sub,
+        user_email=user.email,
+        roles=user.roles,
+        request=request,
+        details={"provider": provider, "crmStatus": "queued" if provider != "manual" else "manual_export"},
+    )
     return {
         "status": "queued" if provider != "manual" else "manual_export",
         "proposalId": proposal_id,

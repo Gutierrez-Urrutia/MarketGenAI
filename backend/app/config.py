@@ -36,6 +36,8 @@ class Settings(BaseSettings):
     local_dev_auth_name: str = "Admin User"
     rate_limit_enabled: bool = True
     audit_log_enabled: bool = True
+    # RNF-02: solo confiar en X-Forwarded-For cuando la API corre detrás de un proxy propio.
+    trust_proxy_headers: bool = False
     admin_emails: str = ""
 
     backend_cors_origins: str = (

@@ -43,6 +43,7 @@ import weakref
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
+from google.api_core.exceptions import FailedPrecondition
 from google.oauth2 import service_account
 from google.cloud import firestore
 from google.cloud.firestore_v1.async_client import AsyncClient
@@ -470,6 +471,7 @@ class ProposalsRepo(FirestoreRepo):
         ip: Optional[str],
         timestamp: str,
         audit_id: str,
+        actor_email: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Pura. Lo que la transacción de change_status debe hacer con la propuesta
         leída (sin normalizar). Devuelve {"not_found": True}, {"error": StatusChangeError}
@@ -492,6 +494,14 @@ class ProposalsRepo(FirestoreRepo):
             "audit_log": {
                 "id": audit_id,
                 "action": "proposal_status_changed",
+                # RNF-02: mismo esquema que audit_service.record (los campos de abajo son
+                # los que consulta el administrador); proposalId/previousStatus/newStatus
+                # se conservan por compatibilidad.
+                "resourceType": "proposal",
+                "resourceId": proposal.get("id"),
+                "status": "success",
+                "details": {"previousStatus": previous, "newStatus": decision.value},
+                "userEmail": actor_email,
                 "proposalId": proposal.get("id"),
                 "previousStatus": previous,
                 "newStatus": decision.value,
@@ -516,6 +526,7 @@ class ProposalsRepo(FirestoreRepo):
         method: str,
         path: str,
         ip: Optional[str],
+        actor_email: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Cambia `proposal_status` y escribe su registro de auditoría en una sola
         transacción: si el registro falla, el cambio tampoco se guarda. Devuelve
@@ -532,7 +543,7 @@ class ProposalsRepo(FirestoreRepo):
             plan = self.plan_status_change(
                 proposal, target,
                 actor_id=actor_id, actor_roles=actor_roles, actor_is_admin=actor_is_admin,
-                method=method, path=path, ip=ip,
+                method=method, path=path, ip=ip, actor_email=actor_email,
                 # Mismo formato que middleware/audit.py: admin.py ordena por este campo.
                 timestamp=datetime.now(timezone.utc).isoformat(),
                 audit_id=audit_id,
@@ -1692,7 +1703,79 @@ class PipelineRunLocksRepo(FirestoreRepo):
         return None
 
 
+class AuditLogsRepo(FirestoreRepo):
+    """RNF-02: registro de auditoría (solo se agrega; la API nunca edita ni borra).
+
+    `timestamp` es un string ISO UTC (no un datetime): así lo escriben el
+    middleware y la transacción de cambio de estado, y por eso ordena y filtra
+    por rango como texto."""
+
+    collection = "auditLogs"
+
+    async def add(self, log: Dict[str, Any]) -> Dict[str, Any]:
+        await self._doc(log["id"]).set(log)
+        return log
+
+    async def search(
+        self,
+        *,
+        user_id: Optional[str] = None,
+        action: Optional[str] = None,
+        resource_id: Optional[str] = None,
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> tuple[List[Dict[str, Any]], bool]:
+        """Registros más recientes primero. Devuelve (items, has_more).
+
+        Consulta nativa de Firestore (filtros de igualdad + rango y orden por `timestamp`):
+        lee solo `offset + limit + 1` documentos. Con filtros de igualdad necesita los
+        índices compuestos de `backend/firestore.indexes.json`; si falta alguno
+        (FailedPrecondition) se cae al camino lento, que lee TODO el conjunto filtrado en
+        cada página (RNF02-D-001: con 1.200 registros eran 1.200 lecturas por petición)."""
+        equalities = [
+            (field, value)
+            for field, value in (
+                ("userId", user_id), ("action", action), ("resourceId", resource_id),
+            )
+            if value
+        ]
+        query = self._col()
+        for field, value in equalities:
+            query = query.where(filter=firestore.FieldFilter(field, "==", value))
+        native = query
+        if date_from:
+            native = native.where(filter=firestore.FieldFilter("timestamp", ">=", date_from))
+        if date_to:
+            native = native.where(filter=firestore.FieldFilter("timestamp", "<=", date_to))
+        native = native.order_by("timestamp", direction=firestore.Query.DESCENDING)
+        if offset:
+            native = native.offset(offset)
+        try:
+            docs = await native.limit(limit + 1).get()
+            page = [d.to_dict() for d in docs if d.exists]
+        except FailedPrecondition:
+            if not equalities:
+                raise   # sin igualdades solo hace falta el índice simple de `timestamp`, que Firestore crea solo
+            logger.warning(
+                "auditLogs: falta un índice compuesto para %s; se lee todo el conjunto filtrado en cada "
+                "página. Despliega backend/firestore.indexes.json.", [f for f, _ in equalities],
+            )
+            docs = await query.get()
+            items = [d.to_dict() for d in docs if d.exists]
+            items = [
+                item for item in items
+                if (not date_from or (item.get("timestamp") or "") >= date_from)
+                and (not date_to or (item.get("timestamp") or "") <= date_to)
+            ]
+            items.sort(key=lambda item: item.get("timestamp") or "", reverse=True)
+            page = items[offset: offset + limit + 1]
+        return page[:limit], len(page) > limit
+
+
 # ── Module-level singletons ───────────────────────────────────────────────────
+audit_logs_repo = AuditLogsRepo()
 books_repo      = BooksRepo()
 jobs_repo       = JobsRepo()
 users_repo      = UsersRepo()

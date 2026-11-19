@@ -214,12 +214,18 @@ def test_plan_builds_audit_log_with_previous_and_new():
         "vista",
         actor_id=OTHER_USER, actor_roles=["user"], actor_is_admin=False,
         method="PATCH", path="/api/v1/proposals/proposal-001/status", ip="10.0.0.1",
-        timestamp=ts, audit_id="audit-xyz",
+        timestamp=ts, audit_id="audit-xyz", actor_email="ana@example.com",
     )
     assert plan["new_status"] == "vista"
     assert plan["audit_log"] == {
         "id": "audit-xyz",
         "action": "proposal_status_changed",
+        # RNF-02: esquema común de auditLogs
+        "resourceType": "proposal",
+        "resourceId": "proposal-001",
+        "status": "success",
+        "details": {"previousStatus": "enviada", "newStatus": "vista"},
+        "userEmail": "ana@example.com",
         "proposalId": "proposal-001",
         "previousStatus": "enviada",
         "newStatus": "vista",
