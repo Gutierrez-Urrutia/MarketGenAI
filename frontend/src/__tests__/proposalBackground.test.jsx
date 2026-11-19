@@ -52,8 +52,8 @@ describe("generación de propuestas en segundo plano", () => {
     startGeneration(vi.fn());
 
     fireEvent.click(await screen.findByRole("button", { name: /segundo plano|background/i }));
-    await waitFor(() => expect(toast.error).toHaveBeenCalledTimes(1), { timeout: 8000 });
-    expect(toast.error.mock.calls[0][0]).toMatch(/No se pudo generar/);
+    // RNF-04: sin backend (como en esta prueba) las consultas del selector de plantillas también avisan «sin conexión»; aquí interesa el aviso de la generación
+    await waitFor(() => expect(toast.error.mock.calls.filter((c) => /No se pudo generar/.test(c[0]))).toHaveLength(1), { timeout: 8000 });
   });
 
   it("envía el equipo previsto al generar", async () => {

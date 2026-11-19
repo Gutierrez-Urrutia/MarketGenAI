@@ -36,6 +36,8 @@ class ErrorBoundary extends Component {
     const fullDetails = [message, this.state.error?.stack, this.state.componentStack]
       .filter(Boolean)
       .join("\n\n");
+    // RNF-04: en producción no se muestran trazas ni rutas del bundle al usuario (siguen en la consola); solo en desarrollo.
+    const showDetails = !import.meta.env.PROD;
     return (
       <main className="min-h-screen bg-[#f7f6f2] text-neutral-900 flex items-center justify-center px-4 py-8">
         <div className="w-full max-w-2xl rounded-xl border border-red-200 bg-white p-6 shadow-sm">
@@ -43,9 +45,13 @@ class ErrorBoundary extends Component {
           <p className="mt-2 text-sm text-neutral-600">
             La aplicación encontró un error inesperado y no pudo seguir mostrando esta pantalla.
           </p>
-          <pre className="mt-4 max-h-72 overflow-auto rounded-lg bg-neutral-50 p-3 text-xs text-neutral-700 whitespace-pre-wrap">
-            {fullDetails}
-          </pre>
+          {showDetails ? (
+            <pre className="mt-4 max-h-72 overflow-auto rounded-lg bg-neutral-50 p-3 text-xs text-neutral-700 whitespace-pre-wrap">
+              {fullDetails}
+            </pre>
+          ) : (
+            <p className="mt-4 text-sm text-neutral-600">Puedes recargar la página. Si el problema continúa, avisa al administrador.</p>
+          )}
           <div className="mt-5 flex gap-3">
             <button
               type="button"
@@ -54,13 +60,15 @@ class ErrorBoundary extends Component {
             >
               Recargar
             </button>
-            <button
-              type="button"
-              onClick={() => navigator.clipboard?.writeText(fullDetails)}
-              className="h-10 rounded-lg border border-neutral-300 px-4 text-sm font-medium text-neutral-700 hover:bg-neutral-50"
-            >
-              Copiar error
-            </button>
+            {showDetails && (
+              <button
+                type="button"
+                onClick={() => navigator.clipboard?.writeText(fullDetails)}
+                className="h-10 rounded-lg border border-neutral-300 px-4 text-sm font-medium text-neutral-700 hover:bg-neutral-50"
+              >
+                Copiar error
+              </button>
+            )}
           </div>
         </div>
       </main>
