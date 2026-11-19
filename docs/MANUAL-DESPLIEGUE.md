@@ -118,6 +118,13 @@ despliega la web si cambió `frontend/` → reinicia el worker si está encendid
 Tarda ~8 minutos. GitHub se identifica con Workload Identity Federation (token temporal): no hay claves JSON en el repositorio.
 Los cambios solo en `*.md`, `docs/` o `worker-vm.yml` no despliegan.
 
+**Índices de Firestore.** Los índices compuestos del registro de auditoría están en `backend/firestore.indexes.json`. El despliegue
+automático los aplica **solo cuando ese archivo cambia** (paso «Aplicar los índices de Firestore», que corre `infra/gcp/apply_indexes.py`):
+los pide con `--async`, así que no suma tiempo (Firestore tarda unos 5 minutos en construirlos y mientras tanto la app usa su camino lento),
+y si falla avisa sin tumbar el despliegue. Solo crea índices: si se borra uno del JSON hay que eliminarlo a mano en Firestore. Para aplicarlos
+a mano: `python infra/gcp/apply_indexes.py` (repetible). Para forzarlo en CI: Actions › «Deploy dev (GCP)» › Run workflow. Requiere que
+`marketgen-deployer` tenga `roles/datastore.indexAdmin` (lo asigna `setup_cicd.py`).
+
 ### 5.2 Primera vez (una sola vez, repetible)
 
 Desde la raíz, con `gcloud` autenticado sobre `marketgen-dev`:

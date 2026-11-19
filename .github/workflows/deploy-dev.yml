@@ -113,6 +113,24 @@ jobs:
             --update-env-vars=DEPLOYED_FROM=${GITHUB_SHA::7} \
             --region=$REGION --project=$PROJECT --quiet
 
+      - name: Decidir si hay que aplicar los índices de Firestore
+        id: idx
+        run: |
+          before="${{ github.event.before }}"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] || [ -z "$before" ] || [ "$before" = "0000000000000000000000000000000000000000" ] \
+             || git diff --name-only "$before" "$GITHUB_SHA" | grep -qx 'backend/firestore.indexes.json'; then
+            echo "apply=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "apply=false" >> "$GITHUB_OUTPUT"
+            echo "Sin cambios en backend/firestore.indexes.json: no se tocan los índices."
+          fi
+
+      - name: Aplicar los índices de Firestore (sin esperar a que se construyan)
+        if: steps.idx.outputs.apply == 'true'
+        # Si falla, avisa pero no tumba el despliegue: la app funciona sin los índices (camino lento) y se pueden pedir a mano.
+        continue-on-error: true
+        run: python infra/gcp/apply_indexes.py
+
       - name: Reiniciar el worker si está encendido
         run: |
           status=$(gcloud compute instances describe marketgen-worker --zone=us-central1-a --project=$PROJECT --format='value(status)')

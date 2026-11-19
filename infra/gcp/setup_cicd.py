@@ -49,7 +49,8 @@ if not exists("iam", "service-accounts", "describe", DEPLOYER_EMAIL):
 
 # 2. Permisos mínimos para construir, desplegar y reiniciar el worker
 for role in ["roles/cloudbuild.builds.editor", "roles/logging.viewer", "roles/serviceusage.serviceUsageConsumer",
-             "roles/run.admin", "roles/artifactregistry.writer", "roles/compute.instanceAdmin.v1"]:
+             "roles/run.admin", "roles/artifactregistry.writer", "roles/compute.instanceAdmin.v1",
+             "roles/datastore.indexAdmin"]:   # crea los índices compuestos de Firestore (infra/gcp/apply_indexes.py)
     gc("projects", "add-iam-policy-binding", PROJECT, f"--member=serviceAccount:{DEPLOYER_EMAIL}", f"--role={role}",
        "--condition=None")
     print("rol:", role)
