@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import base64
 from email.message import EmailMessage
+from html import escape
 from email.utils import make_msgid
 from typing import Any, Dict, Optional, Tuple
 from urllib.parse import quote, urlencode
@@ -225,15 +226,34 @@ def _message_failure(resp: httpx.Response) -> GraphError:
     return GraphError(502, "mail_rejected")
 
 
+def html_body(body_text: str) -> str:
+    """The email's text as HTML: one <p> per paragraph (a blank line separates them), a <br> for a single line
+    break, everything escaped. Pure.
+
+    Why: sent as plain text only, the body travels with its long lines cut into ~76-column pieces (quoted-printable
+    soft breaks) and some mail clients -- Outlook, phones, forwards -- show those pieces as separate short lines. In
+    HTML the paragraphs are real and every client reflows them to its own width."""
+    paragraphs = [p for p in str(body_text or "").replace("\r\n", "\n").replace("\r", "\n").split("\n\n") if p.strip()]
+    rendered = "".join(
+        '<p style="margin:0 0 14px 0;">' + escape(p.strip("\n")).replace("\n", "<br>\n") + "</p>\n" for p in paragraphs
+    )
+    return (
+        '<div style="font-family:Segoe UI,Arial,Helvetica,sans-serif;font-size:14px;line-height:1.5;color:#1f2933;">\n'
+        + rendered + "</div>\n"
+    )
+
+
 def build_raw_message(subject: Any, body_text: str, to_address: str) -> Tuple[str, str]:
-    """The RFC 5322 message of one prospecting email (plain text, UTF-8, one recipient), base64url-encoded as
-    Gmail wants it, and its Message-ID. The sender is the signed-in mailbox itself. Pure."""
+    """The RFC 5322 message of one prospecting email (UTF-8, one recipient), base64url-encoded as Gmail wants it,
+    and its Message-ID. It is multipart/alternative: the plain text (fallback) and the same text as HTML (what
+    clients show, see html_body). The sender is the signed-in mailbox itself. Pure."""
     message = EmailMessage()
     message["To"] = to_address
     message["Subject"] = _single_line(subject)
     message_id = make_msgid(domain="marketgen.mail")
     message["Message-ID"] = message_id
     message.set_content(body_text, charset="utf-8")
+    message.add_alternative(html_body(body_text), subtype="html", charset="utf-8")
     return base64.urlsafe_b64encode(message.as_bytes()).decode("ascii"), message_id
 
 

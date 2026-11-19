@@ -183,10 +183,45 @@ async def test_the_draft_is_a_utf8_plain_text_email_to_one_recipient(g):
     assert mail["To"] == "ana@example.test"
     assert mail["Subject"] == "Vacante de Jefa de Operaciones Bcc: otro@example.test"  # one line: no header injection
     assert mail["Bcc"] is None and mail["Cc"] is None
-    assert mail.get_content_type() == "text/plain" and mail.get_content_charset() == "utf-8"
-    assert "Área de operaciones: ñandú, acción." in mail.get_content()
+    assert mail.get_content_type() == "multipart/alternative"
+    plain = mail.get_body(preferencelist=("plain",))
+    assert plain.get_content_type() == "text/plain" and plain.get_content_charset() == "utf-8"
+    assert "Área de operaciones: ñandú, acción." in plain.get_content()
+    assert "Área de operaciones: ñandú, acción." in mail.get_body(preferencelist=("html",)).get_content()
     assert ids["id"].startswith("r-fake") and ids["conversation_id"] == "fake-thread-1"
     assert ids["internet_message_id"] == mail["Message-ID"]
+
+
+def test_html_body_has_real_paragraphs_and_no_hard_wrapped_lines():
+    long_paragraph = "Vi que Empresa Demo está buscando un perfil exigente " * 8      # ~400 caracteres en una sola línea
+    html = gmail_client.html_body(f"Hola Ana:\n\n{long_paragraph}\n\nSaludos,\nEquipo NoonDalton\n")
+    assert html.count("<p ") == 3
+    assert long_paragraph.strip() in html                      # el párrafo largo viaja entero, sin cortes
+    assert "Saludos,<br>\nEquipo NoonDalton" in html           # un salto simple dentro de un párrafo = <br>
+    assert "=\n" not in html                                   # sin saltos blandos de quoted-printable
+
+
+def test_html_body_escapes_what_the_model_wrote():
+    html = gmail_client.html_body('Hola <script>alert(1)</script> & "amigos"\n\n<b>x</b>')
+    assert "<script>" not in html and "<b>" not in html
+    assert "&lt;script&gt;" in html and "&amp;" in html and "&lt;b&gt;x&lt;/b&gt;" in html
+
+
+def test_html_body_of_an_empty_text_is_an_empty_container():
+    assert "<p" not in gmail_client.html_body("") and "<p" not in gmail_client.html_body(None)
+
+
+async def test_the_message_carries_the_html_part_and_the_long_paragraph_whole(g):
+    long_paragraph = "Esta oración larga no debe quedar cortada en el correo. " * 10
+    await gmail_client.create_draft("t", "Asunto", f"Hola:\n\n{long_paragraph}\n", "ana@example.test")
+    mail = decode_raw(g.drafts_created()[0]["json"]["message"]["raw"])
+    assert mail.get_content_type() == "multipart/alternative"
+    assert [part.get_content_type() for part in mail.iter_parts()] == ["text/plain", "text/html"]
+    html = mail.get_body(preferencelist=("html",)).get_content()
+    assert long_paragraph.strip() in html and html.count("<p ") == 2
+    # Decoded, the plain part keeps the paragraph as ONE line too (the 76-column breaks are only transport encoding).
+    plain_lines = mail.get_body(preferencelist=("plain",)).get_content().splitlines()
+    assert any(len(line) > 400 for line in plain_lines)
 
 
 async def test_sending_the_draft_escapes_nothing_in_the_body_and_reads_nothing(g):
@@ -508,8 +543,10 @@ async def test_send_goes_out_through_gmail_and_never_touches_microsoft(client, w
     assert draft["headers"]["authorization"] == "Bearer fake-access-token-stored"
     mail = decode_raw(draft["json"]["message"]["raw"])
     assert mail["To"] == RECIPIENT and mail["Subject"] == EMAIL["subject"]
-    text = mail.get_content()
+    text = mail.get_body(preferencelist=("plain",)).get_content()
     assert text.startswith("Hola Ana,") and text.rstrip().endswith(OUTREACH_UNSUBSCRIBE_LINE["es"])
+    html = mail.get_body(preferencelist=("html",)).get_content()
+    assert "Hola Ana," in html and OUTREACH_UNSUBSCRIBE_LINE["es"] in html
     assert world.g.reads() == [] and len(world.g.sent) == 1 and world.g.drafts == {}
     stored_email = world.email()
     assert stored_email["status"] == "sent" and stored_email["graph_message_id"] == sent["json"]["id"]
