@@ -6,6 +6,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from google.api_core import exceptions as google_exceptions
+from google.auth import exceptions as google_auth_exceptions
 from openai import OpenAIError
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -100,6 +101,7 @@ async def db_quota_handler(request: Request, exc: google_exceptions.ResourceExha
 
 @app.exception_handler(google_exceptions.GoogleAPICallError)
 @app.exception_handler(google_exceptions.RetryError)
+@app.exception_handler(google_auth_exceptions.GoogleAuthError)   # credenciales de Firestore ausentes o inválidas (DefaultCredentialsError, RefreshError)
 async def db_unavailable_handler(request: Request, exc: Exception):
     logger.error("Falla de la base de datos en %s %s: %r", request.method, request.url.path, exc)
     return JSONResponse(status_code=503, content={"detail": DB_UNAVAILABLE, "message": DB_UNAVAILABLE, "code": "db_unavailable"})

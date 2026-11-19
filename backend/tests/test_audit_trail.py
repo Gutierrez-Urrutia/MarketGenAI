@@ -237,7 +237,8 @@ async def test_RNF02_el_worker_registra_la_generacion_fallida(logs):
         with pytest.raises(RuntimeError):
             await proposal_tasks.generate_proposal_now("job-1", "p-1", "T", "C", "D", options)
     log = only(logs, "proposal_generated")
-    assert log["status"] == "failed" and "LLM caído" in log["details"]["error"]
+    # RNF-04: el registro guarda un mensaje seguro, no el texto de la excepción (podría traer claves o rutas)
+    assert log["status"] == "failed" and "LLM caído" not in log["details"]["error"] and log["details"]["error"]
 
 
 # ── Middleware: sin duplicados ni lecturas ────────────────────────────────────

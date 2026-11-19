@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from google.api_core import exceptions as gexc
+from google.auth import exceptions as gauth
 from httpx import ASGITransport, AsyncClient
 
 API = "/api/v1"
@@ -27,6 +28,8 @@ async def http(app):
     (gexc.DeadlineExceeded(SECRETO), "db_unavailable", "base de datos no está disponible"),
     (gexc.InternalServerError(SECRETO), "db_unavailable", "base de datos no está disponible"),
     (gexc.ResourceExhausted(SECRETO), "db_quota", "límite de uso"),
+    (gauth.DefaultCredentialsError(SECRETO), "db_unavailable", "base de datos no está disponible"),   # credenciales de Firestore ausentes
+    (gauth.RefreshError(SECRETO), "db_unavailable", "base de datos no está disponible"),
 ])
 @pytest.mark.asyncio
 async def test_RNF04_endpoint_de_datos_con_firestore_caido_responde_503_claro(http, exc, codigo, texto):

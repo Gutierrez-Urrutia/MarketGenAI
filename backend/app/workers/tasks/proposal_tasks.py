@@ -22,7 +22,7 @@ from app.services import audit_service, deepseek_service
 from app.services.customer_profile_service import SIZE_RANGES, industry_label, size_label
 from app.services.firestore_service import jobs_repo, proposals_repo
 from app.services.rag_proposal_service import get_rag_context_and_sources
-from app.core.errors import safe_error_message
+from app.core.errors import safe_error, safe_error_message
 
 logger = logging.getLogger(__name__)
 
@@ -493,7 +493,7 @@ async def generate_proposal_now(
     except Exception as exc:
         await audit_service.record(
             action=audit_service.PROPOSAL_GENERATED, resource_id=proposal_id, status="failed",
-            details={"stage": "completed", "jobId": job_id, "error": str(exc)[:500]}, **audit_who,
+            details={"stage": "completed", "jobId": job_id, "error": safe_error(exc)[1]}, **audit_who,   # RNF-04: mensaje seguro; el detalle real queda en el log
         )
         raise
     await audit_service.record(

@@ -11,6 +11,7 @@ from typing import Tuple
 import httpx
 from fastapi import HTTPException
 from google.api_core import exceptions as google_exceptions
+from google.auth import exceptions as google_auth_exceptions
 from openai import OpenAIError
 
 from app.services.crm_service import CrmAuthError, CrmProviderError, CrmTimeoutError
@@ -49,7 +50,7 @@ def safe_error(exc: BaseException) -> Tuple[str, str]:
         return "unreachable", CRM_UNREACHABLE
     if isinstance(exc, google_exceptions.ResourceExhausted):
         return "db_quota", DB_QUOTA
-    if isinstance(exc, (google_exceptions.GoogleAPICallError, google_exceptions.RetryError)):
+    if isinstance(exc, (google_exceptions.GoogleAPICallError, google_exceptions.RetryError, google_auth_exceptions.GoogleAuthError)):
         return "db_unavailable", DB_UNAVAILABLE
     if isinstance(exc, HTTPException) and 400 <= exc.status_code < 500 and isinstance(exc.detail, str):
         return "client_error", exc.detail   # error de negocio ya escrito para el usuario (p. ej. «el libro no tiene capítulos»)
