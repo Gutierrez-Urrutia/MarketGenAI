@@ -473,7 +473,15 @@ class OutreachEmailService:
         mailbox = await self._mailbox().status(user_id)
         connected = bool(mailbox["connected"])
         sent_today = await self.send_counters.count_for(user_id, self.clock()) if self.send_counters else 0
+        try:
+            redirect = outreach_send_rules.redirect_addresses()
+            redirect_broken = False
+        except outreach_send_rules.RedirectMisconfigured:
+            redirect, redirect_broken = None, True
         return {
+            "redirect_active": bool(redirect) or redirect_broken,
+            "redirect_to": list(redirect or []),
+            "redirect_misconfigured": redirect_broken,
             "oauth_configured": bool(mailbox["oauth_configured"]),
             "mailbox_connected": connected,
             "mailbox_needs_reconnect": bool(mailbox["needs_reconnect"]),
@@ -545,6 +553,12 @@ class OutreachEmailService:
             raise OutreachEmailError(422, "do_not_contact")
         if _normalized_address(confirm_to_email) != _normalized_address(to_email):
             raise OutreachEmailError(409, "recipient_mismatch")
+        # Sandbox: the email goes to the team's addresses, never to the contact. A broken setting stops the send
+        # here, before anything is reserved.
+        try:
+            redirect = outreach_send_rules.redirect_addresses()
+        except outreach_send_rules.RedirectMisconfigured:
+            raise OutreachEmailError(503, "send_redirect_misconfigured") from None
 
         # Whether this send takes over one of unknown outcome (force_retry).
         retrying_uncertain = bool((email.get("send_lock") or {}).get("uncertain")) and force_retry
@@ -559,7 +573,7 @@ class OutreachEmailService:
         progress = {"previous_resolved": False}
         try:
             outcome = await self._deliver(
-                email_id, claimed, mailbox["access_token"], lock_id, progress, self._transport_for(mailbox),
+                email_id, claimed, mailbox["access_token"], lock_id, progress, self._transport_for(mailbox), redirect,
             )
         except GraphError as exc:
             if exc.code == "mailbox_reconnect_required":
@@ -595,6 +609,7 @@ class OutreachEmailService:
             },
             history_extra={
                 "send_method": "platform",
+                **({"redirected": True, "delivered_to": list(redirect)} if redirect else {}),
                 "internet_message_id": ids.get("internet_message_id") or "",
                 **({"resolved_by_reading": True} if outcome["already_sent"] else {}),
             },
@@ -603,7 +618,7 @@ class OutreachEmailService:
 
     async def _deliver(
         self, email_id: str, claimed: Dict[str, Any], token: str, lock_id: str, progress: Dict[str, bool],
-        transport: Any,
+        transport: Any, redirect: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """Send the claimed email: reuse the draft of an earlier attempt when
         there is one (reading it first: if it is no longer a draft, it went
@@ -625,11 +640,8 @@ class OutreachEmailService:
                     return {"already_sent": True, "ids": ids}
                 progress["previous_resolved"] = True  # still a draft: it was not sent
         if ids is None:
-            ids = await transport.create_draft(
-                token, claimed.get("subject"),
-                outreach_send_rules.body_as_sent(claimed.get("body"), claimed.get("language")),
-                (claimed.get("to_email") or "").strip(),
-            )
+            shaped = outreach_send_rules.delivery_for(claimed, redirect)
+            ids = await transport.create_draft(token, shaped["subject"], shaped["body"], shaped["to"])
             await self.emails.record_draft(email_id, lock_id, ids, self.clock())
         try:
             await transport.send_draft(token, ids["id"])

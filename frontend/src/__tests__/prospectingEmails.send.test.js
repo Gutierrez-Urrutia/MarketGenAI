@@ -84,7 +84,7 @@ describe("lista «no contactar»", () => {
 
 describe("códigos del envío", () => {
   it.each([
-    "real_send_disabled", "mailbox_not_connected", "mailbox_reconnect_required", "missing_permissions",
+    "real_send_disabled", "send_redirect_misconfigured", "mailbox_not_connected", "mailbox_reconnect_required", "missing_permissions",
     "mailbox_auth_failed", "mail_rejected", "mail_throttled", "mail_service_unavailable", "mail_service_timeout",
     "send_timeout", "recipient_mismatch", "do_not_contact", "send_in_progress", "send_uncertain", "invalid_recipient",
   ])("%s tiene su propio mensaje", (code) => {

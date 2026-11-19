@@ -72,6 +72,7 @@ Se leen de `backend/.env` en local (plantilla: `backend/.env.example`) y de Clou
 | `RATE_LIMIT_ENABLED`, `AUDIT_LOG_ENABLED` | Límite de frecuencia y registro de auditoría | `true` |
 | `MICROSOFT_OAUTH_*`, `MAIL_OAUTH_*` | Login con Microsoft y envío desde Outlook / Microsoft 365 (registro de app propio en Entra ID) | ver `.env.example` |
 | `OUTREACH_REAL_SEND_ENABLED` | Interruptor general del envío real de correos de prospección, con Outlook o Gmail (apagado por defecto; además cada usuario lo enciende en Configuración) | `false` |
+| `OUTREACH_REDIRECT_TO` | **Entorno de pruebas.** Si tiene valor (direcciones separadas por coma), TODO correo de prospección sale a esas direcciones y nunca al contacto real; si el valor es inválido no se envía nada. Es lo que distingue un ambiente de pruebas de uno real: en dev viene del **secreto** `outreach-redirect-to`, en local del `.env`. Vacío = se escribe a los contactos reales | secreto en dev; vacío solo en producción real |
 | `META_*`, `LINKEDIN_ACCESS_TOKEN`, `TWITTER_*` | Publicación en redes sociales (integraciones parciales) | opcional |
 
 Obsoletas (se pueden dejar vacías): `SUPABASE_*` (el proyecto configurado ya no existe), `GEMINI_*`/`GOOGLE_API_KEY` (proveedor de respaldo no usado), `VITE_KEYCLOAK_*`.
@@ -175,6 +176,18 @@ Detalles que conviene saber: el usuario puede desmarcar el permiso de Gmail en l
 Google devuelve el código por la URL (`?code=`), pero es de un solo uso y sin el verificador PKCE, que solo conoce el servidor, no sirve;
 Gmail no permite saber si un borrador desaparecido se envió o lo borró el usuario, así que si se pierde la respuesta del envío el correo queda
 «incierto» y el usuario decide (marcar como enviado o reintentar); lo que se envía y recibe de Gmail se prueba con `tests/test_gmail_connection.py`.
+
+### 5.7 Entornos de pruebas: los correos salen siempre al equipo
+
+Para que ningún prospecto real reciba un correo de prueba, local y dev definen `OUTREACH_REDIRECT_TO` (§3):
+
+- El correo se genera, aprueba y confirma como siempre con el contacto real, pero al enviarlo **el destinatario es la lista del secreto**
+  (Gmail y Outlook). Asunto con prefijo `[PRUEBA]` y una primera línea que dice a quién iba dirigido. El historial guarda `redirected` y `delivered_to`.
+- La confirmación de envío muestra «Se entregará a (pruebas)» con las direcciones. La lista de no contactar sigue protegiendo al contacto real.
+- Si el valor existe pero no tiene direcciones válidas, el envío se detiene (`send_redirect_misconfigured`, 503) antes de reservar nada.
+- Cambiar los destinatarios en dev: `printf '<a@x,b@y>' | gcloud secrets versions add outreach-redirect-to --data-file=- --project=marketgen-dev` y
+  reiniciar la API (nueva revisión). **`deploy_api.py` monta este secreto: no quitarlo** o dev volvería a escribir a contactos reales.
+- Las pruebas automáticas ignoran el valor del entorno (`conftest.py`), así que tenerlo en tu `.env` no las rompe.
 
 ## 6. Comportamiento ante fallas (RNF-05, criterio 1)
 

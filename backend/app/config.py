@@ -111,6 +111,11 @@ class Settings(BaseSettings):
     # switch for the whole deployment: off by default, and each user must also
     # switch it on in their pipeline config. Both are required to send.
     outreach_real_send_enabled: bool = False
+    # Sandbox (local and dev). When set -- addresses separated by commas; from Secret Manager in dev, from .env
+    # locally -- EVERY prospecting email is delivered to these addresses and never to the contact's real one. It is
+    # the switch that tells a test environment from a real one: leave it empty only where real prospects should be
+    # written to. A value that is set but has no valid address blocks sending (it never falls back to the contact).
+    outreach_redirect_to: str = ""
 
     # Sending from each user's own Microsoft 365 / Outlook mailbox (RF-VTA-16):
     # delegated OAuth (authorization code + PKCE) and Microsoft Graph. Its own

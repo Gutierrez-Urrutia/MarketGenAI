@@ -309,17 +309,23 @@ def _single_line(value: Any) -> str:
     return " ".join(str(value or "").split())
 
 
-def draft_payload(subject: Any, body_text: str, to_address: str) -> Dict[str, Any]:
-    """The draft of one prospecting email: plain text, one recipient. The
+def as_addresses(to_address: Any) -> list:
+    """One address or several (a list/tuple) as a list of non-empty strings. Pure."""
+    items = [to_address] if isinstance(to_address, str) else list(to_address or [])
+    return [str(item).strip() for item in items if str(item).strip()]
+
+
+def draft_payload(subject: Any, body_text: str, to_address: Any) -> Dict[str, Any]:
+    """The draft of one prospecting email: plain text, to one address or several. The
     sender is the signed-in mailbox itself. Pure."""
     return {
         "subject": _single_line(subject),
         "body": {"contentType": "Text", "content": body_text},
-        "toRecipients": [{"emailAddress": {"address": to_address}}],
+        "toRecipients": [{"emailAddress": {"address": address}} for address in as_addresses(to_address)],
     }
 
 
-async def create_draft(access_token: str, subject: Any, body_text: str, to_address: str) -> Dict[str, str]:
+async def create_draft(access_token: str, subject: Any, body_text: str, to_address: Any) -> Dict[str, str]:
     """Create the email as a draft in the user's mailbox. Nothing is sent.
     Returns {"id" (immutable), "internet_message_id", "conversation_id"}.
     Any failure here is safe: at most an unsent draft is left."""

@@ -34,6 +34,7 @@ vars_.update({
     "GOOGLE_REDIRECT_URI": "https://marketgen-api-156520322318.us-central1.run.app/api/v1/auth/google/callback",
     # Enviar correos desde el Gmail del usuario (RF-VTA-16): misma app de Google, otra URI de redirección.
     "MAIL_GOOGLE_REDIRECT_URL": "https://marketgen-api-156520322318.us-central1.run.app/api/v1/mail-connection/google/callback",
+    "OUTREACH_REAL_SEND_ENABLED": "true",   # el envío real está permitido, pero en dev SIEMPRE va al equipo (OUTREACH_REDIRECT_TO)
 })
 path = os.path.join(os.path.dirname(__file__), "env_api.yaml")
 with open(path, "w", encoding="utf-8") as f:
@@ -46,6 +47,9 @@ secretos = {
     "GEMINI_API_KEY": "gemini-api-key", "GOOGLE_API_KEY": "google-api-key",
     "SUPABASE_SERVICE_KEY": "supabase-service-key", "GOOGLE_OAUTH_CLIENT_SECRET": "google-oauth-client-secret",
     "REDIS_URL": "redis-url", "CELERY_RESULT_BACKEND": "celery-result-backend",
+    # Sandbox: con este secreto TODO correo de prospección sale a las direcciones del equipo y nunca al contacto real.
+    # Si falta en un redeploy, dev volvería a escribirle a prospectos reales: no quitarlo.
+    "OUTREACH_REDIRECT_TO": "outreach-redirect-to",
 }
 set_secrets = ",".join(f"{k}={v}:latest" for k, v in secretos.items())
 

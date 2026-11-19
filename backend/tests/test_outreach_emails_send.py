@@ -765,6 +765,7 @@ async def test_send_status_with_a_connected_mailbox(client, world):
         "mailbox_address": SENDER, "server_send_enabled": True, "user_send_enabled": True,
         "real_send_enabled": True, "daily_limit": 50, "sent_today": 2,
         "sender_email": SENDER, "sender_name": SENDER_NAME,
+        "redirect_active": False, "redirect_to": [], "redirect_misconfigured": False,
     }
     assert_no_token(resp.text)
     assert world.ms.calls == []  # reading the status never calls Microsoft

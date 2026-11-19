@@ -38,6 +38,37 @@ function renderDetail(props = {}) {
 const sendButton = () => screen.getByRole("button", { name: P.actions.send });
 const dialog = () => screen.getByRole("dialog");
 
+describe("entorno de pruebas: el correo va al equipo, no al contacto", () => {
+  const TEAM = ["pa.gutierrezu@duocuc.cl", "her.lopezs@duocuc.cl", "jor.saavedra@duocuc.cl"];
+
+  it("sin redirección no aparece la fila", () => {
+    renderDetail();
+    fireEvent.click(sendButton());
+    expect(within(dialog()).queryByTestId("send-summary-redirect")).toBeNull();
+  });
+
+  it("con redirección muestra a quién se entregará de verdad, junto al aviso", () => {
+    renderDetail({ sendStatus: { ...READY, redirect_active: true, redirect_to: TEAM, redirect_misconfigured: false } });
+    fireEvent.click(sendButton());
+    const row = within(dialog()).getByTestId("send-summary-redirect");
+    expect(row.querySelector("dt").textContent).toBe(P.send.redirectLabel);
+    expect(within(row).getByTestId("send-redirect-to").textContent).toBe(TEAM.join(", "));
+    expect(within(row).getByTestId("send-redirect-note").textContent).toBe(P.send.redirectNote);
+    // El contacto real sigue visible en «Para», para que se vea que NO es a quien llega.
+    expect(within(dialog()).getByTestId("send-summary-to").querySelector("dd").textContent).toBe("ana@example.com");
+    const rows = [...within(dialog()).getByTestId("send-summary").querySelectorAll(":scope > div")].map((el) => el.dataset.testid);
+    expect(rows).toEqual(["send-summary-to", "send-summary-redirect", "send-summary-from", "send-summary-subject"]);
+  });
+
+  it("con la configuración rota avisa que no se enviará nada y no lista direcciones", () => {
+    renderDetail({ sendStatus: { ...READY, redirect_active: true, redirect_to: [], redirect_misconfigured: true } });
+    fireEvent.click(sendButton());
+    const row = within(dialog()).getByTestId("send-summary-redirect");
+    expect(within(row).getByTestId("send-redirect-broken").textContent).toBe(P.send.redirectBroken);
+    expect(within(row).queryByTestId("send-redirect-to")).toBeNull();
+  });
+});
+
 describe("«Enviar» y su confirmación", () => {
   it("con todo en orden está habilitado y no muestra aviso", () => {
     renderDetail();

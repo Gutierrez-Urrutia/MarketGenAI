@@ -36,6 +36,7 @@ from app.services.graph_client import (  # same wire helpers and error type as t
     _scope_names,
     _single_line,
     _transport_failure,
+    as_addresses,
     code_challenge,
     new_code_verifier,
 )
@@ -243,12 +244,12 @@ def html_body(body_text: str) -> str:
     )
 
 
-def build_raw_message(subject: Any, body_text: str, to_address: str) -> Tuple[str, str]:
+def build_raw_message(subject: Any, body_text: str, to_address: Any) -> Tuple[str, str]:
     """The RFC 5322 message of one prospecting email (UTF-8, one recipient), base64url-encoded as Gmail wants it,
     and its Message-ID. It is multipart/alternative: the plain text (fallback) and the same text as HTML (what
     clients show, see html_body). The sender is the signed-in mailbox itself. Pure."""
     message = EmailMessage()
-    message["To"] = to_address
+    message["To"] = ", ".join(as_addresses(to_address))
     message["Subject"] = _single_line(subject)
     message_id = make_msgid(domain="marketgen.mail")
     message["Message-ID"] = message_id
@@ -257,7 +258,7 @@ def build_raw_message(subject: Any, body_text: str, to_address: str) -> Tuple[st
     return base64.urlsafe_b64encode(message.as_bytes()).decode("ascii"), message_id
 
 
-async def create_draft(access_token: str, subject: Any, body_text: str, to_address: str) -> Dict[str, str]:
+async def create_draft(access_token: str, subject: Any, body_text: str, to_address: Any) -> Dict[str, str]:
     """Create the email as a draft in the user's Gmail. Nothing is sent. Returns {"id" (the draft's),
     "internet_message_id", "conversation_id" (the thread)}. Any failure here is safe: at most an unsent draft."""
     raw, message_id = build_raw_message(subject, body_text, to_address)

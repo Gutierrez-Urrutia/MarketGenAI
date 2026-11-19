@@ -33,6 +33,19 @@ def _reset_rate_limiter():
     yield
 
 
+@pytest.fixture(autouse=True)
+def _no_send_redirect_from_the_environment():
+    """OUTREACH_REDIRECT_TO (the local/dev sandbox that sends every email to the team) comes from the environment or
+    .env: without this, a developer who has it set would see every send test deliver to the team instead of the
+    contact the test asserts. The tests of the redirect itself set it explicitly."""
+    from app.config import settings
+
+    previous = settings.outreach_redirect_to
+    settings.outreach_redirect_to = ""
+    yield
+    settings.outreach_redirect_to = previous
+
+
 # ── Fake user ─────────────────────────────────────────────────────────────────
 FAKE_USER_SUB   = "test-user-sub-123"
 FAKE_USER_EMAIL = "test@noondalton.com"

@@ -323,6 +323,11 @@ class SendStatusResponse(BaseModel):
     # Shown in the send confirmation: the connected mailbox (empty without one).
     sender_email: str = ""
     sender_name: str = ""
+    # Sandbox (local / dev): every email goes to `redirect_to` instead of the contact. `redirect_misconfigured`:
+    # the setting is broken, so sending is blocked.
+    redirect_active: bool = False
+    redirect_to: List[str] = []
+    redirect_misconfigured: bool = False
 
 
 class DoNotContactCreate(BaseModel):

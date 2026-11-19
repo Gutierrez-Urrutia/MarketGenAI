@@ -119,9 +119,23 @@ function SummaryRow({ label, testId, children }) {
 function SendSummary({ email, sendStatus, t }) {
   const senderName = sendStatus?.sender_name || "";
   const senderEmail = sendStatus?.sender_email || "";
+  // Test environment (local / dev): the server delivers every email to the team's addresses, not to the contact.
+  const redirectTo = Array.isArray(sendStatus?.redirect_to) ? sendStatus.redirect_to : [];
   return (
     <dl className="space-y-2" data-testid="send-summary">
       <SummaryRow label={t(`${KP}.send.toLabel`)} testId="send-summary-to">{email.to_email || "—"}</SummaryRow>
+      {sendStatus?.redirect_active && (
+        <SummaryRow label={t(`${KP}.send.redirectLabel`)} testId="send-summary-redirect">
+          {sendStatus.redirect_misconfigured
+            ? <span className="text-red-700" data-testid="send-redirect-broken">{t(`${KP}.send.redirectBroken`)}</span>
+            : (
+              <>
+                <span className="block" data-testid="send-redirect-to">{redirectTo.join(", ")}</span>
+                <span className="block text-xs text-amber-700" data-testid="send-redirect-note">{t(`${KP}.send.redirectNote`)}</span>
+              </>
+            )}
+        </SummaryRow>
+      )}
       <SummaryRow label={t(`${KP}.send.fromLabel`)} testId="send-summary-from">
         {senderName && <span className="block" data-testid="send-summary-from-name">{senderName}</span>}
         <span className="block text-gray-600 dark:text-slate-300" data-testid="send-summary-from-email">{senderEmail || "—"}</span>

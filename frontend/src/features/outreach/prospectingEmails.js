@@ -36,6 +36,7 @@ export const EMAIL_ERROR_CODES = [
   // Real send from the connected mailbox (POST /outreach-emails/{id}/send,
   // services/outreach_email_service.py) and the do-not-contact list.
   "real_send_disabled",
+  "send_redirect_misconfigured",
   "mailbox_not_connected",
   "mailbox_reconnect_required",
   "missing_permissions",
