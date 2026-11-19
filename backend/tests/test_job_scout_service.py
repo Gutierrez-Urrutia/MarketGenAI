@@ -1871,3 +1871,17 @@ async def test_scan_all_sources_scoring_runs_under_the_run_deadline():
 
 def test_relevance_threshold_is_still_0_6():
     assert svc.RELEVANCE_SCORE_THRESHOLD == 0.6
+
+
+@pytest.mark.asyncio
+async def test_RNF04_un_origen_que_falla_de_forma_inesperada_no_guarda_el_texto_de_la_excepcion():
+    """RNF-04: la corrida sigue (parcial) y el error guardado no trae el texto crudo de la excepción (rutas, claves)."""
+    pipeline_config = fake_pipeline_config()
+    with (
+        patch.object(svc, "_scan_source", new_callable=AsyncMock, side_effect=RuntimeError("fallo en C:\secretos\sa.json con sk-CLAVE-SECRETA")),
+        patch.object(svc.leads_repo, "create", new_callable=AsyncMock),
+    ):
+        result = await svc.scan_all_sources(pipeline_config, "run-1")
+    assert result["partial"] is True
+    texto = json.dumps(result.get("errors", []), ensure_ascii=False)
+    assert "sk-CLAVE-SECRETA" not in texto and "secretos" not in texto and "RuntimeError" in texto

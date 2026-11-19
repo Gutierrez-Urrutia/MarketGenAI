@@ -16,6 +16,8 @@ from openai import OpenAIError
 
 from app.services.crm_service import CrmAuthError, CrmProviderError, CrmTimeoutError
 from app.services.deepseek_service import LLMTimeoutError
+from app.services.encryption_service import EncryptionNotConfiguredError
+from app.services.storage_service import StorageError
 
 logger = logging.getLogger("marketgen.errors")
 
@@ -27,6 +29,8 @@ CRM_AUTH = "El CRM rechazó la credencial. Revisa la conexión en Configuración
 CRM_TIMEOUT = "El CRM tardó demasiado en responder. Inténtalo de nuevo."
 CRM_PROVIDER = "El CRM respondió con un error. Inténtalo de nuevo en unos minutos."
 CRM_UNREACHABLE = "No se pudo conectar con el CRM. Inténtalo de nuevo en unos minutos."
+STORAGE_UNAVAILABLE = "El almacenamiento de archivos no está disponible en este momento. Inténtalo de nuevo en unos minutos."
+ENCRYPTION_NOT_CONFIGURED = "El servidor no tiene configurada la llave de cifrado (PIPELINE_ENCRYPTION_KEY). Avisa al administrador."
 GENERIC = "No se pudo completar la operación. Inténtalo de nuevo."
 
 
@@ -44,6 +48,10 @@ def safe_error(exc: BaseException) -> Tuple[str, str]:
         return "crm_timeout", str(exc) or CRM_TIMEOUT
     if isinstance(exc, CrmProviderError):
         return "crm_provider", str(exc) or CRM_PROVIDER
+    if isinstance(exc, StorageError):
+        return "storage_unavailable", STORAGE_UNAVAILABLE
+    if isinstance(exc, EncryptionNotConfiguredError):
+        return "encryption_not_configured", ENCRYPTION_NOT_CONFIGURED
     if isinstance(exc, httpx.TimeoutException):
         return "timeout", CRM_TIMEOUT
     if isinstance(exc, httpx.HTTPError):

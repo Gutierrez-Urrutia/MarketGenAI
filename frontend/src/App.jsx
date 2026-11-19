@@ -1042,7 +1042,7 @@ function App() {
         facebook_denied: "Facebook connection cancelled.",
         facebook_token_failed: "Could not authenticate with Facebook. Please try again.",
         facebook_no_pages: "No Facebook Page found on this account. Create or get access to a Page first.",
-        facebook_server_error: "Internal error connecting to Facebook.",
+        facebook_server_error: "No se pudo conectar con Facebook en este momento. Inténtalo de nuevo.",
       };
       toast.error(socialErrorMessages[socialError] || "Could not connect this social account.");
     }
@@ -1077,8 +1077,8 @@ function App() {
           microsoft_token_failed: "Error al autenticar con Microsoft. Intenta de nuevo.",
           google_no_email: "No se pudo obtener el email de tu cuenta Google.",
           microsoft_no_email: "No se pudo obtener el email de tu cuenta Microsoft.",
-          google_server_error: "Error interno al iniciar sesión con Google. Revisa los logs del servidor.",
-          microsoft_server_error: "Error interno al iniciar sesión con Microsoft. Revisa los logs del servidor.",
+          google_server_error: "No se pudo iniciar sesión con Google en este momento. Inténtalo de nuevo; si continúa, avisa al administrador.",
+          microsoft_server_error: "No se pudo iniciar sesión con Microsoft en este momento. Inténtalo de nuevo; si continúa, avisa al administrador.",
         };
         toast.error(errorMessages[oauthError] || "Error de autenticación social.");
         return;

@@ -59,8 +59,10 @@ class TestUpload:
         bucket = _bucket(monkeypatch)
         bucket.blob.return_value.upload_from_string.side_effect = RuntimeError("sin permiso")
         monkeypatch.chdir(tmp_path)
-        with pytest.raises(RuntimeError, match="sin permiso"):
+        # RNF-04: falla a la vista como StorageError (un RuntimeError) con un mensaje fijo; el detalle real queda como causa y en el log
+        with pytest.raises(st.StorageError) as ei:
             st._upload_bytes_sync(b"x", "assets/a.pdf")
+        assert "sin permiso" not in str(ei.value) and "sin permiso" in str(ei.value.__cause__)
         assert not (tmp_path / "generated_files").exists()
 
     def test_upload_file_reads_the_file_and_uploads_it(self, gcs, monkeypatch, tmp_path):

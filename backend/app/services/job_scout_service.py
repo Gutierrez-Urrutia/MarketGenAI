@@ -956,7 +956,7 @@ async def scan_all_sources(pipeline_config: Dict[str, Any], run_id: str) -> Dict
                 "agent": "job_scout",
                 "source_id": source.get("id"),
                 "source_name": source.get("name"),
-                "message": str(exc),
+                "message": f"error inesperado al leer el origen ({type(exc).__name__})",   # RNF-04: sin el texto de la excepción
                 "timestamp": now_utc().isoformat(),
             })
             continue

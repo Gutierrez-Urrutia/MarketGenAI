@@ -56,7 +56,7 @@ def _redact_social_tokens(doc: Dict[str, Any]) -> Dict[str, Any]:
     return {**doc, "socialAccounts": redacted}
 
 
-_ENCRYPTION_NOT_CONFIGURED = "El servidor no tiene configurada la llave de cifrado (PIPELINE_ENCRYPTION_KEY). Avisa al administrador."
+from app.core.errors import ENCRYPTION_NOT_CONFIGURED as _ENCRYPTION_NOT_CONFIGURED
 
 
 def _encrypt_secret(value: str) -> str:

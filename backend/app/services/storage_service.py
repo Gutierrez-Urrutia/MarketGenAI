@@ -18,6 +18,11 @@ from app.config import settings
 
 logger = logging.getLogger("marketgen.storage")
 
+
+class StorageError(RuntimeError):
+    """RNF-04: el almacenamiento de archivos (Google Cloud Storage) no responde o no está configurado.
+    El detalle real queda en el log; el usuario recibe un aviso fijo (app/core/errors.py)."""
+
 _supabase: Optional[Client] = None
 
 
@@ -100,7 +105,11 @@ def _upload_bytes_sync(
     content_type: Optional[str] = None,
 ) -> str:
     if _use_gcs():
-        return _gcs_upload_bytes(data, storage_path, content_type)
+        try:
+            return _gcs_upload_bytes(data, storage_path, content_type)
+        except Exception as exc:
+            logger.error("[Storage] Fallo al subir a GCS (%s): %r", storage_path, exc)
+            raise StorageError("No se pudo guardar el archivo en el almacenamiento.") from exc
     try:
         sb = get_supabase()
         if content_type is None:
@@ -136,7 +145,11 @@ def _upload_file_sync(local_path: str, storage_path: str) -> str:
 
 def _get_signed_url_sync(storage_path: str, expires_in_seconds: int = 3600) -> str:
     if _use_gcs():
-        return _gcs_signed_url(storage_path, expires_in_seconds)
+        try:
+            return _gcs_signed_url(storage_path, expires_in_seconds)
+        except Exception as exc:
+            logger.error("[Storage] Fallo al firmar la URL de GCS (%s): %r", storage_path, exc)
+            raise StorageError("No se pudo obtener el enlace del archivo.") from exc
     try:
         sb = get_supabase()
         response = sb.storage.from_(BUCKET).create_signed_url(
@@ -157,7 +170,11 @@ def _get_signed_url_sync(storage_path: str, expires_in_seconds: int = 3600) -> s
 
 def _delete_file_sync(storage_path: str) -> None:
     if _use_gcs():
-        _gcs_delete(storage_path)
+        try:
+            _gcs_delete(storage_path)
+        except Exception as exc:
+            logger.error("[Storage] Fallo al borrar de GCS (%s): %r", storage_path, exc)
+            raise StorageError("No se pudo borrar el archivo del almacenamiento.") from exc
         return
     try:
         sb = get_supabase()

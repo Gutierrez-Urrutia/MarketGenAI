@@ -12,7 +12,9 @@ from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
 from app.config import missing_required, settings
-from app.core.errors import DB_QUOTA, DB_UNAVAILABLE, LLM_TIMEOUT, LLM_UNAVAILABLE
+from app.core.errors import DB_QUOTA, DB_UNAVAILABLE, ENCRYPTION_NOT_CONFIGURED, LLM_TIMEOUT, LLM_UNAVAILABLE, STORAGE_UNAVAILABLE
+from app.services.encryption_service import EncryptionNotConfiguredError
+from app.services.storage_service import StorageError
 from app.core.rate_limit import limiter
 from app.middleware.audit import AuditMiddleware
 from app.services.deepseek_service import LLMTimeoutError
@@ -105,6 +107,19 @@ async def db_quota_handler(request: Request, exc: google_exceptions.ResourceExha
 async def db_unavailable_handler(request: Request, exc: Exception):
     logger.error("Falla de la base de datos en %s %s: %r", request.method, request.url.path, exc)
     return JSONResponse(status_code=503, content={"detail": DB_UNAVAILABLE, "message": DB_UNAVAILABLE, "code": "db_unavailable"})
+
+
+# RNF-04: si falla el almacenamiento de archivos (GCS) o falta la llave de cifrado, también un aviso claro con CORS (antes: 500 sin mensaje).
+@app.exception_handler(StorageError)
+async def storage_error_handler(request: Request, exc: StorageError):
+    logger.error("Falla del almacenamiento en %s %s: %r", request.method, request.url.path, exc)
+    return JSONResponse(status_code=503, content={"detail": STORAGE_UNAVAILABLE, "message": STORAGE_UNAVAILABLE, "code": "storage_unavailable"})
+
+
+@app.exception_handler(EncryptionNotConfiguredError)
+async def encryption_not_configured_handler(request: Request, exc: EncryptionNotConfiguredError):
+    logger.error("Llave de cifrado no configurada en %s %s: %r", request.method, request.url.path, exc)
+    return JSONResponse(status_code=503, content={"detail": ENCRYPTION_NOT_CONFIGURED, "message": ENCRYPTION_NOT_CONFIGURED, "code": "encryption_not_configured"})
 
 
 app.add_middleware(
