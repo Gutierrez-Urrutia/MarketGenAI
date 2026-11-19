@@ -5,7 +5,7 @@ import json
 import re
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 
 from app.config import settings
@@ -34,7 +34,14 @@ async def _generate_analysis_json(prompt: str, *, system_prompt: str) -> Any:
         temperature=0.2,
         timeout=None,
     )
-    return _safe_json(raw)
+    try:
+        return _safe_json(raw)
+    except ValueError as exc:
+        # RNF-05: la IA devolvió algo que no es JSON; antes terminaba en un 500 sin mensaje.
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="La IA devolvió una respuesta que no se pudo interpretar. Inténtalo de nuevo.",
+        ) from exc
 
 
 @router.post("/seo")

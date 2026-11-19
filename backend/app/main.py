@@ -1,14 +1,18 @@
+import logging
+
 from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from openai import OpenAIError
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
 from app.config import settings
 from app.core.rate_limit import limiter
 from app.middleware.audit import AuditMiddleware
+from app.services.deepseek_service import LLMTimeoutError
 from app.routers.admin import router as admin_router
 from app.routers import (
     analysis,
@@ -42,6 +46,7 @@ from app.routers import (
     templates,
 )
 
+logger = logging.getLogger("marketgen.main")
 _is_prod = settings.app_env.lower() == "production"
 app = FastAPI(
     title="MarketGen AI API",
@@ -61,6 +66,24 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     errors = jsonable_encoder(exc.errors())
     first_message = errors[0]["msg"] if errors else "Solicitud inválida."
     return JSONResponse(status_code=422, content={"detail": errors, "message": first_message})
+
+# RNF-05: si la IA (DeepSeek) falla o no responde, el usuario recibe un aviso claro y la aplicación sigue
+# funcionando. Solo actúa sobre errores que ningún router manejó; antes terminaban en un 500 sin mensaje.
+_LLM_UNAVAILABLE = "El servicio de IA no está disponible en este momento. Inténtalo de nuevo en unos minutos."
+_LLM_TIMEOUT = "El servicio de IA tardó demasiado en responder. Inténtalo de nuevo."
+
+
+@app.exception_handler(LLMTimeoutError)
+async def llm_timeout_handler(request: Request, exc: LLMTimeoutError):
+    logger.warning("LLM timeout en %s %s: %s", request.method, request.url.path, exc)
+    return JSONResponse(status_code=504, content={"detail": _LLM_TIMEOUT, "message": _LLM_TIMEOUT})
+
+
+@app.exception_handler(OpenAIError)
+async def llm_error_handler(request: Request, exc: OpenAIError):
+    logger.error("Falla del servicio de IA en %s %s: %r", request.method, request.url.path, exc)
+    return JSONResponse(status_code=502, content={"detail": _LLM_UNAVAILABLE, "message": _LLM_UNAVAILABLE})
+
 
 app.add_middleware(
     CORSMiddleware,
