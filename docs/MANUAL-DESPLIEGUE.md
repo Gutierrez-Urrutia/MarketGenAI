@@ -237,6 +237,9 @@ restauración: `gcloud firestore import gs://<bucket-de-respaldos>/<fecha> --pro
 | CRM: timeout / caído / sin red | 504 / 502 con mensaje; el intento queda registrado en `crmSync` | Sigue funcionando |
 | CRM: el proveedor responde con error | 502 «HubSpot respondió con error 500»; lo que devolvió el proveedor queda solo en el log del servidor | Sigue funcionando |
 | Base de datos (Firestore) caída o sin cuota | 503 «La base de datos no está disponible en este momento…» (o «Se alcanzó el límite de uso…»), con cabeceras CORS | `/health` sigue en 200; `/health/db` responde 503 |
+| Google Cloud Storage falla al subir, firmar o borrar un archivo | 503 «El almacenamiento de archivos no está disponible en este momento…» (con `code: storage_unavailable`); el detalle queda en el log | Sigue funcionando |
+| Falta `PIPELINE_ENCRYPTION_KEY` al guardar una clave de proveedor | 503 «El servidor no tiene configurada la llave de cifrado… Avisa al administrador.» | Sigue funcionando |
+| El inicio de sesión con Google, Microsoft o Facebook falla en el servidor | Aviso en el login: «No se pudo iniciar sesión con Google… Inténtalo de nuevo; si continúa, avisa al administrador.» | Sigue funcionando |
 | Una tarea larga (job) falla | El job queda `failed` con un mensaje fijo y claro; el error real queda solo en el log | Sigue funcionando |
 | El navegador no llega a la API | Aviso «No hay conexión con el servidor» y el sondeo de la tarea termina con un aviso | La pantalla no se bloquea |
 | Redis o worker apagados | La propuesta se genera dentro de la petición, unos segundos más lenta | Sigue funcionando |
@@ -244,7 +247,7 @@ restauración: `gcloud firestore import gs://<bucket-de-respaldos>/<fecha> --pro
 
 Ningún mensaje de error incluye trazas, rutas del servidor, claves ni el cuerpo que devolvió el proveedor: el detalle va solo al log (`app/core/errors.py`).
 
-Pruebas automáticas: `backend/tests/test_rnf05_disponibilidad.py` (IA), `test_proposals_crm.py` (CRM), `test_firestore_down.py` (base de datos), `test_error_safety.py` (mensajes sin detalles) y `test_config_startup.py` (arranque y variables).
+Pruebas automáticas: `backend/tests/test_rnf05_disponibilidad.py` (IA), `test_proposals_crm.py` (CRM), `test_firestore_down.py` (base de datos), `test_error_safety.py` (mensajes sin detalles, almacenamiento y llave de cifrado) y `test_config_startup.py` (arranque y variables).
 
 ## 7. Problemas conocidos
 
