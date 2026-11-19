@@ -123,8 +123,11 @@ class Settings(BaseSettings):
     # Development/test only: lets the two URLs above point somewhere else
     # (e.g. the local fake Graph). Never honoured when APP_ENV=production.
     mail_allow_custom_endpoints: bool = False
-    # Time budget of one HTTP call to Microsoft (login or Graph).
+    # Time budget of one HTTP call to Microsoft or Google (login, Graph or Gmail).
     mail_http_timeout_seconds: float = 20.0
+    # Sending from the user's own Gmail mailbox: same OAuth client as the Google login (google_oauth_client_id /
+    # google_oauth_client_secret). Must match a redirect URI registered in that client exactly.
+    mail_google_redirect_url: str = "http://127.0.0.1:8000/api/v1/mail-connection/google/callback"
 
     redis_url: str = "redis://localhost:6379/0"
     celery_broker_url: str = "redis://localhost:6379/0"

@@ -31,7 +31,7 @@ from app.core.pipeline_constants import (
     OUTREACH_EMAIL_LANGUAGES,
 )
 from app.schemas.outreach_email import ACTIVE_EMAIL_STATUSES, contact_blocks, plan_email_transition
-from app.services import graph_client, outreach_send_rules
+from app.services import mail_providers, outreach_send_rules
 from app.services.contact_research_service import review_status_of, visible_contacts
 from app.services.graph_client import GraphError
 from app.services.mail_connection_service import MailConnectionError
@@ -259,12 +259,13 @@ class OutreachEmailService:
         # Real sending (RF-VTA-16): pipeline configs (the switches and the
         # daily limit), the do-not-contact list, the daily counters, the
         # user's connected mailbox (MailConnectionService) and the transport
-        # (create_draft / send_draft / get_message_state: graph_client).
+        # (create_draft / send_draft / get_message_state): graph_client for an Outlook
+        # mailbox, gmail_client for a Gmail one (mail_providers), unless a test injects one.
         self.configs = configs
         self.do_not_contact = do_not_contact
         self.send_counters = send_counters
         self.mailbox = mailbox
-        self.transport = mail_transport or graph_client
+        self._transport_override = mail_transport
 
     # ── Reads ────────────────────────────────────────────────────────────────
     async def _lead_for_user(self, lead_id: str, user_id: str) -> Dict[str, Any]:
@@ -454,6 +455,10 @@ class OutreachEmailService:
     async def _config(self, user_id: str) -> Dict[str, Any]:
         return dict(await self.configs.get_by_user(user_id) or {})
 
+    def _transport_for(self, mailbox: Dict[str, Any]):
+        """The client that talks to the provider of the connected mailbox."""
+        return self._transport_override or mail_providers.client(mailbox.get("provider"))
+
     def _mailbox(self):
         if self.mailbox is None:
             from app.services import mail_connection_service
@@ -553,7 +558,9 @@ class OutreachEmailService:
         claimed = claim["email"]
         progress = {"previous_resolved": False}
         try:
-            outcome = await self._deliver(email_id, claimed, mailbox["access_token"], lock_id, progress)
+            outcome = await self._deliver(
+                email_id, claimed, mailbox["access_token"], lock_id, progress, self._transport_for(mailbox),
+            )
         except GraphError as exc:
             if exc.code == "mailbox_reconnect_required":
                 await self._mailbox().flag_reconnect(user_id, "send_refused")
@@ -596,6 +603,7 @@ class OutreachEmailService:
 
     async def _deliver(
         self, email_id: str, claimed: Dict[str, Any], token: str, lock_id: str, progress: Dict[str, bool],
+        transport: Any,
     ) -> Dict[str, Any]:
         """Send the claimed email: reuse the draft of an earlier attempt when
         there is one (reading it first: if it is no longer a draft, it went
@@ -606,7 +614,7 @@ class OutreachEmailService:
         ids: Optional[Dict[str, str]] = None
         previous_id = str(claimed.get("graph_message_id") or "")
         if previous_id:
-            state = await self.transport.get_message_state(token, previous_id)
+            state = await transport.get_message_state(token, previous_id)
             if state is not None:
                 ids = {
                     "id": previous_id,
@@ -617,19 +625,19 @@ class OutreachEmailService:
                     return {"already_sent": True, "ids": ids}
                 progress["previous_resolved"] = True  # still a draft: it was not sent
         if ids is None:
-            ids = await self.transport.create_draft(
+            ids = await transport.create_draft(
                 token, claimed.get("subject"),
                 outreach_send_rules.body_as_sent(claimed.get("body"), claimed.get("language")),
                 (claimed.get("to_email") or "").strip(),
             )
             await self.emails.record_draft(email_id, lock_id, ids, self.clock())
         try:
-            await self.transport.send_draft(token, ids["id"])
+            await transport.send_draft(token, ids["id"])
         except GraphError as exc:
             if not exc.uncertain:
                 raise
             try:
-                state = await self.transport.get_message_state(token, ids["id"])
+                state = await transport.get_message_state(token, ids["id"])
             except GraphError:
                 state = None
             if state is not None and not state["is_draft"]:

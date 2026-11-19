@@ -3,9 +3,15 @@ verifier ever appears in a response."""
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
+from typing import Dict, Literal, Optional
 
 from pydantic import BaseModel
+
+
+class MailConnectionStartRequest(BaseModel):
+    """Which mailbox to connect. No body means Microsoft, as before Gmail existed."""
+
+    provider: Literal["microsoft", "google"] = "microsoft"
 
 
 class MailConnectionStart(BaseModel):
@@ -15,8 +21,11 @@ class MailConnectionStart(BaseModel):
 
 
 class MailConnectionStatus(BaseModel):
-    # Whether the server has an app registration to connect with at all.
+    # Whether the server has an app registration to connect with at all (any provider), and per provider.
     oauth_configured: bool
+    providers: Dict[str, bool] = {}
+    # "microsoft" | "google" of the connected mailbox (None when not connected).
+    provider: Optional[str] = None
     connected: bool
     # Set when the tokens no longer work (revoked, expired, unreadable):
     # sending stays blocked until the user connects again.

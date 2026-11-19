@@ -40,12 +40,17 @@ import PipelineSettingsTab, { MAILBOX_ERROR_CODES } from "@/pages/settings/Pipel
 const K = "settings.pipelineTab";
 const flush = () => act(async () => { for (let i = 0; i < 8; i += 1) await Promise.resolve(); });
 
-const NOT_CONNECTED = { oauth_configured: true, connected: false, needs_reconnect: false, address: null, display_name: null };
+const BOTH = { microsoft: true, google: true };
+const NOT_CONNECTED = {
+  oauth_configured: true, providers: BOTH, provider: null, connected: false, needs_reconnect: false, address: null, display_name: null,
+};
 const CONNECTED = {
-  oauth_configured: true, connected: true, needs_reconnect: false,
+  oauth_configured: true, providers: BOTH, provider: "microsoft", connected: true, needs_reconnect: false,
   address: "ventas@example.test", display_name: "Equipo Demo", connected_at: "2026-11-14T10:00:00Z",
 };
 const RECONNECT = { ...CONNECTED, needs_reconnect: true };
+const GMAIL_CONNECTED = { ...CONNECTED, provider: "google", address: "ventas@gmail.example.test" };
+const GMAIL_RECONNECT = { ...GMAIL_CONNECTED, needs_reconnect: true };
 
 const apiError = (status, code) => Object.assign(new Error(`HTTP ${status}`), {
   response: { status, data: { detail: code ? { code } : "x" } },
@@ -75,18 +80,20 @@ afterEach(() => {
 });
 
 describe("estado del buzón", () => {
-  it("sin conectar: solo «Conectar buzón», con el texto de consentimiento", async () => {
+  it("sin conectar: «Conectar Outlook» y «Conectar Gmail», con el texto de consentimiento", async () => {
     await renderTab();
     expect(mailConnectionApi.status).toHaveBeenCalledTimes(1);
     expect(badge()).toBe(`${K}.mailboxNotConnected`);
-    expect(button("mailboxConnectButton")).toBeTruthy();
+    expect(button("mailboxConnectOutlook")).toBeTruthy();
+    expect(button("mailboxConnectGmail")).toBeTruthy();
     expect(button("mailboxReconnectButton")).toBeNull();
     expect(button("mailboxTestButton")).toBeNull();
     expect(button("mailboxDisconnectButton")).toBeNull();
     expect(screen.queryByTestId("mailbox-account")).toBeNull();
     const consent = screen.getByTestId("mailbox-consent");
     expect(consent.textContent).toBe(`${K}.mailboxConsent`);
-    expect(button("mailboxConnectButton").getAttribute("aria-describedby")).toBe(consent.id);
+    expect(button("mailboxConnectOutlook").getAttribute("aria-describedby")).toBe(consent.id);
+    expect(button("mailboxConnectGmail").getAttribute("aria-describedby")).toBe(consent.id);
   });
 
   it("conectado: la cuenta, «Probar» y «Desconectar»", async () => {
@@ -96,9 +103,26 @@ describe("estado del buzón", () => {
     expect(screen.getByTestId("mailbox-address").textContent).toBe("ventas@example.test");
     expect(button("mailboxTestButton")).toBeTruthy();
     expect(button("mailboxDisconnectButton")).toBeTruthy();
-    expect(button("mailboxConnectButton")).toBeNull();
+    expect(button("mailboxConnectOutlook")).toBeNull();
+    expect(button("mailboxConnectGmail")).toBeNull();
     expect(button("mailboxReconnectButton")).toBeNull();
     expect(screen.queryByTestId("mailbox-reconnect-note")).toBeNull();
+    expect(screen.getByTestId("mailbox-provider").textContent).toBe(`${K}.mailboxProviderMicrosoft`);
+  });
+
+  it("conectado con Gmail: muestra Gmail y su dirección, «Probar» y «Desconectar»", async () => {
+    await renderTab(GMAIL_CONNECTED);
+    expect(badge()).toBe(`${K}.mailboxConnected`);
+    expect(screen.getByTestId("mailbox-provider").textContent).toBe(`${K}.mailboxProviderGoogle`);
+    expect(screen.getByTestId("mailbox-address").textContent).toBe("ventas@gmail.example.test");
+    expect(button("mailboxTestButton")).toBeTruthy();
+    expect(button("mailboxConnectGmail")).toBeNull();
+  });
+
+  it("un buzón guardado antes de Gmail (sin provider) se muestra como Outlook", async () => {
+    const { provider, providers, ...old } = CONNECTED;
+    await renderTab(old);
+    expect(screen.getByTestId("mailbox-provider").textContent).toBe(`${K}.mailboxProviderMicrosoft`);
   });
 
   it("necesita reconexión: aviso, «Reconectar» y «Desconectar», sin «Probar»", async () => {
@@ -108,20 +132,36 @@ describe("estado del buzón", () => {
     expect(button("mailboxReconnectButton")).toBeTruthy();
     expect(button("mailboxDisconnectButton")).toBeTruthy();
     expect(button("mailboxTestButton")).toBeNull();
-    expect(button("mailboxConnectButton")).toBeNull();
+    expect(button("mailboxConnectOutlook")).toBeNull();
+    expect(button("mailboxConnectGmail")).toBeNull();
   });
 
-  it("sin la app registrada en el servidor: aviso y «Conectar» desactivado", async () => {
-    await renderTab({ ...NOT_CONNECTED, oauth_configured: false });
+  it("sin ninguna app registrada en el servidor: aviso y ambos «Conectar» desactivados", async () => {
+    await renderTab({ ...NOT_CONNECTED, oauth_configured: false, providers: { microsoft: false, google: false } });
     expect(screen.getByTestId("mailbox-oauth-off").textContent).toBe(`${K}.mailboxOauthNotConfigured`);
-    expect(button("mailboxConnectButton").disabled).toBe(true);
+    expect(button("mailboxConnectOutlook").disabled).toBe(true);
+    expect(button("mailboxConnectGmail").disabled).toBe(true);
+  });
+
+  it("solo Gmail disponible en el servidor: «Conectar Outlook» desactivado y «Conectar Gmail» activo", async () => {
+    await renderTab({ ...NOT_CONNECTED, providers: { microsoft: false, google: true } });
+    expect(screen.queryByTestId("mailbox-oauth-off")).toBeNull();
+    expect(button("mailboxConnectOutlook").disabled).toBe(true);
+    expect(button("mailboxConnectGmail").disabled).toBe(false);
+  });
+
+  it("un servidor antiguo sin `providers` sigue funcionando: ambos activos", async () => {
+    const { providers, provider, ...old } = NOT_CONNECTED;
+    await renderTab(old);
+    expect(button("mailboxConnectOutlook").disabled).toBe(false);
+    expect(button("mailboxConnectGmail").disabled).toBe(false);
   });
 
   it("si no se puede leer el estado: aviso y ningún botón del buzón", async () => {
     await renderTab(apiError(500));
     expect(badge()).toBe(`${K}.mailboxStatusUnknown`);
     expect(screen.getByTestId("mailbox-load-error")).toBeTruthy();
-    for (const key of ["mailboxConnectButton", "mailboxReconnectButton", "mailboxTestButton", "mailboxDisconnectButton"]) {
+    for (const key of ["mailboxConnectOutlook", "mailboxConnectGmail", "mailboxReconnectButton", "mailboxTestButton", "mailboxDisconnectButton"]) {
       expect(button(key)).toBeNull();
     }
   });
@@ -137,13 +177,16 @@ describe("estado del buzón", () => {
 
 describe("«Conectar» y «Reconectar»", () => {
   it.each([
-    ["Conectar", NOT_CONNECTED, "mailboxConnectButton"],
-    ["Reconectar", RECONNECT, "mailboxReconnectButton"],
-  ])("%s pide la URL de Microsoft y navega a ella", async (_name, status, key) => {
+    ["Conectar Outlook", NOT_CONNECTED, "mailboxConnectOutlook", "microsoft"],
+    ["Conectar Gmail", NOT_CONNECTED, "mailboxConnectGmail", "google"],
+    ["Reconectar Outlook", RECONNECT, "mailboxReconnectButton", "microsoft"],
+    ["Reconectar Gmail", GMAIL_RECONNECT, "mailboxReconnectButton", "google"],
+  ])("%s pide la URL de su proveedor y navega a ella", async (_name, status, key, provider) => {
     await renderTab(status);
     mailConnectionApi.start.mockResolvedValue({ data: { authorize_url: "https://login.example.test/authorize?x=1" } });
     await click(button(key));
     expect(mailConnectionApi.start).toHaveBeenCalledTimes(1);
+    expect(mailConnectionApi.start).toHaveBeenCalledWith(provider);
     expect(openAuthorizeUrl).toHaveBeenCalledWith("https://login.example.test/authorize?x=1");
     expect(toast.error).not.toHaveBeenCalled();
     // Mientras la página se va, el botón queda ocupado: un segundo clic no hace nada.
@@ -158,17 +201,18 @@ describe("«Conectar» y «Reconectar»", () => {
   ])("error al iniciar (%s) → su texto, sin navegar", async (_name, error, key) => {
     await renderTab();
     mailConnectionApi.start.mockRejectedValue(error);
-    await click(button("mailboxConnectButton"));
+    await click(button("mailboxConnectGmail"));
     expect(openAuthorizeUrl).not.toHaveBeenCalled();
     expect(toast.error).toHaveBeenCalledWith(`${K}.mailboxErrors.${key}`);
-    expect(button("mailboxConnectButton").disabled).toBe(false);
+    expect(button("mailboxConnectGmail").disabled).toBe(false);
+    expect(button("mailboxConnectOutlook").disabled).toBe(false);
   });
 
   it("una respuesta sin URL válida no navega y avisa", async () => {
     openAuthorizeUrl.mockReturnValueOnce(false);
     await renderTab();
     mailConnectionApi.start.mockResolvedValue({ data: { authorize_url: "javascript:alert(1)" } });
-    await click(button("mailboxConnectButton"));
+    await click(button("mailboxConnectOutlook"));
     expect(toast.error).toHaveBeenCalledWith(`${K}.mailboxErrors.generic`);
   });
 });

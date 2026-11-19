@@ -15,7 +15,7 @@ from cryptography.fernet import Fernet
 
 from app.config import DEFAULT_GRAPH_BASE_URL, DEFAULT_MICROSOFT_LOGIN_BASE_URL
 from app.core.pipeline_constants import MAIL_OAUTH_STATE_TTL_SECONDS
-from app.services import encryption_service, mail_connection_service
+from app.services import encryption_service, graph_client, mail_connection_service
 from app.services.firestore_service import MailConnectionsRepo, MailOAuthStatesRepo
 from app.services.mail_connection_service import MailConnectionError, MailConnectionService, consent_error_code
 from tests.conftest import FAKE_USER_SUB
@@ -37,6 +37,9 @@ def db(monkeypatch):
     monkeypatch.setattr(s, "mail_oauth_client_id", "00000000-0000-0000-0000-000000000000")
     monkeypatch.setattr(s, "mail_oauth_client_secret", "fake-client-secret")
     monkeypatch.setattr(s, "mail_oauth_redirect_url", "http://localhost:8000/api/v1/mail-connection/callback")
+    # Gmail is not configured here unless a test sets it (the local .env may have the Google login client).
+    monkeypatch.setattr(s, "google_oauth_client_id", "")
+    monkeypatch.setattr(s, "google_oauth_client_secret", "")
     monkeypatch.setattr(s, "microsoft_login_base_url", DEFAULT_MICROSOFT_LOGIN_BASE_URL)
     monkeypatch.setattr(s, "graph_base_url", DEFAULT_GRAPH_BASE_URL)
     monkeypatch.setattr(s, "mail_allow_custom_endpoints", False)
@@ -250,7 +253,7 @@ async def test_a_mailbox_without_address_is_refused(client, db, ms):
 async def test_an_unexpected_failure_still_lands_on_the_frontend(client, db, ms, monkeypatch):
     async def boom(*args, **kwargs):
         raise RuntimeError("fake-access-token-boom")
-    monkeypatch.setattr(mail_connection_service.graph_client, "get_me", boom)
+    monkeypatch.setattr(graph_client, "get_me", boom)
     params = await start(client)
     resp = await callback(client, state=params["state"], code="fake-auth-code")
     assert resp.headers["location"] == f"{FRONTEND}/?mail_connection_error=server_error"
@@ -269,7 +272,8 @@ async def test_reconnecting_replaces_the_previous_connection(client, db, ms):
 async def test_status_before_and_after_connecting_never_shows_a_token(client, db, ms):
     before = (await client.get(f"{API}/status")).json()
     assert before == {
-        "oauth_configured": True, "connected": False, "needs_reconnect": False,
+        "oauth_configured": True, "providers": {"microsoft": True, "google": False}, "provider": None,
+        "connected": False, "needs_reconnect": False,
         "address": None, "display_name": None, "connected_at": None,
     }
     await connect(client)
@@ -278,7 +282,9 @@ async def test_status_before_and_after_connecting_never_shows_a_token(client, db
     assert body["connected"] is True and body["needs_reconnect"] is False
     assert body["address"] == "ventas@example.test" and body["display_name"] == "Equipo Ventas"
     assert body["connected_at"]
-    assert set(body) == {"oauth_configured", "connected", "needs_reconnect", "address", "display_name", "connected_at"}
+    assert body["provider"] == "microsoft"
+    assert set(body) == {"oauth_configured", "providers", "provider", "connected", "needs_reconnect", "address",
+                         "display_name", "connected_at"}
     assert_no_secrets(resp.text)
     assert "encrypted" not in resp.text
 

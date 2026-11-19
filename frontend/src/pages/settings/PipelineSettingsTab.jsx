@@ -10,11 +10,12 @@
  * right away, the daily limit with «Save limit», Hunter with «Save key» and
  * each source with its own form button.
  *
- * Sending mailbox card (RF-VTA-16, real send): the user's own Microsoft 365 /
- * Outlook mailbox, connected by OAuth (GET /mail-connection/status). «Connect»
- * / «Reconnect» go to Microsoft's consent page (POST /mail-connection/start);
- * Microsoft answers to the backend, which sends the browser back with the
- * result (features/mailConnection/redirectResult.js), shown here once.
+ * Sending mailbox card (RF-VTA-16, real send): the user's own mailbox, Outlook /
+ * Microsoft 365 or Gmail, connected by OAuth (GET /mail-connection/status).
+ * «Connect Outlook» / «Connect Gmail» / «Reconnect» go to the provider's consent
+ * page (POST /mail-connection/start with the provider); the provider answers to
+ * the backend, which sends the browser back with the result
+ * (features/mailConnection/redirectResult.js), shown here once.
  * «Test» reads the mailbox without sending; «Disconnect» forgets it. No token
  * ever reaches the frontend. «Real email sending» is a switch saved right
  * away (off by default; the server's own switch is shown read-only).
@@ -217,7 +218,7 @@ const DAILY_LIMIT_MAX = 100;
 // rateLimited and generic are client-side.
 export const MAILBOX_ERROR_CODES = [
   // start
-  "mail_oauth_not_configured", "mail_endpoints_not_allowed", "encryption_not_configured",
+  "mail_oauth_not_configured", "mail_endpoints_not_allowed", "encryption_not_configured", "unknown_provider",
   // test
   "mailbox_not_connected", "mailbox_reconnect_required", "missing_permissions", "mailbox_auth_failed",
   "mail_service_unavailable", "mail_throttled", "mail_service_timeout", "mailbox_without_address",
@@ -337,13 +338,13 @@ export default function PipelineSettingsTab({ isDark = false }) {
     if (result) setMailboxResult(result);
   }, []);
 
-  // «Connect» / «Reconnect»: Microsoft's consent page, in this tab.
-  const connectMailbox = async () => {
+  // «Connect Outlook» / «Connect Gmail» / «Reconnect»: the provider's consent page, in this tab.
+  const connectMailbox = async (provider) => {
     if (mailboxBusy) return;
     setMailboxBusy("connect");
     setMailboxResult(null);
     try {
-      const { data } = await mailConnectionApi.start();
+      const { data } = await mailConnectionApi.start(provider);
       if (!openAuthorizeUrl(data?.authorize_url)) throw new Error("no authorize_url");
       // The page is leaving: the button stays busy.
     } catch (error) {
@@ -352,7 +353,7 @@ export default function PipelineSettingsTab({ isDark = false }) {
     }
   };
 
-  // «Test»: reads the mailbox on Microsoft's side; nothing is sent.
+  // «Test»: reads the mailbox on the provider's side; nothing is sent.
   const testMailbox = async () => {
     if (mailboxBusy) return;
     setMailboxBusy("test");
@@ -584,6 +585,10 @@ export default function PipelineSettingsTab({ isDark = false }) {
   };
   const [mailboxBadgeKey, mailboxBadgeClass] = MAILBOX_BADGE[mailboxState];
   const oauthConfigured = mailbox?.oauth_configured !== false;
+  // Which providers this server can connect (an old server without `providers`: both, as `oauth_configured` says).
+  const providerOn = (provider) => oauthConfigured && mailbox?.providers?.[provider] !== false;
+  // Reconnecting goes to the provider of the saved mailbox (Outlook for one saved before Gmail existed).
+  const connectedProvider = mailbox?.provider === "google" ? "google" : "microsoft";
   const busyIcon = (action, Icon) => (mailboxBusy === action ? <Loader2 size={12} className="animate-spin" /> : <Icon size={12} />);
 
   return (
@@ -735,6 +740,9 @@ export default function PipelineSettingsTab({ isDark = false }) {
                 {(mailboxState === "connected" || mailboxState === "reconnect") && (
                   <div className="text-xs" data-testid="mailbox-account">
                     <p className="text-gray-500">{t("settings.pipelineTab.mailboxAccountLabel")}</p>
+                    <p className="font-medium text-gray-800" data-testid="mailbox-provider">
+                      {t(connectedProvider === "google" ? "settings.pipelineTab.mailboxProviderGoogle" : "settings.pipelineTab.mailboxProviderMicrosoft")}
+                    </p>
                     {mailbox.display_name && <p className="font-medium text-gray-800" data-testid="mailbox-display-name">{mailbox.display_name}</p>}
                     <p className="text-gray-700 [overflow-wrap:anywhere]" data-testid="mailbox-address">{mailbox.address || "—"}</p>
                   </div>
@@ -743,25 +751,40 @@ export default function PipelineSettingsTab({ isDark = false }) {
               </div>
               <div className="flex flex-wrap gap-1.5 sm:shrink-0 sm:justify-end">
                 {mailboxState === "not_connected" && (
-                  <Btn
-                    small
-                    className="disabled:opacity-50 disabled:cursor-not-allowed"
-                    icon={busyIcon("connect", Mail)}
-                    onClick={connectMailbox}
-                    disabled={Boolean(mailboxBusy) || !oauthConfigured}
-                    aria-busy={mailboxBusy === "connect" || undefined}
-                    aria-describedby={mailboxConsentId}
-                  >
-                    {t("settings.pipelineTab.mailboxConnectButton")}
-                  </Btn>
+                  <>
+                    <Btn
+                      small
+                      className="disabled:opacity-50 disabled:cursor-not-allowed"
+                      icon={busyIcon("connect", Mail)}
+                      onClick={() => connectMailbox("microsoft")}
+                      disabled={Boolean(mailboxBusy) || !providerOn("microsoft")}
+                      aria-busy={mailboxBusy === "connect" || undefined}
+                      aria-describedby={mailboxConsentId}
+                      title={providerOn("microsoft") ? undefined : t("settings.pipelineTab.mailboxProviderOff")}
+                    >
+                      {t("settings.pipelineTab.mailboxConnectOutlook")}
+                    </Btn>
+                    <Btn
+                      small
+                      className="disabled:opacity-50 disabled:cursor-not-allowed"
+                      icon={busyIcon("connect", Mail)}
+                      onClick={() => connectMailbox("google")}
+                      disabled={Boolean(mailboxBusy) || !providerOn("google")}
+                      aria-busy={mailboxBusy === "connect" || undefined}
+                      aria-describedby={mailboxConsentId}
+                      title={providerOn("google") ? undefined : t("settings.pipelineTab.mailboxProviderOff")}
+                    >
+                      {t("settings.pipelineTab.mailboxConnectGmail")}
+                    </Btn>
+                  </>
                 )}
                 {mailboxState === "reconnect" && (
                   <Btn
                     small
                     className="disabled:opacity-50 disabled:cursor-not-allowed"
                     icon={busyIcon("connect", RefreshCw)}
-                    onClick={connectMailbox}
-                    disabled={Boolean(mailboxBusy) || !oauthConfigured}
+                    onClick={() => connectMailbox(connectedProvider)}
+                    disabled={Boolean(mailboxBusy) || !providerOn(connectedProvider)}
                     aria-busy={mailboxBusy === "connect" || undefined}
                     aria-describedby={mailboxConsentId}
                   >

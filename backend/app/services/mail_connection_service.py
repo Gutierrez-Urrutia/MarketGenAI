@@ -1,5 +1,7 @@
 """Mailbox connection (RF-VTA-16): each user connects their own Microsoft 365
-/ Outlook mailbox so that prospecting emails go out from it.
+/ Outlook mailbox, or their Gmail, so that prospecting emails go out from it.
+The provider is chosen on `start` and kept on the connection; everything
+below works the same for both (mail_providers gives the right client).
 
 Flow (authorization code + PKCE, delegated):
   1. start(user) — authenticated. Draws an OAuth `state` and a PKCE verifier,
@@ -35,11 +37,10 @@ from cryptography.fernet import InvalidToken
 
 from app.config import settings
 from app.core.pipeline_constants import (
-    MAIL_OAUTH_REQUIRED_SCOPES,
     MAIL_OAUTH_STATE_TTL_SECONDS,
     MAIL_TOKEN_REFRESH_MARGIN_SECONDS,
 )
-from app.services import encryption_service, graph_client
+from app.services import encryption_service, mail_providers
 from app.services.encryption_service import EncryptionNotConfiguredError
 from app.services.graph_client import GraphError
 
@@ -98,17 +99,26 @@ class MailConnectionService:
         self.clock = clock or (lambda: datetime.now(timezone.utc))
 
     # ── 1. start ─────────────────────────────────────────────────────────────
-    async def start(self, user_id: str) -> Dict[str, str]:
-        """503 mail_oauth_not_configured (no app registration),
-        mail_endpoints_not_allowed, encryption_not_configured."""
-        if not graph_client.oauth_configured():
+    async def start(
+        self, user_id: str, provider: Optional[str] = None, login_hint: Optional[str] = None,
+    ) -> Dict[str, str]:
+        """422 unknown_provider, 503 mail_oauth_not_configured (no app
+        registration for that provider), mail_endpoints_not_allowed,
+        encryption_not_configured. `login_hint` (Gmail only) pre-selects the
+        Google account the user signed in with."""
+        try:
+            name = mail_providers.normalize(provider)
+        except ValueError:
+            raise MailConnectionError(422, "unknown_provider") from None
+        mail = mail_providers.client(name)
+        if not mail.oauth_configured():
             raise MailConnectionError(503, "mail_oauth_not_configured")
         try:
-            graph_client.endpoints()
+            mail.check_endpoints()
         except GraphError as exc:
             raise MailConnectionError(exc.status_code, exc.code) from None
         state = secrets.token_urlsafe(32)
-        verifier = graph_client.new_code_verifier()
+        verifier = mail.new_code_verifier()
         try:
             verifier_encrypted = encryption_service.encrypt(verifier)
         except EncryptionNotConfiguredError:
@@ -116,11 +126,15 @@ class MailConnectionService:
         now = self.clock()
         await self.states.create({
             "user_id": user_id,
+            "provider": name,
             "code_verifier_encrypted": verifier_encrypted,
             "expires_at": now + timedelta(seconds=MAIL_OAUTH_STATE_TTL_SECONDS),
             "used": False,
         }, doc_id=self.states.doc_id_for(state))
-        return {"authorize_url": graph_client.authorize_url(state, graph_client.code_challenge(verifier))}
+        challenge = mail.code_challenge(verifier)
+        if name == mail_providers.GOOGLE:
+            return {"authorize_url": mail.authorize_url(state, challenge, login_hint=login_hint)}
+        return {"authorize_url": mail.authorize_url(state, challenge)}
 
     # ── 2. callback ──────────────────────────────────────────────────────────
     async def complete(
@@ -148,6 +162,8 @@ class MailConnectionService:
         if not pending or not pending.get("user_id"):
             raise _CallbackRefused("invalid_state")
         user_id = pending["user_id"]
+        name = mail_providers.normalize(pending.get("provider"))
+        mail = mail_providers.client(name)
         if error:
             raise _CallbackRefused(consent_error_code(error, error_description))
         if not code:
@@ -160,17 +176,17 @@ class MailConnectionService:
             raise _CallbackRefused("invalid_state") from None
 
         try:
-            tokens = await graph_client.exchange_code(code, verifier)
+            tokens = await mail.exchange_code(code, verifier)
         except GraphError as exc:
             # A refused code (expired, reused, wrong verifier) is just a failed authorization.
             raise _CallbackRefused(
                 "authorization_failed" if exc.code in ("mailbox_reconnect_required", "mailbox_auth_failed") else exc.code,
             ) from None
         granted = {scope.lower() for scope in tokens.scopes}
-        if not tokens.refresh_token or any(scope.lower() not in granted for scope in MAIL_OAUTH_REQUIRED_SCOPES):
+        if not tokens.refresh_token or any(scope.lower() not in granted for scope in mail.REQUIRED_SCOPES):
             raise _CallbackRefused("missing_permissions")
         try:
-            me = await graph_client.get_me(tokens.access_token)
+            me = await mail.get_me(tokens.access_token)
         except GraphError as exc:
             raise _CallbackRefused("authorization_failed" if exc.code == "mailbox_reconnect_required" else exc.code) from None
 
@@ -183,7 +199,7 @@ class MailConnectionService:
         except EncryptionNotConfiguredError:
             raise _CallbackRefused("encryption_not_configured") from None
         await self.connections.save(user_id, {
-            "provider": "microsoft",
+            "provider": name,
             "address": me["address"],
             "display_name": me["display_name"],
             "account_id": me["id"],
@@ -196,8 +212,11 @@ class MailConnectionService:
     # ── status / test / disconnect ───────────────────────────────────────────
     async def status(self, user_id: str) -> Dict[str, Any]:
         conn = await self.connections.for_user(user_id)
+        providers = mail_providers.configured()
         return {
-            "oauth_configured": graph_client.oauth_configured(),
+            "oauth_configured": any(providers.values()),
+            "providers": providers,
+            "provider": mail_providers.normalize(conn.get("provider")) if conn else None,
             "connected": bool(conn),
             "needs_reconnect": bool(conn and conn.get("needs_reconnect")),
             "address": (conn or {}).get("address"),
@@ -209,8 +228,9 @@ class MailConnectionService:
         """Renew the token if needed and read the mailbox (GET /me). Nothing
         is sent."""
         token = await self.access_token(user_id)
+        conn = await self.connections.for_user(user_id)
         try:
-            me = await graph_client.get_me(token)
+            me = await mail_providers.client((conn or {}).get("provider")).get_me(token)
         except GraphError as exc:
             if exc.code == "mailbox_reconnect_required":
                 await self.connections.mark_needs_reconnect(user_id, exc.code)
@@ -226,8 +246,8 @@ class MailConnectionService:
 
     # ── 3. access token ──────────────────────────────────────────────────────
     async def for_send(self, user_id: str) -> Dict[str, str]:
-        """What a send needs: {"access_token", "address", "display_name"} of
-        the connected mailbox. Same refusals as access_token."""
+        """What a send needs: {"access_token", "address", "display_name",
+        "provider"} of the connected mailbox. Same refusals as access_token."""
         token = await self.access_token(user_id)
         conn = await self.connections.for_user(user_id)
         if not conn:
@@ -236,6 +256,7 @@ class MailConnectionService:
             "access_token": token,
             "address": str(conn.get("address") or ""),
             "display_name": str(conn.get("display_name") or ""),
+            "provider": mail_providers.normalize(conn.get("provider")),
         }
 
     async def flag_reconnect(self, user_id: str, reason: str) -> None:
@@ -274,7 +295,7 @@ class MailConnectionService:
         except InvalidToken:
             await self._reconnect_required(user_id, "tokens_unreadable")
         try:
-            tokens = await graph_client.refresh(refresh_token)
+            tokens = await mail_providers.client(conn.get("provider")).refresh(refresh_token)
         except GraphError as exc:
             if exc.code == "mailbox_reconnect_required":
                 await self._reconnect_required(user_id, "refresh_refused")

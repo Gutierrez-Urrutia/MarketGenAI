@@ -253,6 +253,12 @@ MAIL_OAUTH_REQUIRED_SCOPES = ("Mail.ReadWrite", "Mail.Send")
 MAIL_OAUTH_STATE_TTL_SECONDS = 600
 # The access token is renewed when less than this is left of it.
 MAIL_TOKEN_REFRESH_MARGIN_SECONDS = 300
+# Gmail (Google): the same mailbox connection for users who sign in with Google. gmail.compose is the narrowest
+# scope that allows creating a draft and sending it (gmail.send alone cannot create drafts). It cannot read the
+# mailbox. openid/email/profile only identify the account. The user can untick the Gmail permission on Google's
+# consent screen: the token then lacks gmail.compose and the connection is refused (missing_permissions).
+MAIL_GOOGLE_SCOPES = ("openid", "email", "profile", "https://www.googleapis.com/auth/gmail.compose")
+MAIL_GOOGLE_REQUIRED_SCOPES = ("gmail.compose",)
 # slowapi limit of POST /mail-connection/start and /test, per client address.
 MAIL_CONNECTION_RATE_LIMIT = "10/minute"
 

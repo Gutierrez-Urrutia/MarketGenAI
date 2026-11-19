@@ -641,14 +641,15 @@ export const outreachEmailsApi = {
   removeDoNotContact: (id) => api.delete(`/outreach-emails/do-not-contact/${id}`, { ...OUTREACH_EMAIL_OPTIONS, timeout: READ_TIMEOUT_MS }),
 }
 
-// RF-VTA-16 — the user's Microsoft 365 / Outlook mailbox, connected by OAuth.
-// start returns Microsoft's authorization URL (it carries the OAuth state) and
-// status / test the mailbox address: bodies never logged. The callback is not
-// called from here: Microsoft posts it to the backend, which redirects the
-// browser back with ?mail_connection=connected or ?mail_connection_error=<code>.
+// RF-VTA-16 — the user's mailbox (Outlook / Microsoft 365 or Gmail), connected by OAuth.
+// start({provider}) returns the provider's authorization URL (it carries the OAuth state)
+// and status / test the mailbox address: bodies never logged. The callback is not
+// called from here: Microsoft posts it (and Google redirects it) to the backend, which
+// redirects the browser back with ?mail_connection=connected or ?mail_connection_error=<code>.
 const MAILBOX_OPTIONS = { ...NO_BODY_LOG, ...EXPLICIT_TIMEOUT, suppressPermissionToast: true, suppressServerErrorToast: true }
 export const mailConnectionApi = {
-  start: () => api.post('/mail-connection/start', undefined, { ...MAILBOX_OPTIONS, timeout: MAILBOX_TIMEOUT_MS }),
+  // provider: 'microsoft' | 'google'. Without it the server connects Outlook, as before Gmail existed.
+  start: (provider) => api.post('/mail-connection/start', provider ? { provider } : undefined, { ...MAILBOX_OPTIONS, timeout: MAILBOX_TIMEOUT_MS }),
   status: () => api.get('/mail-connection/status', { ...MAILBOX_OPTIONS, timeout: READ_TIMEOUT_MS }),
   // Reads the mailbox (GET /me on Microsoft's side); nothing is sent.
   test: () => api.post('/mail-connection/test', undefined, { ...MAILBOX_OPTIONS, timeout: MAILBOX_TIMEOUT_MS }),

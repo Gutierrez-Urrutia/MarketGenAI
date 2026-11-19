@@ -32,6 +32,8 @@ vars_.update({
     "GCS_BUCKET": "marketgen-dev-assets",
     # Fijar el redirect de Google evita que el backend lo arme con las cabeceras de la petición.
     "GOOGLE_REDIRECT_URI": "https://marketgen-api-156520322318.us-central1.run.app/api/v1/auth/google/callback",
+    # Enviar correos desde el Gmail del usuario (RF-VTA-16): misma app de Google, otra URI de redirección.
+    "MAIL_GOOGLE_REDIRECT_URL": "https://marketgen-api-156520322318.us-central1.run.app/api/v1/mail-connection/google/callback",
 })
 path = os.path.join(os.path.dirname(__file__), "env_api.yaml")
 with open(path, "w", encoding="utf-8") as f:

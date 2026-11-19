@@ -38,6 +38,10 @@ describe("envío real de correos (API)", () => {
   it("las llamadas del buzón: rutas exactas, sin cuerpo y sin avisos genéricos de error", async () => {
     await mailConnectionApi.start();
     expect(captured.data).toBeUndefined();
+    // Con proveedor: el cuerpo lleva solo el nombre (outlook = microsoft, gmail = google), nunca un dato del usuario.
+    await mailConnectionApi.start("google");
+    expect(JSON.parse(captured.data)).toEqual({ provider: "google" });
+    expect(captured.url).toBe("/mail-connection/start");
     expect(captured.suppressServerErrorToast).toBe(true);
     expect(captured.suppressPermissionToast).toBe(true);
     await mailConnectionApi.delete();

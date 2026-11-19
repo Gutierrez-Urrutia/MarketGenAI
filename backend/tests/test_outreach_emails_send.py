@@ -21,7 +21,7 @@ from cryptography.fernet import Fernet
 
 from app.config import DEFAULT_GRAPH_BASE_URL, DEFAULT_MICROSOFT_LOGIN_BASE_URL
 from app.core.pipeline_constants import OUTREACH_UNSUBSCRIBE_LINE
-from app.services import encryption_service, outreach_email_service
+from app.services import graph_client, encryption_service, outreach_email_service
 from app.services.firestore_service import (
     OutreachEmailsRepo,
     OutreachSendCountersRepo,
@@ -122,6 +122,9 @@ def world(encryption_key, monkeypatch):
     monkeypatch.setattr(settings, "app_env", "development")
     monkeypatch.setattr(settings, "mail_oauth_client_id", "00000000-0000-0000-0000-000000000000")
     monkeypatch.setattr(settings, "mail_oauth_client_secret", "fake-client-secret")
+    # Gmail is not configured in these tests (the local .env may carry the Google login client).
+    monkeypatch.setattr(settings, "google_oauth_client_id", "")
+    monkeypatch.setattr(settings, "google_oauth_client_secret", "")
     monkeypatch.setattr(settings, "microsoft_login_base_url", DEFAULT_MICROSOFT_LOGIN_BASE_URL)
     monkeypatch.setattr(settings, "graph_base_url", DEFAULT_GRAPH_BASE_URL)
     monkeypatch.setattr(settings, "mail_allow_custom_endpoints", False)
@@ -639,7 +642,7 @@ async def test_force_retry_without_an_uncertain_lock_is_ignored(client, world):
 async def test_an_unexpected_delivery_failure_is_treated_as_uncertain(client, world, monkeypatch):
     async def boom(*args, **kwargs):
         raise RuntimeError("fake-access-token-in-a-message")
-    monkeypatch.setattr(outreach_email_service.graph_client, "send_draft", boom)
+    monkeypatch.setattr(graph_client, "send_draft", boom)
     resp = await send(client)
     assert resp.status_code == 504 and code_of(resp) == "send_timeout"
     assert world.email()["send_lock"]["uncertain"] is True

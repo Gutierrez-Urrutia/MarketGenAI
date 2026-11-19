@@ -34,7 +34,11 @@ from urllib.parse import quote, urlencode
 import httpx
 
 from app.config import DEFAULT_GRAPH_BASE_URL, DEFAULT_MICROSOFT_LOGIN_BASE_URL, settings
-from app.core.pipeline_constants import MAIL_OAUTH_SCOPES
+from app.core.pipeline_constants import MAIL_OAUTH_REQUIRED_SCOPES, MAIL_OAUTH_SCOPES
+
+PROVIDER = "microsoft"
+# What a connection is useless without (checked on the token's granted scopes).
+REQUIRED_SCOPES = MAIL_OAUTH_REQUIRED_SCOPES
 
 # "common": work or school accounts of any tenant, and personal accounts.
 AUTHORITY = "common"
@@ -97,6 +101,11 @@ def endpoints() -> Tuple[str, str]:
     if custom and (settings.app_env.lower() == "production" or not settings.mail_allow_custom_endpoints):
         raise GraphError(503, "mail_endpoints_not_allowed")
     return login, graph
+
+
+def check_endpoints() -> None:
+    """Refuse custom endpoints outside development (503 mail_endpoints_not_allowed)."""
+    endpoints()
 
 
 def authorize_url(state: str, challenge: str) -> str:

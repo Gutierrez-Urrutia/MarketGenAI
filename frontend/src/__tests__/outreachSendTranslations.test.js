@@ -37,7 +37,9 @@ const SEND_KEYS = [
 const SETTINGS_KEYS = [
   "mailboxTitle", "mailboxDesc", "mailboxStatusLoading", "mailboxStatusUnknown", "mailboxNotConnected",
   "mailboxNeedsReconnect", "mailboxConnected", "mailboxLoadError", "mailboxOauthNotConfigured", "mailboxAccountLabel",
-  "mailboxReconnectNote", "mailboxConsent", "mailboxConnectButton", "mailboxReconnectButton", "mailboxTestButton",
+  "mailboxReconnectNote", "mailboxConsent", "mailboxConnectButton", "mailboxConnectOutlook", "mailboxConnectGmail",
+  "mailboxProviderMicrosoft", "mailboxProviderGoogle", "mailboxProviderLabel", "mailboxProviderOff",
+  "mailboxReconnectButton", "mailboxTestButton",
   "mailboxTesting", "mailboxTestOk", "mailboxDisconnectButton", "mailboxDisconnectTitle", "mailboxDisconnectMessage",
   "mailboxDisconnected", "mailboxDisconnectError", "mailboxConnectedNotice", "mailboxConnectFailed",
   "realSendLabel", "realSendHint", "realSendServerOff", "realSendSaved", "realSendSaveError",

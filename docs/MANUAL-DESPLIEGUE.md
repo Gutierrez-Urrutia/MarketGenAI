@@ -62,6 +62,7 @@ Se leen de `backend/.env` en local (plantilla: `backend/.env.example`) y de Clou
 | `DEEPSEEK_BASE_URL`, `DEEPSEEK_MODEL` | Endpoint y modelo | `https://api.deepseek.com`, `deepseek-flash` |
 | `LLM_DEFAULT_TIMEOUT_SECONDS` | Tiempo máximo de cada llamada a la IA (vacío = sin límite) | vacío |
 | `GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET` | Login con Google | secreto `google-oauth-client-secret` |
+| `MAIL_GOOGLE_REDIRECT_URL` | Redirección para conectar el Gmail del usuario (enviar correos). Misma app de Google que el login; registrar esta URI exacta en el cliente OAuth (ver §5.6) | local `http://127.0.0.1:8000/api/v1/mail-connection/google/callback`; dev: URL de Cloud Run + `/api/v1/mail-connection/google/callback` |
 | `GOOGLE_REDIRECT_URI` | Debe coincidir **exacta** con la URI registrada en el cliente OAuth | local `http://127.0.0.1:8000/api/v1/auth/google/callback`; dev: URL de Cloud Run + `/api/v1/auth/google/callback` |
 | `STORAGE_BACKEND`, `GCS_BUCKET` | `gcs` y el bucket para guardar los archivos generados | `gcs`, `marketgen-dev-assets` |
 | `REDIS_URL`, `CELERY_BROKER_URL`, `CELERY_RESULT_BACKEND` | Cola de tareas largas | `redis://localhost:6379/0` y `/1` en local; secretos en la nube |
@@ -69,7 +70,8 @@ Se leen de `backend/.env` en local (plantilla: `backend/.env.example`) y de Clou
 | `ACCESS_TOKEN_EXPIRE_MINUTES`, `REFRESH_TOKEN_EXPIRE_DAYS` | Duración de las sesiones | 30 y 14 |
 | `LOCAL_DEV_AUTH_ENABLED`, `LOCAL_DEV_AUTH_EMAIL`, `LOCAL_DEV_AUTH_PASSWORD` | Cuenta de desarrollo. En la nube la contraseña es el secreto `local-dev-auth-password`; desactivar en producción real | — |
 | `RATE_LIMIT_ENABLED`, `AUDIT_LOG_ENABLED` | Límite de frecuencia y registro de auditoría | `true` |
-| `MICROSOFT_OAUTH_*`, `MAIL_OAUTH_*`, `OUTREACH_REAL_SEND_ENABLED` | Login con Microsoft y envío real de correos de prospección (apagado por defecto) | ver `.env.example` |
+| `MICROSOFT_OAUTH_*`, `MAIL_OAUTH_*` | Login con Microsoft y envío desde Outlook / Microsoft 365 (registro de app propio en Entra ID) | ver `.env.example` |
+| `OUTREACH_REAL_SEND_ENABLED` | Interruptor general del envío real de correos de prospección, con Outlook o Gmail (apagado por defecto; además cada usuario lo enciende en Configuración) | `false` |
 | `META_*`, `LINKEDIN_ACCESS_TOKEN`, `TWITTER_*` | Publicación en redes sociales (integraciones parciales) | opcional |
 
 Obsoletas (se pueden dejar vacías): `SUPABASE_*` (el proyecto configurado ya no existe), `GEMINI_*`/`GOOGLE_API_KEY` (proveedor de respaldo no usado), `VITE_KEYCLOAK_*`.
@@ -153,6 +155,27 @@ Una imagen nueva con la **misma etiqueta `:dev`** no crea una revisión de Cloud
 3. Abrir la web, iniciar sesión y generar una propuesta.
 4. Si se usan libros o exportaciones: encender el worker y confirmar que el trabajo termina.
 
+### 5.6 Enviar correos desde Gmail (quien entra con Google)
+
+Cada usuario conecta su propio buzón en Configuración › Pipeline › Buzón de envío: **Conectar Outlook** o **Conectar Gmail**.
+Gmail usa la misma app de Google del login (`GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET`), pide el permiso
+`gmail.compose` (crear borradores y enviarlos; **no puede leer la bandeja**) y Outlook sigue funcionando igual. Para que
+funcione en un ambiente hay que hacer, una vez:
+
+1. **Activar la API de Gmail** en el proyecto de Google Cloud: `gcloud services enable gmail.googleapis.com --project=marketgen-dev`.
+2. **Registrar la URI de redirección** en el cliente OAuth (Google Cloud › APIs y servicios › Credenciales › cliente web):
+   `https://<api>/api/v1/mail-connection/google/callback` y, para local, `http://127.0.0.1:8000/api/v1/mail-connection/google/callback`.
+3. **Fijar `MAIL_GOOGLE_REDIRECT_URL`** en el servicio: `gcloud run services update marketgen-api --update-env-vars=MAIL_GOOGLE_REDIRECT_URL=https://<api>/api/v1/mail-connection/google/callback`
+   (`deploy_api.py` ya la incluye). Además deben estar `PIPELINE_ENCRYPTION_KEY` (cifra los tokens) y, para enviar de verdad, `OUTREACH_REAL_SEND_ENABLED=true`.
+4. **Agregar el permiso a la pantalla de consentimiento** (Google Auth Platform › Acceso a los datos): `https://www.googleapis.com/auth/gmail.compose`.
+   Mientras la app esté en modo «Prueba», solo conectan las cuentas de la lista de usuarios de prueba, y Google **vence el acceso a los 7 días**:
+   la pantalla muestra «Hay que reconectar» y el usuario vuelve a conectar. Para uso general, Google exige verificar la app (`gmail.compose` es un permiso restringido).
+
+Detalles que conviene saber: el usuario puede desmarcar el permiso de Gmail en la pantalla de Google (entonces no se conecta y se le dice por qué);
+Google devuelve el código por la URL (`?code=`), pero es de un solo uso y sin el verificador PKCE, que solo conoce el servidor, no sirve;
+Gmail no permite saber si un borrador desaparecido se envió o lo borró el usuario, así que si se pierde la respuesta del envío el correo queda
+«incierto» y el usuario decide (marcar como enviado o reintentar); lo que se envía y recibe de Gmail se prueba con `tests/test_gmail_connection.py`.
+
 ## 6. Comportamiento ante fallas (RNF-05, criterio 1)
 
 | Falla | Qué ve el usuario | La aplicación |
@@ -175,6 +198,8 @@ Pruebas automáticas: `backend/tests/test_rnf05_disponibilidad.py` (IA) y `backe
 | El despliegue termina pero la API sigue con el código viejo | Misma etiqueta `:dev`: ver §5.3 (`DEPLOYED_FROM`) |
 | El login con Google responde `redirect_uri_mismatch` | `GOOGLE_REDIRECT_URI` no coincide con la URI registrada en el cliente OAuth (§3) |
 | Google rechaza a un usuario | La app está en modo de prueba: agregarlo en Google Auth Platform → Público → Usuarios de prueba |
+| Gmail: «Hay que reconectar» a la semana | La app de Google está en modo «Prueba» y el acceso vence a los 7 días: el usuario reconecta |
+| Gmail: `mail_service_unavailable` al enviar | La API de Gmail no está activada en el proyecto (§5.6, paso 1) |
 | Un libro o exportación larga no avanza | Probablemente el worker está apagado: encenderlo (§5.4) |
 | En local, un archivo generado no se descarga en la web | Con `STORAGE_BACKEND=supabase` y un Supabase inexistente cae al disco; usar `gcs` o aceptar que es solo local |
 
