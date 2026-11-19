@@ -27,6 +27,8 @@ import { proposalDocumentToHtml } from "@/features/proposals/proposalHtml";
 import { useEffect, useRef, useState } from "react";
 import { useI18n } from "@/hooks/useI18n";
 import { ProposalTemplateFields, pickerStateFromProposal, useProposalTemplatePicker } from "@/features/proposals/ProposalTemplatePicker";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
+import { losesCommercialTerms } from "@/utils/proposalSections";
 import { useLanguage } from "@/context/LanguageContext";
 import { useTheme } from "@/context/ThemeContext";
 
@@ -54,6 +56,7 @@ export function ContentLibraryPage({ navigationState = {}, onNavigate = () => {}
   const templatePicker = useProposalTemplatePicker({ active: showCreateModal && createType === "Proposal" });
   const [contentLanguage, setContentLanguage] = useState(getStoredPreference(PREF_KEYS.language, "en"));
   const [editingProposal, setEditingProposal] = useState(null);
+  const [noTermsPrompt, setNoTermsPrompt] = useState(false);   // RNF-03: aviso al guardar sin condiciones comerciales
   const [viewingProposal, setViewingProposal] = useState(null);
   const [versionHistoryOpen, setVersionHistoryOpen] = useState(false);
   useEffect(() => {
@@ -814,6 +817,46 @@ export function ContentLibraryPage({ navigationState = {}, onNavigate = () => {}
       draftContent: proposalDocumentToHtml(proposal),
       editSession: editorSessionRef.current,
     });
+  };
+  // `confirmed`: el usuario ya aceptó guardar sin condiciones comerciales (RNF-03).
+  const saveEditedProposal = async ({ confirmed = false } = {}) => {
+    try {
+      // Drop the proposal's previous structuredContent before re-deriving
+      // it: normalizeProposalDocument() prefers structuredContent.* over
+      // re-parsing `content`, so keeping the stale structure here would
+      // make it ignore everything just typed in the HTML editor.
+      const { structuredContent: _staleStructured, structured_content: _staleStructuredSnake, ...editedProposalBase } = editingProposal;
+      const draftContent = editingProposal.draftContent || editingProposal.content || "";
+      // The big <h1> inside the editable canvas is what users actually
+      // see and edit; the small title Input above it is easy to miss.
+      // If they typed a new title into the document body, that wins —
+      // otherwise fall back to the separate title field.
+      const finalTitle = extractH1Text(draftContent) || editingProposal.draftTitle;
+      const editedProposal = { ...editedProposalBase, title: finalTitle, content: draftContent };
+      const structuredContent = normalizeProposalDocument(editedProposal);
+      const professionalContent = proposalDocumentToHtml({ ...editedProposal, structuredContent });
+      // RNF-03: advertir antes de guardar si la propuesta se queda sin condiciones comerciales.
+      if (!confirmed && losesCommercialTerms(editingProposal.content, professionalContent)) {
+        setNoTermsPrompt(true);
+        return;
+      }
+      const updatedTotal = calculateProposalTotal({ ...editedProposal, structuredContent });
+      await updateProposal(editingProposal.id, {
+        title: finalTitle,
+        description: editingProposal.description || "",
+        content: professionalContent,
+        structured_content: structuredContent,
+        status: editingProposal.status,
+        total_amount: updatedTotal.totalAmount,
+      });
+      const nextProposal = { ...viewingProposal, title: finalTitle, content: professionalContent, structuredContent, totalAmount: updatedTotal.totalAmount };
+      setProposals((current) => current.map((proposal) => proposal.id === editingProposal.id ? nextProposal : proposal));
+      setViewingProposal(nextProposal);
+      setEditingProposal(null);
+    } catch (error) {
+      console.error(error);
+      setToast({ type: "error", message: t("contentLibrary.saveChangesFailed") });
+    }
   };
   const openStructuredProposalEditor = (proposal) => {
     const structured = proposal.structuredContent || proposal.structured_content || {};
@@ -3021,40 +3064,7 @@ const filtered = allItems.filter((item) => {
         {editingProposal ? (
           <>
             <Btn variant="ghost" onClick={() => setEditingProposal(null)}>{t("common.cancel")}</Btn>
-            <Btn onClick={async () => {
-              try {
-                // Drop the proposal's previous structuredContent before re-deriving
-                // it: normalizeProposalDocument() prefers structuredContent.* over
-                // re-parsing `content`, so keeping the stale structure here would
-                // make it ignore everything just typed in the HTML editor.
-                const { structuredContent: _staleStructured, structured_content: _staleStructuredSnake, ...editedProposalBase } = editingProposal;
-                const draftContent = editingProposal.draftContent || editingProposal.content || "";
-                // The big <h1> inside the editable canvas is what users actually
-                // see and edit; the small title Input above it is easy to miss.
-                // If they typed a new title into the document body, that wins —
-                // otherwise fall back to the separate title field.
-                const finalTitle = extractH1Text(draftContent) || editingProposal.draftTitle;
-                const editedProposal = { ...editedProposalBase, title: finalTitle, content: draftContent };
-                const structuredContent = normalizeProposalDocument(editedProposal);
-                const professionalContent = proposalDocumentToHtml({ ...editedProposal, structuredContent });
-                const updatedTotal = calculateProposalTotal({ ...editedProposal, structuredContent });
-                await updateProposal(editingProposal.id, {
-                  title: finalTitle,
-                  description: editingProposal.description || "",
-                  content: professionalContent,
-                  structured_content: structuredContent,
-                  status: editingProposal.status,
-                  total_amount: updatedTotal.totalAmount,
-                });
-                const nextProposal = { ...viewingProposal, title: finalTitle, content: professionalContent, structuredContent, totalAmount: updatedTotal.totalAmount };
-                setProposals((current) => current.map((proposal) => proposal.id === editingProposal.id ? nextProposal : proposal));
-                setViewingProposal(nextProposal);
-                setEditingProposal(null);
-              } catch (error) {
-                console.error(error);
-                setToast({ type: "error", message: t("contentLibrary.saveChangesFailed") });
-              }
-            }}>{t("contentLibrary.saveChanges")}</Btn>
+            <Btn onClick={() => saveEditedProposal()}>{t("contentLibrary.saveChanges")}</Btn>
           </>
         ) : (
           <>
@@ -3106,6 +3116,16 @@ const filtered = allItems.filter((item) => {
     </div>
   </div>
 )}
+{/* RNF-03: aviso antes de guardar una propuesta que se queda sin condiciones comerciales */}
+<ConfirmDialog
+  open={noTermsPrompt && !!editingProposal}
+  title={t("contentLibrary.noCommercialTermsTitle")}
+  message={t("contentLibrary.noCommercialTermsMessage")}
+  cancelLabel={t("contentLibrary.noCommercialTermsKeep")}
+  confirmLabel={t("contentLibrary.noCommercialTermsConfirm")}
+  onCancel={() => setNoTermsPrompt(false)}
+  onConfirm={() => { setNoTermsPrompt(false); saveEditedProposal({ confirmed: true }); }}
+/>
 {/* ── Edit Proposal Modal ── */}
 {false && editingProposal && (
   <div className="fixed inset-0 z-50 flex items-center justify-center">
