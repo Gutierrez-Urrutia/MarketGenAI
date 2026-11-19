@@ -3,10 +3,8 @@ export const isAdminUser = (user = {}) => {
   return roles.includes("admin");
 };
 
-export const canViewAuditLogs = (user = {}) => {
-  const roles = Array.isArray(user.roles) ? user.roles : [];
-  return roles.includes("admin") || roles.includes("manager");
-};
+// RNF-02: el registro de auditoría lo consulta solo un administrador (el backend responde 403 al resto).
+export const canViewAuditLogs = (user = {}) => isAdminUser(user);
 
 // RF-VTA-02: solo manager y admin crean, editan y desactivan servicios del catálogo.
 export const canManageCatalog = (user = {}) => {

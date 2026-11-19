@@ -82,7 +82,7 @@ export default function App() {
     leads:      { label: t("sidebar.leads"),             icon: RadarIcon,   component: LeadList },
     assistant: { label: t("sidebar.chat"), icon: SparkIcon, component: AssistantPage },
     reports:    { label: t("sidebar.reports"),           icon: ChartIcon,   component: ReportsPage },
-    auditLogs: { label: "Audit Logs", icon: ShieldIcon, component: AuditLogsPage, visible: showAuditLogs },
+    auditLogs: { label: t("sidebar.auditLogs"), icon: ShieldIcon, component: AuditLogsPage, visible: showAuditLogs },
     settings:   { label: t("sidebar.settings"),          icon: GearIcon,    component: SettingsPage },
   };
 
@@ -92,7 +92,9 @@ export default function App() {
   const [page, setPage] = useState(() => (mailConnectionPending ? "settings" : PATH_TO_PAGE[window.location.pathname] || "dashboard"));
   const [navigationState, setNavigationState] = useState(() => (mailConnectionPending ? { tab: "pipeline" } : {}));
   const [collapsed, setCollapsed] = useState(() => typeof window !== "undefined" && window.innerWidth < 1024);
-  const PageComp = PAGES[page]?.visible === false ? DashboardPage : (PAGES[page]?.component || DashboardPage);
+  // Si el rol no puede ver la página, se muestra el Panel principal y el encabezado y el menú también dicen «Panel principal».
+  const activeKey = PAGES[page]?.visible === false ? "dashboard" : page;
+  const PageComp = PAGES[activeKey]?.component || DashboardPage;
 
   useEffect(() => {
     if (mailConnectionPending && window.location.pathname !== "/settings") {
@@ -152,7 +154,7 @@ export default function App() {
       <AppSidebar
         mainItems={mainItems}
         bottomItems={bottomItems}
-        activeKey={page}
+        activeKey={activeKey}
         collapsed={collapsed}
         onToggle={() => setCollapsed(!collapsed)}
         onNavigate={(key) => goToPage(key)}
@@ -162,7 +164,7 @@ export default function App() {
       />
 
       <div className="flex min-w-0 flex-1 flex-col">
-        <AppTopbar title={PAGES[page]?.label || ""} />
+        <AppTopbar title={PAGES[activeKey]?.label || ""} />
         <main className="flex-1 overflow-y-auto px-6 py-6">
         {campaignFlow && (
           <div className="campaign-flow-bar">

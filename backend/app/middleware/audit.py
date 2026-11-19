@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import logging
 import uuid
 
 from jose import JWTError, jwt
@@ -6,7 +7,11 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 
 from app.config import settings
+from app.core.client_ip import get_client_ip
+from app.services.audit_service import write_log
 from app.services.auth_service import JWT_ALGORITHM
+
+logger = logging.getLogger(__name__)
 
 SKIP_PATHS = ["/health", "/docs", "/openapi.json", "/redoc", "/favicon.ico"]
 SKIP_METHODS = ["OPTIONS"]
@@ -32,8 +37,12 @@ def _infer_action(method: str, path: str) -> str:
         ("DELETE","/outreach/history",      "",         "deleted_outreach_message"),
         ("POST",  "/outreach/generate",     "",         "generated_campaign_outreach"),
         ("PATCH", "/proposals",             "status",   "updated_proposal_status"),
+        ("POST",  "/proposals",             "send-to-crm", "sent_proposal_to_crm"),
+        ("POST",  "/crm/proposals",         "send",     "sent_proposal_to_crm"),
         ("POST",  "/proposals",             "generate", "generated_proposal"),
         ("POST",  "/proposals",             "",         "created_proposal"),
+        ("PUT",   "/proposals",             "",         "updated_proposal"),
+        ("PATCH", "/proposals",             "",         "updated_proposal"),
         ("DELETE","/proposals",             "",         "deleted_proposal"),
         ("PATCH", "/campaigns",             "status",   "updated_campaign_status"),
         ("POST",  "/campaigns",             "generate", "generated_campaign_content"),
@@ -78,10 +87,14 @@ class AuditMiddleware(BaseHTTPMiddleware):
             return response
         if not path.startswith("/api/"):
             return response
+        # RNF-02: las lecturas no se auditan (solo ruido) y las acciones que el router
+        # ya registró con audit_service no se duplican con una entrada genérica.
+        if method == "GET":
+            return response
+        if getattr(request.state, "audit_handled", False):
+            return response
 
         try:
-            from app.services.firestore_service import get_db
-
             user_id = None
             auth_header = request.headers.get("Authorization", "")
             if auth_header.startswith("Bearer "):
@@ -103,12 +116,13 @@ class AuditMiddleware(BaseHTTPMiddleware):
                 "method": method,
                 "path": path,
                 "statusCode": response.status_code,
-                "ip": request.client.host if request.client else None,
+                "status": "success" if response.status_code < 400 else "failed",
+                "ip": get_client_ip(request),
                 "userAgent": request.headers.get("user-agent"),
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             }
-            await get_db().collection("auditLogs").document(log["id"]).set(log)
+            await write_log(log)
         except Exception:
-            pass
+            logger.exception("AuditMiddleware: no se pudo registrar %s %s", method, path)
 
         return response
