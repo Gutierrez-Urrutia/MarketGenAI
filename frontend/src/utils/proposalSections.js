@@ -41,6 +41,33 @@ const BPO_HEADINGS = new Set([
 ]);
 const MIN_BPO_HEADINGS = 3;
 
+// RNF-03: encabezado de la sección donde van las condiciones comerciales (SECTION_HEADINGS en proposal_tasks.py).
+const COMMERCIAL_HEADINGS = new Set(["precios y condiciones comerciales", "pricing and commercial terms", "precos e condicoes comerciais"]);
+
+/** ¿La propuesta trae condiciones comerciales? `true`/`false`, o `null` si no tiene la sección de precios
+ *  y condiciones (formato libre o antiguo: no se puede opinar). Cuenta cualquier ítem o párrafo con texto
+ *  aparte de la tabla de precios y del total. */
+export function proposalHasCommercialTerms(html = "") {
+  if (!html || typeof DOMParser === "undefined") return null;
+  const root = new DOMParser().parseFromString(`<body>${html}</body>`, "text/html").body;
+  const heading = Array.from(root.querySelectorAll("h2")).find((h2) => COMMERCIAL_HEADINGS.has(normalizeHeading(h2.textContent)));
+  if (!heading) return null;
+  const container = document.createElement("div");
+  if (heading.parentElement?.tagName === "SECTION") {
+    container.innerHTML = heading.parentElement.innerHTML;
+    container.querySelector("h2")?.remove();
+  } else {
+    for (let el = heading.nextElementSibling; el && el.tagName !== "H2"; el = el.nextElementSibling) container.appendChild(el.cloneNode(true));
+  }
+  container.querySelectorAll("table, .proposal-total-card").forEach((node) => node.remove());
+  return Array.from(container.querySelectorAll("li, p")).some((node) => node.textContent.trim() !== "");
+}
+
+/** Guardar `nextHtml` dejaría sin condiciones comerciales una propuesta que sí las tenía (RNF-03). */
+export function losesCommercialTerms(previousHtml, nextHtml) {
+  return proposalHasCommercialTerms(previousHtml) === true && proposalHasCommercialTerms(nextHtml) !== true;
+}
+
 export function parseGeneratedSections(html = "") {
   if (!html || typeof DOMParser === "undefined" || !/<h2[\s>]/i.test(html)) return null;
   const root = new DOMParser().parseFromString(`<body>${html}</body>`, "text/html").body;

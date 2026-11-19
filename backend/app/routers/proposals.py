@@ -62,6 +62,7 @@ from app.schemas.proposal import (
 from app.services.auth_service import JWT_ALGORITHM
 from app.services.firestore_service import customers_repo, proposals_repo, jobs_repo, settings_repo
 from app.services import audit_service, crm_service, deepseek_service
+from app.services.commercial_terms import WARNING_COMMERCIAL_TERMS_MISSING, loses_commercial_terms
 from app.core.client_ip import get_client_ip
 from app.services.storage_service import storage_service
 from app.services.template_service import classification_labels
@@ -1337,6 +1338,9 @@ async def update_proposal(
     await _auto_snapshot(proposal, updated, update_data, user)
     # Solo los nombres de los campos: el contenido ya queda en el historial de versiones.
     await _audit(request, user, audit_service.PROPOSAL_UPDATED, proposal_id, fields=sorted(update_data))
+    # RNF-03: el guardado sigue, pero se avisa si la propuesta se queda sin condiciones comerciales.
+    if "content" in update_data and loses_commercial_terms(proposal.get("content"), update_data["content"]):
+        return {**updated, "warnings": [WARNING_COMMERCIAL_TERMS_MISSING]}
     return updated
 
 
