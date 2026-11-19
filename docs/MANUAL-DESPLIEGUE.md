@@ -51,7 +51,7 @@ Se leen de `backend/.env` en local (plantilla: `backend/.env.example`) y de Clou
 | `GOOGLE_CLOUD_PROJECT` | Proyecto de Firestore (`marketgen-dev`) | variable |
 | Credenciales de Firestore | En local: `GOOGLE_APPLICATION_CREDENTIALS` (ruta a JSON), `FIREBASE_CREDENTIALS_PATH` o `FIREBASE_SERVICE_ACCOUNT_JSON`. En la nube se usa la cuenta de servicio del servicio, sin archivo | — |
 | `DEEPSEEK_API_KEY` | Llave de la IA | **secreto** `deepseek-api-key` |
-| `PIPELINE_ENCRYPTION_KEY` | Llave Fernet que cifra las llaves de proveedores y tokens del buzón. Generar con `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` | **secreto** `pipeline-encryption-key` |
+| `PIPELINE_ENCRYPTION_KEY` | Llave Fernet que cifra las llaves de proveedores y tokens del buzón. **Local y dev comparten el mismo Firestore, así que deben usar la MISMA llave** (ver §7). Para local, copiar el valor del secreto de dev (`gcloud secrets versions access latest --secret=pipeline-encryption-key`) en `backend/.env`. Generar con `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` | **secreto** `pipeline-encryption-key` |
 | `BACKEND_CORS_ORIGINS` | Orígenes permitidos, separados por coma (la URL de la web) | variable |
 | `FRONTEND_URL` | URL de la web (redirecciones del login con Google) | variable |
 
@@ -198,6 +198,8 @@ Pruebas automáticas: `backend/tests/test_rnf05_disponibilidad.py` (IA) y `backe
 | El despliegue termina pero la API sigue con el código viejo | Misma etiqueta `:dev`: ver §5.3 (`DEPLOYED_FROM`) |
 | El login con Google responde `redirect_uri_mismatch` | `GOOGLE_REDIRECT_URI` no coincide con la URI registrada en el cliente OAuth (§3) |
 | Google rechaza a un usuario | La app está en modo de prueba: agregarlo en Google Auth Platform → Público → Usuarios de prueba |
+| «Hay que reconectar» el buzón justo después de conectarlo en otro ambiente (motivo `tokens_unreadable`) | Local y dev tienen `PIPELINE_ENCRYPTION_KEY` distintas y comparten Firestore: cada uno no puede descifrar los tokens que guardó el otro y marca la conexión como rota. Usar la misma llave en ambos (§3). Si ya quedó marcada: volver a cifrar los tokens con la llave común o reconectar el buzón |
+| El correo llega con las líneas cortadas a ~65 caracteres | Un correo solo de texto plano viaja con saltos a ~76 columnas y algunos clientes lo muestran como líneas cortas. Desde `9d68c2b` el envío por Gmail incluye una parte HTML con párrafos reales (`gmail_client.html_body`) |
 | Gmail: «Hay que reconectar» a la semana | La app de Google está en modo «Prueba» y el acceso vence a los 7 días: el usuario reconecta |
 | Gmail: `mail_service_unavailable` al enviar | La API de Gmail no está activada en el proyecto (§5.6, paso 1) |
 | Un libro o exportación larga no avanza | Probablemente el worker está apagado: encenderlo (§5.4) |
