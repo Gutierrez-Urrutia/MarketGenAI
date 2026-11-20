@@ -46,6 +46,18 @@ def missing_required(s: "Settings") -> list[str]:
             json.loads(s.firebase_service_account_json)
         except ValueError:
             problemas.append("FIREBASE_SERVICE_ACCOUNT_JSON (no es un JSON válido)")
+    # El login con Microsoft es opcional: solo se exige completo cuando se activa con el ID de cliente.
+    if s.microsoft_oauth_client_id:
+        if not s.microsoft_oauth_client_secret:
+            problemas.append("MICROSOFT_OAUTH_CLIENT_SECRET (obligatoria con MICROSOFT_OAUTH_CLIENT_ID)")
+        if not s.microsoft_tenant_id:
+            problemas.append("MICROSOFT_TENANT_ID (ID del directorio; obligatoria con MICROSOFT_OAUTH_CLIENT_ID)")
+        else:
+            try:
+                import uuid
+                uuid.UUID(s.microsoft_tenant_id.strip())
+            except ValueError:
+                problemas.append("MICROSOFT_TENANT_ID (debe ser el GUID del directorio, no su nombre)")
     return problemas
 
 
@@ -101,6 +113,10 @@ class Settings(BaseSettings):
     google_redirect_uri: str = ""
     microsoft_oauth_client_id: str = ""
     microsoft_oauth_client_secret: str = ""
+    # Login con Microsoft: solo entran las cuentas de este directorio (inquilino único) de Entra ID.
+    microsoft_tenant_id: str = ""
+    # Debe coincidir exacta con la URI registrada en Entra ID. Vacía: se arma con el host de la petición.
+    microsoft_redirect_uri: str = ""
     oauth_redirect_base_url: str = "http://127.0.0.1:8000/api/v1"
     frontend_url: str = "http://localhost:5173"
 

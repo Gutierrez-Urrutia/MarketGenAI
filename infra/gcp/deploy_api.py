@@ -18,7 +18,9 @@ for line in open(ENV, encoding="utf-8"):
 
 copiar = ["APP_NAME", "ACCESS_TOKEN_EXPIRE_MINUTES", "REFRESH_TOKEN_EXPIRE_DAYS", "PASSWORD_RESET_TOKEN_EXPIRE_MINUTES",
           "LOCAL_DEV_AUTH_EMAIL", "LOCAL_DEV_AUTH_NAME", "GEMINI_DEFAULT_MODEL", "DEEPSEEK_BASE_URL", "DEEPSEEK_MODEL",
-          "SUPABASE_URL", "SUPABASE_STORAGE_BUCKET", "GOOGLE_OAUTH_CLIENT_ID"]
+          "SUPABASE_URL", "SUPABASE_STORAGE_BUCKET", "GOOGLE_OAUTH_CLIENT_ID",
+          # Login con Microsoft (Entra ID, inquilino único): el secreto va por Secret Manager, no por aquí.
+          "MICROSOFT_OAUTH_CLIENT_ID", "MICROSOFT_TENANT_ID"]
 vars_ = {k: env[k] for k in copiar if env.get(k)}
 vars_.update({
     "ROLE": "api",
@@ -32,6 +34,8 @@ vars_.update({
     "GCS_BUCKET": "marketgen-dev-assets",
     # Fijar el redirect de Google evita que el backend lo arme con las cabeceras de la petición.
     "GOOGLE_REDIRECT_URI": "https://marketgen-api-156520322318.us-central1.run.app/api/v1/auth/google/callback",
+    # Login con Microsoft: la URI exacta registrada en Entra ID (sin esto Microsoft la rechaza con AADSTS50011).
+    "MICROSOFT_REDIRECT_URI": "https://marketgen-api-156520322318.us-central1.run.app/api/v1/auth/microsoft/callback",
     # Enviar correos desde el Gmail del usuario (RF-VTA-16): misma app de Google, otra URI de redirección.
     "MAIL_GOOGLE_REDIRECT_URL": "https://marketgen-api-156520322318.us-central1.run.app/api/v1/mail-connection/google/callback",
     "OUTREACH_REAL_SEND_ENABLED": "true",   # el envío real está permitido, pero en dev SIEMPRE va al equipo (OUTREACH_REDIRECT_TO)
@@ -47,6 +51,8 @@ secretos = {
     "GEMINI_API_KEY": "gemini-api-key", "GOOGLE_API_KEY": "google-api-key",
     "SUPABASE_SERVICE_KEY": "supabase-service-key", "GOOGLE_OAUTH_CLIENT_SECRET": "google-oauth-client-secret",
     "REDIS_URL": "redis-url", "CELERY_RESULT_BACKEND": "celery-result-backend",
+    # Debe existir en Secret Manager ANTES de desplegar; si no, el deploy falla (ver docs/MANUAL-DESPLIEGUE.md §5.10).
+    "MICROSOFT_OAUTH_CLIENT_SECRET": "microsoft-oauth-client-secret",
     # Sandbox: con este secreto TODO correo de prospección sale a las direcciones del equipo y nunca al contacto real.
     # Si falta en un redeploy, dev volvería a escribirle a prospectos reales: no quitarlo.
     "OUTREACH_REDIRECT_TO": "outreach-redirect-to",

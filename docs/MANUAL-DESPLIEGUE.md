@@ -71,6 +71,8 @@ Fuera de producción solo se escribe un aviso en el log. Las credenciales de Fir
 | `GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET` | Login con Google | secreto `google-oauth-client-secret` |
 | `MAIL_GOOGLE_REDIRECT_URL` | Redirección para conectar el Gmail del usuario (enviar correos). Misma app de Google que el login; registrar esta URI exacta en el cliente OAuth (ver §5.6) | local `http://127.0.0.1:8000/api/v1/mail-connection/google/callback`; dev: URL de Cloud Run + `/api/v1/mail-connection/google/callback` |
 | `GOOGLE_REDIRECT_URI` | Debe coincidir **exacta** con la URI registrada en el cliente OAuth | local `http://127.0.0.1:8000/api/v1/auth/google/callback`; dev: URL de Cloud Run + `/api/v1/auth/google/callback` |
+| `MICROSOFT_OAUTH_CLIENT_ID` / `MICROSOFT_OAUTH_CLIENT_SECRET` / `MICROSOFT_TENANT_ID` | Login con Microsoft (Entra ID, **inquilino único**: solo entran las cuentas de tu organización). Se piden juntas: con el ID de cliente, en producción son obligatorias el secreto y el ID del directorio (**GUID**, no el nombre). Es otra app de Entra ID que la del buzón de Outlook (`MAIL_OAUTH_*`). Ver §5.10 | secreto `microsoft-oauth-client-secret` |
+| `MICROSOFT_REDIRECT_URI` | Debe coincidir **exacta** con la URI registrada en Entra ID. Vacía, el backend la arma con el host de la petición | local `http://localhost:8000/api/v1/auth/microsoft/callback`; dev: URL de Cloud Run + `/api/v1/auth/microsoft/callback` |
 | `REDIS_URL`, `CELERY_BROKER_URL`, `CELERY_RESULT_BACKEND` | Cola de tareas largas | `redis://localhost:6379/0` y `/1` en local; secretos en la nube |
 | `ROLE`, `CELERY_CONCURRENCY` | Qué proceso corre el contenedor (`all`, `api` o `worker`) y cuántas tareas hace el worker a la vez | `api` (Cloud Run), `worker` (VM); 2 |
 | `OAUTH_REDIRECT_BASE_URL` | URL base de la API para las redirecciones OAuth | `http://127.0.0.1:8000/api/v1` en local |
@@ -233,6 +235,31 @@ Para que ningún prospecto real reciba un correo de prueba, local y dev definen 
 Los datos viven en Firestore. Exportación programada: `gcloud firestore export gs://<bucket-de-respaldos>/$(date +%F) --project=<id>` (requiere el rol `datastore.importExportAdmin`);
 restauración: `gcloud firestore import gs://<bucket-de-respaldos>/<fecha> --project=<id>`. Los archivos generados están en el bucket `GCS_BUCKET`.
 
+### 5.10 Login con Microsoft (Entra ID)
+
+El botón «Continuar con Microsoft» deja entrar **solo a las cuentas del directorio (inquilino) de tu organización**: la autoridad es
+`login.microsoftonline.com/<MICROSOFT_TENANT_ID>`, no `common`, y el backend vuelve a comprobar el directorio y la aplicación del token (`microsoft_wrong_tenant`).
+Una cuenta personal o de otra organización no entra. El `state` y el verificador PKCE viajan en una cookie firmada de 10 minutos (`HttpOnly`, `SameSite=Lax`): si
+falta, venció o no coincide, el login se rechaza (`microsoft_state_invalid`). Una cuenta inactiva (`status` distinto de `active`) o ligada a otra identidad de
+Microsoft (`account_disabled`, `account_mismatch`) tampoco entra, igual que con Google.
+
+Una sola vez por ambiente:
+
+1. **Registrar la app** (portal de Azure › Microsoft Entra ID › Registros de aplicaciones › Nuevo registro): nombre «MarketGenAI login»;
+   tipos de cuenta: **«Solo cuentas de este directorio de la organización (inquilino único)»**; plataforma **Web** con la URI de redirección
+   `https://<api>/api/v1/auth/microsoft/callback` (y `http://localhost:8000/api/v1/auth/microsoft/callback` para local). Debe ser idéntica a `MICROSOFT_REDIRECT_URI`.
+2. **Permisos de API** (delegados de Microsoft Graph): `openid`, `email`, `profile` y `User.Read`. No hace falta pedir consentimiento de administrador salvo que tu organización lo exija.
+3. **Certificados y secretos › Nuevo secreto de cliente**: copiar el **Valor** (solo se muestra una vez) y anotar su vencimiento; al vencer, el login falla con `microsoft_token_failed` hasta renovarlo.
+4. **Copiar** el «ID de aplicación (cliente)» y el «ID de directorio (inquilino)» de la página Información general.
+5. **Guardar el secreto** en Secret Manager y dar acceso a la cuenta de servicio de la API (antes de desplegar, o `deploy_api.py` falla):
+   `printf '%s' '<valor>' | gcloud secrets create microsoft-oauth-client-secret --data-file=- --project=marketgen-dev` y
+   `gcloud secrets add-iam-policy-binding microsoft-oauth-client-secret --member=serviceAccount:marketgen-api@marketgen-dev.iam.gserviceaccount.com --role=roles/secretmanager.secretAccessor --project=marketgen-dev`.
+6. **Configurar y desplegar**: poner `MICROSOFT_OAUTH_CLIENT_ID` y `MICROSOFT_TENANT_ID` en `backend/.env` y ejecutar `infra/gcp/deploy_api.py` (monta el secreto y fija
+   `MICROSOFT_REDIRECT_URI`). Si cambia la URL de Cloud Run, actualizarla en Entra ID **y** en `deploy_api.py`.
+7. **Verificar**: `GET /api/v1/auth/debug-urls` (solo admin) debe mostrar en `microsoft_callback` exactamente la URI registrada; después, entrar con una cuenta del directorio.
+
+Opcional: en Entra ID › Aplicaciones empresariales › Propiedades, «Asignación requerida» = Sí limita el acceso a las personas o grupos que asignes.
+
 ## 6. Comportamiento ante fallas (RNF-04, criterio 1)
 
 | Falla | Qué ve el usuario | La aplicación |
@@ -265,6 +292,11 @@ Pruebas automáticas: `backend/tests/test_rnf05_disponibilidad.py` (IA), `test_p
 | `gcloud builds submit` falla con «forbidden … serviceusage.services.use» | Falta `storage.buckets.list`. `setup_cicd.py` crea el rol `bucketLister`; ejecutarlo de nuevo |
 | El despliegue termina pero la API sigue con el código viejo | Misma etiqueta `:dev`: ver §5.3 (`DEPLOYED_FROM`) |
 | El login con Google responde `redirect_uri_mismatch` | `GOOGLE_REDIRECT_URI` no coincide con la URI registrada en el cliente OAuth (§3) |
+| El login con Microsoft muestra `AADSTS50011` (la URI de respuesta no coincide) | `MICROSOFT_REDIRECT_URI` (o la URL de Cloud Run) no es idéntica a la URI registrada en Entra ID › Autenticación (§5.10) |
+| El login con Microsoft muestra `AADSTS700016` o `AADSTS50020` | El ID de cliente o el del directorio no son los de la app, o la cuenta es de otra organización: revisar `MICROSOFT_OAUTH_CLIENT_ID` y `MICROSOFT_TENANT_ID` |
+| Microsoft: «no pertenece a la organización autorizada» (`microsoft_wrong_tenant`) | La cuenta no es del directorio configurado: entrar con la cuenta de trabajo |
+| Microsoft: «la sesión venció o no es válida» (`microsoft_state_invalid`) | Pasaron más de 10 minutos, se bloquearon las cookies o el callback se abrió en otro navegador: volver a pulsar el botón. **En local:** el front arranca el login en `127.0.0.1:8000` (por defecto) y Microsoft vuelve a `localhost:8000`; las cookies no se comparten entre ambos hosts. Poner `VITE_API_URL=http://localhost:8000/api/v1` en `frontend/.env.local`, reiniciar Vite y abrir `http://localhost:5173` |
+| Microsoft: `microsoft_token_failed` en todos los intentos | El secreto de cliente venció o es incorrecto (§5.10, paso 3) |
 | Google rechaza a un usuario | La app está en modo de prueba: agregarlo en Google Auth Platform → Público → Usuarios de prueba |
 | «Hay que reconectar» el buzón justo después de conectarlo en otro ambiente (motivo `tokens_unreadable`) | Local y dev tienen `PIPELINE_ENCRYPTION_KEY` distintas y comparten Firestore: cada uno no puede descifrar los tokens que guardó el otro y marca la conexión como rota. Usar la misma llave en ambos (§3). Si ya quedó marcada: volver a cifrar los tokens con la llave común o reconectar el buzón |
 | El correo llega con las líneas cortadas a ~65 caracteres | Un correo solo de texto plano viaja con saltos a ~76 columnas y algunos clientes lo muestran como líneas cortas. Desde `9d68c2b` el envío por Gmail incluye una parte HTML con párrafos reales (`gmail_client.html_body`) |
