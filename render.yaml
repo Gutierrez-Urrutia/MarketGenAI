@@ -39,6 +39,15 @@ services:
         sync: false
       - key: CELERY_RESULT_BACKEND
         sync: false
+      # Login con Microsoft (opcional; si se pone el ID de cliente, hacen falta los tres).
+      - key: MICROSOFT_OAUTH_CLIENT_ID
+        sync: false
+      - key: MICROSOFT_OAUTH_CLIENT_SECRET
+        sync: false
+      - key: MICROSOFT_TENANT_ID
+        sync: false
+      - key: MICROSOFT_REDIRECT_URI
+        sync: false
       - key: DEEPSEEK_API_KEY
         sync: false
       - key: PIPELINE_ENCRYPTION_KEY

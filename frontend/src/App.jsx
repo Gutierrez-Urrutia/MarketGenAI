@@ -1079,6 +1079,12 @@ function App() {
           microsoft_no_email: "No se pudo obtener el email de tu cuenta Microsoft.",
           google_server_error: "No se pudo iniciar sesión con Google en este momento. Inténtalo de nuevo; si continúa, avisa al administrador.",
           microsoft_server_error: "No se pudo iniciar sesión con Microsoft en este momento. Inténtalo de nuevo; si continúa, avisa al administrador.",
+          google_userinfo_failed: "No se pudieron leer los datos de tu cuenta Google. Intenta de nuevo.",
+          microsoft_userinfo_failed: "No se pudieron leer los datos de tu cuenta Microsoft. Intenta de nuevo.",
+          microsoft_state_invalid: "La sesión de inicio con Microsoft venció o no es válida. Vuelve a pulsar «Continuar con Microsoft».",
+          microsoft_wrong_tenant: "Esa cuenta de Microsoft no pertenece a la organización autorizada. Usa tu cuenta de trabajo.",
+          account_disabled: "Tu cuenta está desactivada. Contacta al administrador.",
+          account_mismatch: "Ese correo ya está vinculado a otra cuenta de este proveedor. Contacta al administrador.",
         };
         toast.error(errorMessages[oauthError] || "Error de autenticación social.");
         return;

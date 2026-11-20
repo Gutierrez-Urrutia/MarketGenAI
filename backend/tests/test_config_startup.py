@@ -135,3 +135,37 @@ def test_RNF04_render_yaml_declara_las_obligatorias():
 
 def test_RNF04_existe_el_ejemplo_del_frontend():
     assert "VITE_API_URL" in (RAIZ / "frontend" / ".env.example").read_text(encoding="utf-8")
+
+
+# ── Login con Microsoft (opcional): solo se valida completo cuando se activa ─────────────────────────────────────────
+
+TENANT_GUID = "11111111-2222-3333-4444-555555555555"
+
+
+def _ajustes(**extra) -> Settings:
+    base = dict(_env_file=None, app_secret_key="x" * 48, google_cloud_project="p", deepseek_api_key="k",
+                pipeline_encryption_key=FERNET, storage_backend="gcs", gcs_bucket="b")
+    return Settings(**{**base, **extra})
+
+
+def test_login_microsoft_sin_id_de_cliente_no_pide_nada():
+    assert missing_required(_ajustes()) == []
+
+
+def test_login_microsoft_con_id_de_cliente_exige_secreto_y_directorio():
+    texto = " | ".join(missing_required(_ajustes(microsoft_oauth_client_id="cliente")))
+    assert "MICROSOFT_OAUTH_CLIENT_SECRET" in texto and "MICROSOFT_TENANT_ID" in texto
+
+
+def test_login_microsoft_el_directorio_debe_ser_un_guid():
+    texto = " | ".join(missing_required(_ajustes(
+        microsoft_oauth_client_id="c", microsoft_oauth_client_secret="s", microsoft_tenant_id="empresa.onmicrosoft.com")))
+    assert "GUID" in texto
+    assert missing_required(_ajustes(
+        microsoft_oauth_client_id="c", microsoft_oauth_client_secret="s", microsoft_tenant_id=TENANT_GUID)) == []
+
+
+def test_login_microsoft_incompleto_detiene_el_arranque_en_produccion():
+    out = _arrancar({**OBLIGATORIAS_OK, "MICROSOFT_OAUTH_CLIENT_ID": "cliente"})
+    assert "ARRANCO" not in out.stdout
+    assert "MICROSOFT_OAUTH_CLIENT_SECRET" in out.stderr and "MICROSOFT_TENANT_ID" in out.stderr, out.stderr[-600:]
