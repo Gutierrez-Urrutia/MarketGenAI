@@ -8,12 +8,21 @@ from __future__ import annotations
 from datetime import date, timedelta
 from typing import Any, Dict, Optional, Union
 
+import logging
+
 import httpx
 
 from app.config import settings
 from app.services import encryption_service
 
 _TIMEOUT = 8
+logger = logging.getLogger("marketgen.crm")
+
+
+def _provider_error(provider: str, status_code: int, detail: Any) -> "CrmProviderError":
+    """RNF-04: el cuerpo que devuelve el proveedor va solo al log; el mensaje que ve el usuario trae solo el código."""
+    logger.warning("%s respondió con error %s: %.500s", provider, status_code, detail)
+    return CrmProviderError(f"{provider} respondió con error {status_code}")
 
 
 class CrmError(Exception):
@@ -161,7 +170,7 @@ class HubSpotClient:
             detail = resp.json().get("message", resp.text)
         except ValueError:
             detail = resp.text
-        raise CrmProviderError(f"HubSpot respondió con error {resp.status_code}: {detail}")
+        raise _provider_error("HubSpot", resp.status_code, detail)
 
 
 def build_client_from_stored(
@@ -236,7 +245,7 @@ class SalesforceClient:
                 error = ""
             if error in ("invalid_client", "invalid_grant", "invalid_client_id"):
                 raise CrmAuthError("Consumer Key/Secret inválidos o sin permisos")
-            raise CrmProviderError(f"Salesforce respondió con error {resp.status_code}: {resp.text}")
+            raise _provider_error("Salesforce", resp.status_code, resp.text)
         payload = resp.json()
         self._access_token = payload["access_token"]
         self._instance_url = payload["instance_url"].rstrip("/")
@@ -380,4 +389,4 @@ class SalesforceClient:
                 detail = resp.text
         except ValueError:
             detail = resp.text
-        raise CrmProviderError(f"Salesforce respondió con error {resp.status_code}: {detail}")
+        raise _provider_error("Salesforce", resp.status_code, detail)

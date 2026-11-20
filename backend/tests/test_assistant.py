@@ -178,6 +178,19 @@ async def test_model_failure_is_a_502(client, data):
 
 
 @pytest.mark.asyncio
+async def test_RNF04_model_timeout_is_a_504_different_from_a_model_failure(client, data):
+    """RNF-04: tiempo agotado y caída del modelo se informan distinto y ninguno filtra el detalle."""
+    from app.services.deepseek_service import LLMTimeoutError
+    with patch("app.routers.assistant.deepseek_service.generate_text", AsyncMock(side_effect=LLMTimeoutError("tardó 30 s"))):
+        timeout = await client.post(URL, json={"message": "hola"})
+    with patch("app.routers.assistant.deepseek_service.generate_text", AsyncMock(side_effect=RuntimeError("sk-SECRETO"))):
+        caida = await client.post(URL, json={"message": "hola"})
+    assert timeout.status_code == 504 and "tardó demasiado" in timeout.json()["detail"]
+    assert caida.status_code == 502 and "sk-SECRETO" not in caida.text
+    assert timeout.json()["detail"] != caida.json()["detail"]
+
+
+@pytest.mark.asyncio
 async def test_data_failure_is_a_503_and_does_not_call_the_model(client):
     llm = AsyncMock()
     with (

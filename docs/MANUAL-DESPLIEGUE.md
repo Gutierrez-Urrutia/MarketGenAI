@@ -1,6 +1,7 @@
 # Manual de despliegue — MarketGen AI (NoonDalton AI Marketing Suite)
 
-Cubre RNF-05, criterio 2: dependencias, variables de entorno y pasos para levantar la aplicación en local y en la nube.
+Cubre RNF-04 (Disponibilidad e integración), criterio 2: dependencias, variables de entorno y pasos para levantar la aplicación en local y en la nube.
+El criterio 1 (qué ve el usuario cuando falla la IA, el CRM o la base de datos) está en la sección 6.
 Si algo de aquí contradice al `README.md` raíz, vale este manual (el README describe una arquitectura anterior con Keycloak).
 
 ## 1. Qué se despliega
@@ -26,13 +27,13 @@ Si algo de aquí contradice al `README.md` raíz, vale este manual (el README de
 | Git | cualquiera | Código |
 | Docker | cualquiera | Redis local (opcional) y construir imágenes |
 | Redis | 7 | Cola de Celery (opcional; ver §4) |
-| Librerías de sistema (solo Linux/CI) | `libpango-1.0-0 libpangoft2-1.0-0 libgdk-pixbuf-2.0-0` | WeasyPrint (PDF) |
+| Librerías de sistema (solo Linux/CI; el `backend/Dockerfile` ya las instala) | `libpango-1.0-0 libpangocairo-1.0-0 libpangoft2-1.0-0 libcairo2 libgdk-pixbuf-2.0-0` | WeasyPrint (PDF) |
 
 **Para desplegar en la nube:** Google Cloud SDK (`gcloud`) con una cuenta con permisos sobre `marketgen-dev`.
 En Windows, `gcloud.cmd` rompe argumentos con paréntesis o `|`: usar el Python que trae el SDK
 (`platform\bundledpython\python.exe lib\gcloud.py`) o definir `GCLOUD` con la ruta a `gcloud.cmd` para los scripts de `infra/gcp/`.
 
-Las dependencias de Python están fijadas en `backend/requirements.txt` y las de Node en `frontend/package-lock.json`.
+Las dependencias de Python están fijadas en `backend/requirements.txt` y las de Node en `frontend/package-lock.json`. Versión de Python: 3.12 (`.python-version`: 3.12.7).
 
 **Servicios externos que necesita:** DeepSeek (llave de API), Google OAuth (cliente OAuth, opcional si solo se usa correo y contraseña),
 Microsoft Entra ID (opcional: login con Microsoft y buzón de envío), HubSpot o Salesforce (opcional, para enviar propuestas al CRM).
@@ -44,14 +45,20 @@ Se leen de `backend/.env` en local (plantilla: `backend/.env.example`) y de Clou
 
 ### Backend — obligatorias
 
+Con `APP_ENV=production` el arranque **se detiene** si falta alguna y el mensaje las lista **todas** de una vez, por ejemplo:
+`Faltan variables de entorno obligatorias con APP_ENV=production: GOOGLE_CLOUD_PROJECT (proyecto de Firestore); DEEPSEEK_API_KEY (llave de la IA)`.
+Fuera de producción solo se escribe un aviso en el log. Las credenciales de Firestore no se exigen porque en Cloud Run se usa la cuenta de servicio del servicio.
+
 | Variable | Descripción | En la nube |
 |---|---|---|
 | `APP_ENV` | `development` o `production`. En `production` se exige una clave segura y se ocultan `/docs`, `/redoc` y `/openapi.json` | variable |
-| `APP_SECRET_KEY` | Firma de los JWT. Larga y aleatoria | **secreto** `app-secret-key` |
+| `APP_SECRET_KEY` | Firma de los JWT. Larga y aleatoria (`python -c "import secrets; print(secrets.token_urlsafe(48))"`). Vacía o la de por defecto no arranca en producción | **secreto** `app-secret-key` |
 | `GOOGLE_CLOUD_PROJECT` | Proyecto de Firestore (`marketgen-dev`) | variable |
-| Credenciales de Firestore | En local: `GOOGLE_APPLICATION_CREDENTIALS` (ruta a JSON), `FIREBASE_CREDENTIALS_PATH` o `FIREBASE_SERVICE_ACCOUNT_JSON`. En la nube se usa la cuenta de servicio del servicio, sin archivo | — |
+| Credenciales de Firestore | En local: `GOOGLE_APPLICATION_CREDENTIALS` (ruta a JSON), `FIREBASE_CREDENTIALS_PATH` o `FIREBASE_SERVICE_ACCOUNT_JSON` (el JSON en una línea; si se define y no es un JSON válido, no arranca). En la nube se usa la cuenta de servicio del servicio, sin archivo. Cómo crearla: Google Cloud › IAM › Cuentas de servicio › rol «Cloud Datastore User» › Claves › JSON | **secreto** (el JSON) |
 | `DEEPSEEK_API_KEY` | Llave de la IA | **secreto** `deepseek-api-key` |
 | `PIPELINE_ENCRYPTION_KEY` | Llave Fernet que cifra las llaves de proveedores y tokens del buzón. **Local y dev comparten el mismo Firestore, así que deben usar la MISMA llave** (ver §7). Para local, copiar el valor del secreto de dev (`gcloud secrets versions access latest --secret=pipeline-encryption-key`) en `backend/.env`. Generar con `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` | **secreto** `pipeline-encryption-key` |
+| `STORAGE_BACKEND` | `gcs` en producción. El valor por defecto del código (`supabase`) ya no tiene un servicio detrás y **detiene el arranque en producción** | variable |
+| `GCS_BUCKET` | Bucket de Cloud Storage de los archivos generados (obligatoria con `STORAGE_BACKEND=gcs`), p. ej. `marketgen-dev-assets` | variable |
 | `BACKEND_CORS_ORIGINS` | Orígenes permitidos, separados por coma (la URL de la web) | variable |
 | `FRONTEND_URL` | URL de la web (redirecciones del login con Google) | variable |
 
@@ -60,15 +67,18 @@ Se leen de `backend/.env` en local (plantilla: `backend/.env.example`) y de Clou
 | Variable | Descripción | Valor habitual |
 |---|---|---|
 | `DEEPSEEK_BASE_URL`, `DEEPSEEK_MODEL` | Endpoint y modelo | `https://api.deepseek.com`, `deepseek-flash` |
-| `LLM_DEFAULT_TIMEOUT_SECONDS` | Tiempo máximo de cada llamada a la IA (vacío = sin límite) | vacío |
+| `LLM_SHORT_TIMEOUT_SECONDS`, `LLM_DEFAULT_TIMEOUT_SECONDS`, `LLM_LONG_TIMEOUT_SECONDS` | Tiempo máximo de cada llamada a la IA, en segundos. **Sin definir no hay límite y no existe «tiempo agotado»** (la sección 6 solo informa un timeout si está configurado): se recomienda fijarlos | sin definir |
 | `GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET` | Login con Google | secreto `google-oauth-client-secret` |
 | `MAIL_GOOGLE_REDIRECT_URL` | Redirección para conectar el Gmail del usuario (enviar correos). Misma app de Google que el login; registrar esta URI exacta en el cliente OAuth (ver §5.6) | local `http://127.0.0.1:8000/api/v1/mail-connection/google/callback`; dev: URL de Cloud Run + `/api/v1/mail-connection/google/callback` |
 | `GOOGLE_REDIRECT_URI` | Debe coincidir **exacta** con la URI registrada en el cliente OAuth | local `http://127.0.0.1:8000/api/v1/auth/google/callback`; dev: URL de Cloud Run + `/api/v1/auth/google/callback` |
-| `STORAGE_BACKEND`, `GCS_BUCKET` | `gcs` y el bucket para guardar los archivos generados | `gcs`, `marketgen-dev-assets` |
 | `REDIS_URL`, `CELERY_BROKER_URL`, `CELERY_RESULT_BACKEND` | Cola de tareas largas | `redis://localhost:6379/0` y `/1` en local; secretos en la nube |
-| `ROLE` | Qué proceso corre el contenedor: `all`, `api` o `worker` | `api` (Cloud Run), `worker` (VM) |
+| `ROLE`, `CELERY_CONCURRENCY` | Qué proceso corre el contenedor (`all`, `api` o `worker`) y cuántas tareas hace el worker a la vez | `api` (Cloud Run), `worker` (VM); 2 |
+| `OAUTH_REDIRECT_BASE_URL` | URL base de la API para las redirecciones OAuth | `http://127.0.0.1:8000/api/v1` en local |
+| `TRUST_PROXY_HEADERS` | Usar el primer `X-Forwarded-For` como IP de la auditoría. Solo detrás de un proxy propio: cualquiera puede enviar esa cabecera | `false`; `true` en Render |
+| `ADMIN_EMAILS` | Correos con rol admin además de los asignados en Firestore, separados por coma | vacío |
+| `HUBSPOT_BASE_URL`, `SALESFORCE_API_VERSION` | Endpoint de HubSpot y versión de la API de Salesforce (las credenciales de cada usuario van cifradas en Firestore, no en variables) | `https://api.hubapi.com`, `v61.0` |
 | `ACCESS_TOKEN_EXPIRE_MINUTES`, `REFRESH_TOKEN_EXPIRE_DAYS` | Duración de las sesiones | 30 y 14 |
-| `LOCAL_DEV_AUTH_ENABLED`, `LOCAL_DEV_AUTH_EMAIL`, `LOCAL_DEV_AUTH_PASSWORD` | Cuenta de desarrollo. En la nube la contraseña es el secreto `local-dev-auth-password`; desactivar en producción real | — |
+| `LOCAL_DEV_AUTH_ENABLED`, `LOCAL_DEV_AUTH_EMAIL`, `LOCAL_DEV_AUTH_PASSWORD` | Cuenta de desarrollo con contraseña conocida (por defecto `admin123`). En la nube la contraseña es el secreto `local-dev-auth-password`. **`deploy_api.py` la deja encendida en dev; en una producción real hay que poner `LOCAL_DEV_AUTH_ENABLED=false`** | — |
 | `RATE_LIMIT_ENABLED`, `AUDIT_LOG_ENABLED` | Límite de frecuencia y registro de auditoría | `true` |
 | `MICROSOFT_OAUTH_*`, `MAIL_OAUTH_*` | Login con Microsoft y envío desde Outlook / Microsoft 365 (registro de app propio en Entra ID) | ver `.env.example` |
 | `OUTREACH_REAL_SEND_ENABLED` | Interruptor general del envío real de correos de prospección, con Outlook o Gmail (apagado por defecto; además cada usuario lo enciende en Configuración) | `false` |
@@ -81,7 +91,7 @@ Obsoletas (se pueden dejar vacías): `SUPABASE_*` (el proyecto configurado ya no
 
 | Variable | Descripción |
 |---|---|
-| `VITE_API_URL` | URL base de la API, p. ej. `http://127.0.0.1:8000/api/v1`. **Se fija al compilar**: cambiarla exige reconstruir la imagen |
+| `VITE_API_URL` | URL base de la API, p. ej. `http://127.0.0.1:8000/api/v1` (plantilla: `frontend/.env.example`). **Se fija al compilar**: cambiarla exige reconstruir la imagen |
 | `VITE_ENABLE_DEMO_LOGIN`, `VITE_SHOW_DEMO_BANNER` | Acceso y aviso de demostración |
 
 ## 4. Ejecución en local
@@ -108,6 +118,21 @@ npm run dev                                         # http://localhost:5173
   ```
 - Pruebas: `python -m pytest -q` (backend) y `npm test` (frontend). Las pruebas del backend usan un Firestore simulado y no llaman a la IA.
 - Todo el stack con Docker: `docker compose up --build`.
+
+### 4.1 Entorno limpio, paso a paso
+
+Probado en un clon nuevo, con un entorno virtual vacío y **solo** lo que dice este manual:
+
+1. Instalar las herramientas de la sección 2 (Python 3.12, Node 22; en Linux, las librerías de sistema).
+2. `git clone` del repositorio.
+3. Backend: `cd backend`, crear el entorno virtual e instalar `pip install -r requirements.txt`.
+4. Crear la cuenta de servicio de Firestore (sección 3, fila «Credenciales de Firestore») y guardar el JSON fuera del repositorio.
+5. Definir las variables **obligatorias** de la sección 3 (copiando `backend/.env.example` a `backend/.env`, o como variables de entorno). Sin ellas, con `APP_ENV=production`, el arranque se detiene y dice cuáles faltan.
+6. Desplegar los índices de Firestore (una vez por proyecto): `firebase deploy --only firestore:indexes --project <id-del-proyecto>` (el `firebase.json` de la raíz apunta a `backend/firestore.indexes.json`). Sin ellos las consultas del registro de auditoría usan un camino lento.
+7. Arrancar: `.venv/Scripts/python -m uvicorn app.main:app --port 8000` (en Linux/Mac, `.venv/bin/python`).
+8. Comprobar: `GET /api/v1/health` responde `200` y `GET /api/v1/health/db` responde `200` con `"status":"ok"` (con la base de datos caída responde `503`).
+9. Frontend: `cd frontend`, `cp .env.example .env`, `npm ci`, `npm run build` (o `npm run dev`).
+10. Abrir la web, iniciar sesión y generar una propuesta.
 
 ## 5. Despliegue en Google Cloud (dev)
 
@@ -158,7 +183,7 @@ Una imagen nueva con la **misma etiqueta `:dev`** no crea una revisión de Cloud
 
 ### 5.5 Verificación posterior al despliegue
 
-1. `curl https://<api>/api/v1/health` responde `200`.
+1. `curl https://<api>/api/v1/health` responde `200` y `curl https://<api>/api/v1/health/db` responde `200` (con la base de datos caída: `503`).
 2. Sin sesión, `GET /api/v1/proposals` responde `403` y `/docs` responde `404`.
 3. Abrir la web, iniciar sesión y generar una propuesta.
 4. Si se usan libros o exportaciones: encender el worker y confirmar que el trabajo termina.
@@ -196,7 +221,19 @@ Para que ningún prospecto real reciba un correo de prueba, local y dev definen 
   reiniciar la API (nueva revisión). **`deploy_api.py` monta este secreto: no quitarlo** o dev volvería a escribir a contactos reales.
 - Las pruebas automáticas ignoran el valor del entorno (`conftest.py`), así que tenerlo en tu `.env` no las rompe.
 
-## 6. Comportamiento ante fallas (RNF-05, criterio 1)
+### 5.8 Otros despliegues: Render y Vercel
+
+- **Render:** `render.yaml` (raíz) declara el servicio `marketgen-backend` (`rootDir: backend`, `bash start.sh`, `healthCheckPath: /api/v1/health`, Python 3.12.7).
+  Las variables obligatorias de la sección 3 están declaradas con `sync: false` (se cargan en el panel) salvo `APP_SECRET_KEY` (se genera) y `STORAGE_BACKEND`.
+  El plan gratuito no instala librerías de sistema: los PDF con WeasyPrint necesitan una imagen Docker (`backend/Dockerfile`).
+- **Vercel:** existe `api/index.py` (entrada serverless) pero no hay `vercel.json`: no es un destino mantenido. El destino de referencia es Cloud Run (sección 5).
+
+### 5.9 Copias de seguridad
+
+Los datos viven en Firestore. Exportación programada: `gcloud firestore export gs://<bucket-de-respaldos>/$(date +%F) --project=<id>` (requiere el rol `datastore.importExportAdmin`);
+restauración: `gcloud firestore import gs://<bucket-de-respaldos>/<fecha> --project=<id>`. Los archivos generados están en el bucket `GCS_BUCKET`.
+
+## 6. Comportamiento ante fallas (RNF-04, criterio 1)
 
 | Falla | Qué ve el usuario | La aplicación |
 |---|---|---|
@@ -205,15 +242,26 @@ Para que ningún prospecto real reciba un correo de prueba, local y dev definen 
 | La IA devuelve texto que no es el JSON esperado (análisis) | 502 «La IA devolvió una respuesta que no se pudo interpretar.» | Sigue funcionando |
 | CRM: credenciales vencidas | 401 con el mensaje del CRM; no cierra la sesión | Sigue funcionando |
 | CRM: timeout / caído / sin red | 504 / 502 con mensaje; el intento queda registrado en `crmSync` | Sigue funcionando |
+| CRM: el proveedor responde con error | 502 «HubSpot respondió con error 500»; lo que devolvió el proveedor queda solo en el log del servidor | Sigue funcionando |
+| Base de datos (Firestore) caída o sin cuota | 503 «La base de datos no está disponible en este momento…» (o «Se alcanzó el límite de uso…»), con cabeceras CORS | `/health` sigue en 200; `/health/db` responde 503 |
+| Google Cloud Storage falla al subir, firmar o borrar un archivo | 503 «El almacenamiento de archivos no está disponible en este momento…» (con `code: storage_unavailable`); el detalle queda en el log | Sigue funcionando |
+| Falta `PIPELINE_ENCRYPTION_KEY` al guardar una clave de proveedor | 503 «El servidor no tiene configurada la llave de cifrado… Avisa al administrador.» | Sigue funcionando |
+| El inicio de sesión con Google, Microsoft o Facebook falla en el servidor | Aviso en el login: «No se pudo iniciar sesión con Google… Inténtalo de nuevo; si continúa, avisa al administrador.» | Sigue funcionando |
+| Una tarea larga (job) falla | El job queda `failed` con un mensaje fijo y claro; el error real queda solo en el log | Sigue funcionando |
+| El navegador no llega a la API | Aviso «No hay conexión con el servidor» y el sondeo de la tarea termina con un aviso | La pantalla no se bloquea |
 | Redis o worker apagados | La propuesta se genera dentro de la petición, unos segundos más lenta | Sigue funcionando |
 | Fallo al subir un archivo a Cloud Storage | Error visible (no un enlace roto) | Sigue funcionando |
 
-Pruebas automáticas: `backend/tests/test_rnf05_disponibilidad.py` (IA) y `backend/tests/test_proposals_crm.py` (CRM).
+Ningún mensaje de error incluye trazas, rutas del servidor, claves ni el cuerpo que devolvió el proveedor: el detalle va solo al log (`app/core/errors.py`).
+
+Pruebas automáticas: `backend/tests/test_rnf05_disponibilidad.py` (IA), `test_proposals_crm.py` (CRM), `test_firestore_down.py` (base de datos), `test_error_safety.py` (mensajes sin detalles, almacenamiento y llave de cifrado) y `test_config_startup.py` (arranque y variables).
 
 ## 7. Problemas conocidos
 
 | Síntoma | Causa y solución |
 |---|---|
+| El arranque termina con «Faltan variables de entorno obligatorias con APP_ENV=production: …» | Definir las variables que nombra el mensaje (sección 3) |
+| `GET /api/v1/health/db` responde `503` | Firestore no responde: revisar el proyecto, la cuenta de servicio y la cuota (consola de Firebase › Uso). La API sigue viva (`/health` en 200) |
 | `gcloud builds submit` falla con «forbidden … serviceusage.services.use» | Falta `storage.buckets.list`. `setup_cicd.py` crea el rol `bucketLister`; ejecutarlo de nuevo |
 | El despliegue termina pero la API sigue con el código viejo | Misma etiqueta `:dev`: ver §5.3 (`DEPLOYED_FROM`) |
 | El login con Google responde `redirect_uri_mismatch` | `GOOGLE_REDIRECT_URI` no coincide con la URI registrada en el cliente OAuth (§3) |
@@ -223,7 +271,7 @@ Pruebas automáticas: `backend/tests/test_rnf05_disponibilidad.py` (IA) y `backe
 | Gmail: «Hay que reconectar» a la semana | La app de Google está en modo «Prueba» y el acceso vence a los 7 días: el usuario reconecta |
 | Gmail: `mail_service_unavailable` al enviar | La API de Gmail no está activada en el proyecto (§5.6, paso 1) |
 | Un libro o exportación larga no avanza | Probablemente el worker está apagado: encenderlo (§5.4) |
-| En local, un archivo generado no se descarga en la web | Con `STORAGE_BACKEND=supabase` y un Supabase inexistente cae al disco; usar `gcs` o aceptar que es solo local |
+| En local, un archivo generado no se descarga en la web | Con `STORAGE_BACKEND=supabase` (el valor por defecto) y un Supabase inexistente cae al disco; usar `gcs`. En producción `supabase` detiene el arranque |
 
 ## 8. Costo aproximado (dev)
 

@@ -39,6 +39,7 @@ from app.workers.tasks.asset_tasks import (
     task_generate_social_posts,
     task_generate_infographic,
 )
+from app.core.errors import safe_error_message
 
 logger = logging.getLogger(__name__)
 
@@ -187,7 +188,7 @@ async def generate_one_pager(
             await generate_one_pager_now(job["id"], asset["id"], book, body.model_dump())
         except Exception as exc:
             await assets_repo.update(asset["id"], {"status": "error"})
-            await jobs_repo.fail_job(job["id"], str(exc))
+            await jobs_repo.fail_job(job["id"], safe_error_message(exc))
             raise
         return JobAccepted(job_id=job["id"])
 
@@ -199,7 +200,7 @@ async def generate_one_pager(
             await generate_one_pager_now(job["id"], asset["id"], book, body.model_dump())
         except Exception as exc2:
             await assets_repo.update(asset["id"], {"status": "error"})
-            await jobs_repo.fail_job(job["id"], str(exc2))
+            await jobs_repo.fail_job(job["id"], safe_error_message(exc2))
             raise
     return JobAccepted(job_id=job["id"])
 
@@ -222,7 +223,7 @@ async def generate_whitepaper(
             await generate_whitepaper_now(job["id"], asset["id"], book, chapters, body.model_dump())
         except Exception as exc:
             await assets_repo.update(asset["id"], {"status": "error"})
-            await jobs_repo.fail_job(job["id"], str(exc))
+            await jobs_repo.fail_job(job["id"], safe_error_message(exc))
             raise
         return JobAccepted(job_id=job["id"])
 
@@ -234,7 +235,7 @@ async def generate_whitepaper(
             await generate_whitepaper_now(job["id"], asset["id"], book, chapters, body.model_dump())
         except Exception as exc2:
             await assets_repo.update(asset["id"], {"status": "error"})
-            await jobs_repo.fail_job(job["id"], str(exc2))
+            await jobs_repo.fail_job(job["id"], safe_error_message(exc2))
             raise
     return JobAccepted(job_id=job["id"])
 
@@ -258,7 +259,7 @@ async def generate_social_posts(
             await generate_social_posts_now(job["id"], asset["id"], book, chapter, body.model_dump())
         except Exception as exc:
             await assets_repo.update(asset["id"], {"status": "error"})
-            await jobs_repo.fail_job(job["id"], str(exc))
+            await jobs_repo.fail_job(job["id"], safe_error_message(exc))
             raise
         return JobAccepted(job_id=job["id"])
 
@@ -270,7 +271,7 @@ async def generate_social_posts(
             await generate_social_posts_now(job["id"], asset["id"], book, chapter, body.model_dump())
         except Exception as exc2:
             await assets_repo.update(asset["id"], {"status": "error"})
-            await jobs_repo.fail_job(job["id"], str(exc2))
+            await jobs_repo.fail_job(job["id"], safe_error_message(exc2))
             raise
     return JobAccepted(job_id=job["id"])
 
@@ -290,7 +291,7 @@ async def generate_infographic(
             await generate_infographic_now(job["id"], asset["id"], book, body.model_dump())
         except Exception as exc:
             await assets_repo.update(asset["id"], {"status": "error"})
-            await jobs_repo.fail_job(job["id"], str(exc))
+            await jobs_repo.fail_job(job["id"], safe_error_message(exc))
             raise
         return JobAccepted(job_id=job["id"])
 
@@ -302,6 +303,6 @@ async def generate_infographic(
             await generate_infographic_now(job["id"], asset["id"], book, body.model_dump())
         except Exception as exc2:
             await assets_repo.update(asset["id"], {"status": "error"})
-            await jobs_repo.fail_job(job["id"], str(exc2))
+            await jobs_repo.fail_job(job["id"], safe_error_message(exc2))
             raise
     return JobAccepted(job_id=job["id"])

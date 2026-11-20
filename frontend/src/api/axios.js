@@ -2,6 +2,7 @@ import axios from 'axios'
 import toast from 'react-hot-toast'
 
 import { REDACTED, describeApiError, logApiError, loggableBody, redactSecrets } from './apiLogging'
+import { apiErrorToastMessage } from './errorMessages'
 
 // Re-exported for callers that already import from here.
 export { describeApiError, logApiError, redactSecrets }
@@ -302,8 +303,11 @@ api.interceptors.response.use(
     }
 
     // suppressServerErrorToast: el llamador muestra su propio mensaje (p. ej. el detalle del CRM en send-to-crm)
-    if (status >= 500 && !originalRequest?.suppressServerErrorToast) {
-      toast.error('Server error. Please try again.')
+    // RNF-04: sin conexión, tiempo agotado, 5xx y 429 se avisan con un texto claro (el del backend cuando lo trae); un solo aviso a la vez.
+    const isServiceFailure = !status || status >= 500 || status === 429
+    if (isServiceFailure && !originalRequest?.suppressServerErrorToast) {
+      const message = apiErrorToastMessage(error)
+      if (message) toast.error(message, { id: 'api-service-error' })
     }
 
     return Promise.reject(sanitizeAxiosError(error))

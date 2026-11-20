@@ -91,6 +91,7 @@ from app.workers.tasks.proposal_tasks import (
     task_generate_proposal,
     generate_proposal_now,
 )
+from app.core.errors import safe_error, safe_error_message
 
 logger = logging.getLogger(__name__)
 
@@ -1188,7 +1189,7 @@ async def generate_proposal_draft(
             )
         except Exception as exc:
             await proposals_repo.update(proposal["id"], {"status": "error"})
-            await jobs_repo.fail_job(job["id"], str(exc))
+            await jobs_repo.fail_job(job["id"], safe_error_message(exc))
             raise
 
     try:
@@ -1212,7 +1213,7 @@ async def generate_proposal_draft(
             )
         except Exception as exc2:
             await proposals_repo.update(proposal["id"], {"status": "error"})
-            await jobs_repo.fail_job(job["id"], str(exc2))
+            await jobs_repo.fail_job(job["id"], safe_error_message(exc2))
             raise
 
 
@@ -1263,7 +1264,7 @@ async def generate_proposal_by_id(
             )
         except Exception as exc:
             await proposals_repo.update(proposal_id, {"status": "error"})
-            await jobs_repo.fail_job(job["id"], str(exc))
+            await jobs_repo.fail_job(job["id"], safe_error_message(exc))
             raise
 
     try:
@@ -1287,7 +1288,7 @@ async def generate_proposal_by_id(
             )
         except Exception as exc2:
             await proposals_repo.update(proposal_id, {"status": "error"})
-            await jobs_repo.fail_job(job["id"], str(exc2))
+            await jobs_repo.fail_job(job["id"], safe_error_message(exc2))
             raise
 
 
@@ -1676,6 +1677,14 @@ async def _record_crm_failure(proposal_id: str, existing_sync: dict, provider: s
     }})
 
 
+async def _record_crm_failure_safely(proposal_id, existing_sync, provider, detail, partial) -> None:
+    """RNF-04: si Firestore también está caído, no perder el aviso del CRM (el usuario recibe igual el 502 del CRM)."""
+    try:
+        await _record_crm_failure(proposal_id, existing_sync, provider, detail, partial)
+    except Exception:
+        logger.exception("No se pudo guardar el fallo del CRM de la propuesta %s", proposal_id)
+
+
 @router.post("/{proposal_id}/send-to-crm")
 async def send_proposal_to_crm(
     request: Request,
@@ -1778,16 +1787,17 @@ async def send_proposal_to_crm(
             code = 504
         else:
             code = 502
-        await _record_crm_failure(proposal_id, existing_sync, provider, str(exc), partial)
+        detail = safe_error(exc)[1]   # RNF-04: texto fijo; lo que respondió el proveedor queda solo en el log
+        await _record_crm_failure_safely(proposal_id, existing_sync, provider, detail, partial)
         await _audit(request, user, audit_service.PROPOSAL_SENT_TO_CRM, proposal_id,
-                     status_="failed", provider=provider, error=str(exc))
-        raise HTTPException(status_code=code, detail=str(exc)) from exc
+                     status_="failed", provider=provider, error=detail)
+        raise HTTPException(status_code=code, detail=detail) from exc
     except httpx.HTTPError as exc:
         # CRM caído / sin red / DNS: antes escapaba como 500 sin mensaje.
         label = "HubSpot" if provider == "hubspot" else "Salesforce"
         detail = f"No se pudo conectar con {label}. Revisa que el servicio esté disponible e inténtalo de nuevo."
         logger.warning("send-to-crm: fallo de conexión con %s: %r", label, exc)
-        await _record_crm_failure(proposal_id, existing_sync, provider, detail, partial)
+        await _record_crm_failure_safely(proposal_id, existing_sync, provider, detail, partial)
         await _audit(request, user, audit_service.PROPOSAL_SENT_TO_CRM, proposal_id,
                      status_="failed", provider=provider, error=detail)
         raise HTTPException(status_code=502, detail=detail) from exc

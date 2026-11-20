@@ -186,7 +186,7 @@ async def login(request: Request, body: LoginRequest = Body(...)) -> LoginRespon
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail={
                 "code": "DATABASE_ERROR",
-                "message": f"Error conectando a la base de datos Firestore: {str(exc)}",
+                "message": "No se pudo conectar con la base de datos. Inténtalo de nuevo en unos minutos.",
             },
         ) from exc
 
@@ -345,7 +345,7 @@ async def me(current_user: CurrentUser = Depends(get_current_user)) -> UserInfo:
             return _local_current_user_info(current_user)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail={"code": "DATABASE_ERROR", "message": f"Error consultando usuario: {str(exc)}"},
+            detail={"code": "DATABASE_ERROR", "message": "No se pudo consultar el usuario. Inténtalo de nuevo en unos minutos."},
         ) from exc
 
     if not user:

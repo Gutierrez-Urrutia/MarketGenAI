@@ -98,8 +98,12 @@ def test_docs_disabled_in_production():
         "    from app.main import app\n"
         "print(app.docs_url, app.openapi_url, app.redoc_url)\n"
     )
+    from cryptography.fernet import Fernet
     env = {**os.environ, "APP_ENV": "production", "APP_SECRET_KEY": "x" * 48, "APP_DEBUG": "false",
-           "LOCAL_DEV_AUTH_ENABLED": "false"}
+           "LOCAL_DEV_AUTH_ENABLED": "false",
+           # RNF-04: en producción el arranque exige estas variables
+           "GOOGLE_CLOUD_PROJECT": "p", "DEEPSEEK_API_KEY": "k", "PIPELINE_ENCRYPTION_KEY": Fernet.generate_key().decode(),
+           "STORAGE_BACKEND": "gcs", "GCS_BUCKET": "b"}
     out = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True)
     assert out.stdout.strip().splitlines()[-1] == "None None None", out.stderr[-500:]
 
@@ -140,7 +144,8 @@ async def test_enqueue_pilot_task_broker_error(client: AsyncClient):
         )
         assert response.status_code == 503
         data = response.json()
-        assert "Redis" in data["detail"]
+        # RNF-04: mensaje fijo; el texto de la excepción (host, clave) no llega al cliente
+        assert "servicio de colas" in data["detail"] and "Redis connection refused" not in data["detail"]
 
 
 @pytest.mark.asyncio

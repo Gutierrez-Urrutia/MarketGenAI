@@ -90,12 +90,16 @@ def test_custom_endpoints_are_refused_in_production_even_with_the_switch(monkeyp
     assert err.value.code == "mail_endpoints_not_allowed"
 
 
+from cryptography.fernet import Fernet as _Fernet
+_FERNET = _Fernet.generate_key().decode()
+
+
 def test_settings_refuse_to_start_in_production_with_custom_mail_endpoints():
     with pytest.raises(Exception, match="GRAPH_BASE_URL"):
-        Settings(_env_file=None, app_env="production", app_secret_key="a-real-secret",
+        Settings(_env_file=None, app_env="production", app_secret_key="a-real-secret", google_cloud_project="p", deepseek_api_key="k", pipeline_encryption_key=_FERNET, storage_backend="gcs", gcs_bucket="b",
                  graph_base_url="http://localhost:9010/v1.0")
     # The official ones are fine.
-    Settings(_env_file=None, app_env="production", app_secret_key="a-real-secret")
+    Settings(_env_file=None, app_env="production", app_secret_key="a-real-secret", google_cloud_project="p", deepseek_api_key="k", pipeline_encryption_key=_FERNET, storage_backend="gcs", gcs_bucket="b")
 
 
 # ── Code exchange ────────────────────────────────────────────────────────────

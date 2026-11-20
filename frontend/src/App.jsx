@@ -14,7 +14,7 @@ import { useI18n } from "./hooks/useI18n";
 // editing a proposal) unmounts the whole app and leaves a blank screen with
 // no way to recover except a hard refresh. This surfaces the real error
 // instead so it can be diagnosed and offers a way back without losing data.
-class ErrorBoundary extends Component {
+export class ErrorBoundary extends Component {
   constructor(props) {
     super(props);
     this.state = { error: null, componentStack: "" };
@@ -36,6 +36,8 @@ class ErrorBoundary extends Component {
     const fullDetails = [message, this.state.error?.stack, this.state.componentStack]
       .filter(Boolean)
       .join("\n\n");
+    // RNF-04: en producción no se muestran trazas ni rutas del bundle al usuario (siguen en la consola); solo en desarrollo.
+    const showDetails = !import.meta.env.PROD;
     return (
       <main className="min-h-screen bg-[#f7f6f2] text-neutral-900 flex items-center justify-center px-4 py-8">
         <div className="w-full max-w-2xl rounded-xl border border-red-200 bg-white p-6 shadow-sm">
@@ -43,9 +45,13 @@ class ErrorBoundary extends Component {
           <p className="mt-2 text-sm text-neutral-600">
             La aplicación encontró un error inesperado y no pudo seguir mostrando esta pantalla.
           </p>
-          <pre className="mt-4 max-h-72 overflow-auto rounded-lg bg-neutral-50 p-3 text-xs text-neutral-700 whitespace-pre-wrap">
-            {fullDetails}
-          </pre>
+          {showDetails ? (
+            <pre className="mt-4 max-h-72 overflow-auto rounded-lg bg-neutral-50 p-3 text-xs text-neutral-700 whitespace-pre-wrap">
+              {fullDetails}
+            </pre>
+          ) : (
+            <p className="mt-4 text-sm text-neutral-600">Puedes recargar la página. Si el problema continúa, avisa al administrador.</p>
+          )}
           <div className="mt-5 flex gap-3">
             <button
               type="button"
@@ -54,13 +60,15 @@ class ErrorBoundary extends Component {
             >
               Recargar
             </button>
-            <button
-              type="button"
-              onClick={() => navigator.clipboard?.writeText(fullDetails)}
-              className="h-10 rounded-lg border border-neutral-300 px-4 text-sm font-medium text-neutral-700 hover:bg-neutral-50"
-            >
-              Copiar error
-            </button>
+            {showDetails && (
+              <button
+                type="button"
+                onClick={() => navigator.clipboard?.writeText(fullDetails)}
+                className="h-10 rounded-lg border border-neutral-300 px-4 text-sm font-medium text-neutral-700 hover:bg-neutral-50"
+              >
+                Copiar error
+              </button>
+            )}
           </div>
         </div>
       </main>
@@ -1034,7 +1042,7 @@ function App() {
         facebook_denied: "Facebook connection cancelled.",
         facebook_token_failed: "Could not authenticate with Facebook. Please try again.",
         facebook_no_pages: "No Facebook Page found on this account. Create or get access to a Page first.",
-        facebook_server_error: "Internal error connecting to Facebook.",
+        facebook_server_error: "No se pudo conectar con Facebook en este momento. Inténtalo de nuevo.",
       };
       toast.error(socialErrorMessages[socialError] || "Could not connect this social account.");
     }
@@ -1069,8 +1077,8 @@ function App() {
           microsoft_token_failed: "Error al autenticar con Microsoft. Intenta de nuevo.",
           google_no_email: "No se pudo obtener el email de tu cuenta Google.",
           microsoft_no_email: "No se pudo obtener el email de tu cuenta Microsoft.",
-          google_server_error: "Error interno al iniciar sesión con Google. Revisa los logs del servidor.",
-          microsoft_server_error: "Error interno al iniciar sesión con Microsoft. Revisa los logs del servidor.",
+          google_server_error: "No se pudo iniciar sesión con Google en este momento. Inténtalo de nuevo; si continúa, avisa al administrador.",
+          microsoft_server_error: "No se pudo iniciar sesión con Microsoft en este momento. Inténtalo de nuevo; si continúa, avisa al administrador.",
         };
         toast.error(errorMessages[oauthError] || "Error de autenticación social.");
         return;
