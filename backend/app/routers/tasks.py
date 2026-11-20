@@ -46,7 +46,7 @@ async def enqueue_pilot_task(
         logger.error("❌ [API] Error al conectar con el broker Redis / Celery: %s", exc)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"No se pudo encolar la tarea en Redis: {exc}",
+            detail="No se pudo encolar la tarea: el servicio de colas no está disponible. Inténtalo de nuevo en unos minutos.",
         )
 
 
@@ -86,5 +86,5 @@ async def get_task_status(task_id: str):
         logger.error("❌ [API] Error al consultar el resultado de la tarea %s: %s", task_id, exc)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error consultando el estado de la tarea: {exc}",
+            detail="No se pudo consultar el estado de la tarea. Inténtalo de nuevo.",
         )

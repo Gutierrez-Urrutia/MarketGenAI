@@ -26,6 +26,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, status
 
+from app.core.errors import ENCRYPTION_NOT_CONFIGURED
 from app.core import url_safety
 from app.core.pipeline_constants import (
     OUTREACH_DAILY_SEND_LIMIT_DEFAULT,
@@ -182,7 +183,7 @@ def _split_source_config(
                 except encryption_service.EncryptionNotConfiguredError as exc:
                     raise HTTPException(
                         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                        detail=str(exc),
+                        detail=ENCRYPTION_NOT_CONFIGURED,   # RNF-04: mensaje fijo
                     ) from exc
         else:
             plaintext[key] = value
@@ -272,7 +273,7 @@ async def update_config(
             except encryption_service.EncryptionNotConfiguredError as exc:
                 raise HTTPException(
                     status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                    detail=str(exc),
+                    detail=ENCRYPTION_NOT_CONFIGURED,   # RNF-04: mensaje fijo
                 ) from exc
         elif body.hunter_api_key == "":
             payload["hunter_api_key_encrypted"] = ""

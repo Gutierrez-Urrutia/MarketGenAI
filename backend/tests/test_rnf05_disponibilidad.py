@@ -1,4 +1,4 @@
-"""RNF-05 · Disponibilidad e integración.
+"""RNF-04 · Disponibilidad e integración.
 
 Criterio 1: una falla de un servicio externo (IA o CRM) se informa al usuario sin detener la aplicación.
 - IA: aquí. Con DeepSeek caído, lento o respondiendo basura, cada endpoint que genera con IA devuelve un error

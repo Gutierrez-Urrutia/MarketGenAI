@@ -9,6 +9,8 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from celery.exceptions import Retry
 
+# RNF-04: el job guarda un mensaje seguro; el texto real de la excepción va solo al log
+from app.core.errors import GENERIC as GENERIC_JOB_ERROR
 from app.workers.tasks import campaign_tasks
 from tests.conftest import FAKE_USER_SUB
 
@@ -105,4 +107,4 @@ def test_task_generate_campaign_content_failure_retries_and_updates_status():
             )
     retry_mock.assert_called_once()
     update_asset.assert_awaited_once_with("asset-1", {"status": "error"})
-    fail_job.assert_awaited_once_with("job-1", "AI generation failed")
+    fail_job.assert_awaited_once_with("job-1", GENERIC_JOB_ERROR)

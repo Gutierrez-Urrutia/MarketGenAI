@@ -51,6 +51,7 @@ from app.rendering.html_flowables import (
 )
 from app.rendering.infographic import build_infographic_pdf
 from app.rendering.whitepaper import build_whitepaper_pdf
+from app.core.errors import safe_error_message
 
 logger = logging.getLogger(__name__)
 
@@ -278,7 +279,7 @@ def task_generate_one_pager(
     except Exception as exc:
         logger.exception("one_pager failed: job=%s", job_id)
         _run(assets_repo.update(asset_id, {"status": "error"}))
-        _run(jobs_repo.fail_job(job_id, str(exc)))
+        _run(jobs_repo.fail_job(job_id, safe_error_message(exc)))
         raise self.retry(exc=exc)
 
 
@@ -368,7 +369,7 @@ def task_generate_whitepaper(
     except Exception as exc:
         logger.exception("whitepaper failed: job=%s", job_id)
         _run(assets_repo.update(asset_id, {"status": "error"}))
-        _run(jobs_repo.fail_job(job_id, str(exc)))
+        _run(jobs_repo.fail_job(job_id, safe_error_message(exc)))
         raise self.retry(exc=exc)
 
 
@@ -425,7 +426,7 @@ def task_generate_social_posts(
     except Exception as exc:
         logger.exception("social_posts failed: job=%s", job_id)
         _run(assets_repo.update(asset_id, {"status": "error"}))
-        _run(jobs_repo.fail_job(job_id, str(exc)))
+        _run(jobs_repo.fail_job(job_id, safe_error_message(exc)))
         raise self.retry(exc=exc)
 
 
@@ -511,5 +512,5 @@ def task_generate_infographic(
     except Exception as exc:
         logger.exception("infographic failed: job=%s", job_id)
         _run(assets_repo.update(asset_id, {"status": "error"}))
-        _run(jobs_repo.fail_job(job_id, str(exc)))
+        _run(jobs_repo.fail_job(job_id, safe_error_message(exc)))
         raise self.retry(exc=exc)

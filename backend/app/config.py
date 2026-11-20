@@ -15,6 +15,40 @@ DEFAULT_MICROSOFT_LOGIN_BASE_URL = "https://login.microsoftonline.com"
 DEFAULT_GRAPH_BASE_URL = "https://graph.microsoft.com/v1.0"
 
 
+def missing_required(s: "Settings") -> list[str]:
+    """Variables obligatorias de producción que faltan o no sirven, cada una con el motivo (RNF-04).
+
+    No exige credenciales de Firestore: en Cloud Run se usa la cuenta de servicio del servicio (ADC), sin archivo. Solo si se define
+    FIREBASE_SERVICE_ACCOUNT_JSON se comprueba que sea un JSON válido."""
+    problemas: list[str] = []
+    if not s.app_secret_key or s.app_secret_key == "change-me-in-production":
+        problemas.append("APP_SECRET_KEY (vacía o la de por defecto)")
+    if not s.google_cloud_project:
+        problemas.append("GOOGLE_CLOUD_PROJECT (proyecto de Firestore)")
+    if not s.deepseek_api_key:
+        problemas.append("DEEPSEEK_API_KEY (llave de la IA)")
+    if not s.pipeline_encryption_key:
+        problemas.append("PIPELINE_ENCRYPTION_KEY (llave Fernet de cifrado)")
+    else:
+        try:
+            from cryptography.fernet import Fernet
+            Fernet(s.pipeline_encryption_key.encode())
+        except Exception:
+            problemas.append("PIPELINE_ENCRYPTION_KEY (no es una llave Fernet válida)")
+    storage = (s.storage_backend or "").lower()
+    if storage == "supabase":
+        problemas.append("STORAGE_BACKEND (Supabase ya no existe: usar gcs)")
+    elif storage == "gcs" and not s.gcs_bucket:
+        problemas.append("GCS_BUCKET (obligatoria con STORAGE_BACKEND=gcs)")
+    if s.firebase_service_account_json:
+        try:
+            import json
+            json.loads(s.firebase_service_account_json)
+        except ValueError:
+            problemas.append("FIREBASE_SERVICE_ACCOUNT_JSON (no es un JSON válido)")
+    return problemas
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -146,13 +180,16 @@ class Settings(BaseSettings):
         return ",".join(origin.strip() for origin in value.split(",") if origin.strip())
 
     @model_validator(mode="after")
-    def _require_real_secret_in_production(self) -> "Settings":
-        if self.app_env.lower() == "production" and self.app_secret_key == "change-me-in-production":
-            raise RuntimeError(
-                "APP_SECRET_KEY is still set to the default 'change-me-in-production' value "
-                "while APP_ENV=production. Set a strong, unique APP_SECRET_KEY before starting "
-                "the application."
-            )
+    def _require_mandatory_in_production(self) -> "Settings":
+        # RNF-04: el arranque informa TODAS las obligatorias que faltan, no solo la primera ni la que falle más tarde.
+        if self.app_env.lower() == "production":
+            faltantes = missing_required(self)
+            if faltantes:
+                raise RuntimeError(
+                    "Faltan variables de entorno obligatorias con APP_ENV=production: "
+                    + "; ".join(faltantes)
+                    + ". Ver docs/MANUAL-DESPLIEGUE.md, sección 3."
+                )
         return self
 
     @model_validator(mode="after")
@@ -205,3 +242,4 @@ def get_settings() -> Settings:
 
 
 settings = get_settings()
+

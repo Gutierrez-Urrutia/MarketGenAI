@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, patch
 
+# RNF-04: el job guarda un mensaje seguro; el texto real de la excepción va solo al log
+from app.core.errors import GENERIC as GENERIC_JOB_ERROR
 import pytest
 
 from tests.conftest import FAKE_USER_SUB, fake_book, fake_job
@@ -212,7 +214,7 @@ async def test_generate_one_pager_failure_fails_job(client):
             await client.post(f"{API}/books/book-001/assets/one-pager", json={
                 "bookId": "book-001",
             })
-    fail_job.assert_awaited_once_with(job["id"], "DeepSeek timeout")
+    fail_job.assert_awaited_once_with(job["id"], GENERIC_JOB_ERROR)
     assets_update.assert_awaited_once_with("asset-001", {"status": "error"})
 
 
@@ -306,7 +308,7 @@ async def test_generate_social_posts_failure_fails_job(client):
                 "bookId": "book-001",
                 "platforms": ["linkedin"]
             })
-    fail_job.assert_awaited_once_with(job["id"], "DeepSeek timeout")
+    fail_job.assert_awaited_once_with(job["id"], GENERIC_JOB_ERROR)
     assets_update.assert_awaited_once_with("asset-001", {"status": "error"})
 
 

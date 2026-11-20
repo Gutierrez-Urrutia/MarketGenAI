@@ -9,7 +9,7 @@ services:
     healthCheckPath: /api/v1/health
     envVars:
       - key: PYTHON_VERSION
-        value: 3.12.0
+        value: 3.12.7
       - key: APP_ENV
         value: production
       - key: APP_DEBUG
@@ -18,6 +18,21 @@ services:
       # con esto el registro de auditoría usa el primer valor de X-Forwarded-For (ver DOCUMENTACION/RNF-02).
       - key: TRUST_PROXY_HEADERS
         value: "true"
+      # RNF-04: obligatorias en producción; si falta alguna, el arranque se detiene y las lista todas (docs/MANUAL-DESPLIEGUE.md, sección 3).
+      - key: APP_SECRET_KEY
+        generateValue: true
+      - key: GOOGLE_CLOUD_PROJECT
+        sync: false
+      - key: STORAGE_BACKEND
+        value: gcs
+      - key: GCS_BUCKET
+        sync: false
+      - key: BACKEND_CORS_ORIGINS
+        sync: false
+      - key: FRONTEND_URL
+        sync: false
+      - key: LOCAL_DEV_AUTH_ENABLED
+        value: "false"
       - key: REDIS_URL
         sync: false
       - key: CELERY_BROKER_URL

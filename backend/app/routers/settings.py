@@ -1,9 +1,11 @@
 """Settings router — per-org configuration (CRM, LLM model, social)."""
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone as tz
 from typing import Any, Dict, List, Optional
 
+import httpx
 from cryptography.fernet import InvalidToken
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -23,6 +25,8 @@ from app.services.crm_service import (
     SalesforceClient,
 )
 from app.services.firestore_service import settings_repo
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/settings", tags=["Settings"])
 
@@ -52,18 +56,21 @@ def _redact_social_tokens(doc: Dict[str, Any]) -> Dict[str, Any]:
     return {**doc, "socialAccounts": redacted}
 
 
+from app.core.errors import ENCRYPTION_NOT_CONFIGURED as _ENCRYPTION_NOT_CONFIGURED
+
+
 def _encrypt_secret(value: str) -> str:
     try:
         return encryption_service.encrypt(value)
     except encryption_service.EncryptionNotConfiguredError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        raise HTTPException(status_code=503, detail=_ENCRYPTION_NOT_CONFIGURED) from exc
 
 
 def _decrypt_secret(token: str) -> str:
     try:
         return encryption_service.decrypt(token)
     except encryption_service.EncryptionNotConfiguredError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        raise HTTPException(status_code=503, detail=_ENCRYPTION_NOT_CONFIGURED) from exc
     except InvalidToken as exc:
         raise HTTPException(
             status_code=409,
@@ -174,6 +181,10 @@ async def test_crm_connection(
         raise HTTPException(status_code=504, detail=str(exc)) from exc
     except CrmProviderError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except httpx.HTTPError as exc:
+        # RNF-04: CRM caído, sin red o DNS: antes salía como 500 sin mensaje
+        logger.warning("test-connection: fallo de conexión con %s: %r", provider, exc)
+        raise HTTPException(status_code=502, detail="No se pudo conectar con el CRM. Inténtalo de nuevo en unos minutos.") from exc
 
 
 @router.post("/crm/{provider}/connect")

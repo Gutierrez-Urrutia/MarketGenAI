@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, patch
 
+# RNF-04: el job guarda un mensaje seguro; el texto real de la excepción va solo al log
+from app.core.errors import GENERIC as GENERIC_JOB_ERROR
 import pytest
 
 from tests.conftest import FAKE_USER_SUB, fake_book, fake_chapter, fake_job
@@ -224,7 +226,7 @@ async def test_generate_chapters_fallback_failure_fails_job(client):
     ):
         with pytest.raises(RuntimeError, match="AI timeout"):
             await client.post(f"{API}/book-001/chapters/generate", json={"chapterCount": 5})
-    fail_job.assert_awaited_once_with(job["id"], "AI timeout")
+    fail_job.assert_awaited_once_with(job["id"], GENERIC_JOB_ERROR)
 
 
 @pytest.mark.asyncio
@@ -320,7 +322,7 @@ async def test_generate_single_chapter_fallback_failure_fails_job(client):
     ):
         with pytest.raises(RuntimeError, match="DeepSeek timeout"):
             await client.post(f"{API}/book-001/chapters/chapter-001/content/generate", json={})
-    fail_job.assert_awaited_once_with(job["id"], "DeepSeek timeout")
+    fail_job.assert_awaited_once_with(job["id"], GENERIC_JOB_ERROR)
 
 
 # ── Generate all content ───────────────────────────────────────────────────
@@ -419,4 +421,4 @@ async def test_generate_all_content_fallback_failure_fails_job(client):
     ):
         with pytest.raises(RuntimeError, match="AI timeout"):
             await client.post(f"{API}/book-001/content/generate", json={})
-    fail_job.assert_awaited_once_with(job["id"], "AI timeout")
+    fail_job.assert_awaited_once_with(job["id"], GENERIC_JOB_ERROR)
