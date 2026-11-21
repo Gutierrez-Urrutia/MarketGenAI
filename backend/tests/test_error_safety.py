@@ -115,9 +115,19 @@ async def test_RNF04_health_db_ok(http):
 # ── tasks sin texto interno ──────────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_RNF04_error_de_cola_no_muestra_el_host_del_broker(http):
-    with patch("app.routers.tasks.AsyncResult", side_effect=RuntimeError("Error 111 connecting to redis://:clave@10.0.0.5:6379/0")):
-        r = await http.get(f"{API}/tasks/abc123")
+async def test_RNF04_error_de_cola_no_muestra_el_host_del_broker(http, app):
+    # RNF-05: consultar una tarea exige rol admin (antes cualquier sesión podía leer la tarea de otro usuario)
+    from app.dependencies.auth import CurrentUser, verify_token
+    previous = app.dependency_overrides.get(verify_token)
+    app.dependency_overrides[verify_token] = lambda: CurrentUser(sub="admin-1", email="a@x.com", roles=["admin"], raw={"sub": "admin-1"})
+    try:
+        with patch("app.routers.tasks.AsyncResult", side_effect=RuntimeError("Error 111 connecting to redis://:clave@10.0.0.5:6379/0")):
+            r = await http.get(f"{API}/tasks/abc123")
+    finally:  # el fixture `app` dura toda la sesión: no dejar el override para otras pruebas
+        if previous is None:
+            app.dependency_overrides.pop(verify_token, None)
+        else:
+            app.dependency_overrides[verify_token] = previous
     assert r.status_code == 500
     assert "10.0.0.5" not in r.text and "clave" not in r.text and "redis://" not in r.text
 

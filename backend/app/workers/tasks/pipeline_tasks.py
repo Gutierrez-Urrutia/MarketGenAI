@@ -8,12 +8,12 @@ analisis-worker-serverless.md.
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import Any, Dict
 
 from celery import Task
 
+from app.workers.async_runner import run_async
 from app.services import job_scout_service
 from app.schemas.pipeline import PipelineRunStatus
 from app.services.firestore_service import pipeline_run_locks_repo, pipeline_runs_repo
@@ -23,15 +23,8 @@ logger = logging.getLogger(__name__)
 
 
 def _run(coro):
-    """Run an async coroutine from a sync Celery task."""
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_closed():
-            raise RuntimeError
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-    return loop.run_until_complete(coro)
+    """Run an async coroutine from a sync Celery task (always on the shared loop: see app/workers/async_runner.py)."""
+    return run_async(coro)
 
 
 async def run_job_scout_now(run_id: str, pipeline_config: Dict[str, Any]) -> Dict[str, Any]:

@@ -48,6 +48,11 @@ export function OutreachPage({ navigationState = {}, onNavigate = () => {}, onOu
   const [sendingId, setSendingId] = useState(null);
   const activeProspecting = useMemo(() => prospectingEmails.filter(isActive), [prospectingEmails]);
   const closedProspecting = useMemo(() => prospectingEmails.filter((email) => !isActive(email)), [prospectingEmails]);
+  // The status filter of Historial applies to this table too (same keys as the older history table).
+  const filteredClosedProspecting = useMemo(
+    () => (historyFilter === "all" ? closedProspecting : closedProspecting.filter((email) => email.status === historyFilter)),
+    [closedProspecting, historyFilter],
+  );
   // Historial › «Correos de prospección»: the closed email opened read-only.
   // Apart from the review queue's selection, which it never changes.
   const [historyDetailId, setHistoryDetailId] = useState(null);
@@ -669,6 +674,7 @@ export function OutreachPage({ navigationState = {}, onNavigate = () => {}, onOu
               {t(`outreachPage.filters.${filterKey}`)}
             </button>
           ))}</div>
+          {filteredHistory.length > 0 && (
           <Card>
             <table className="w-full text-xs">
               <thead><tr className="bg-slate-50 text-slate-600 uppercase">
@@ -729,9 +735,10 @@ export function OutreachPage({ navigationState = {}, onNavigate = () => {}, onOu
               </tbody>
             </table>
           </Card>
+          )}
           <Card className="p-3 space-y-2">
             <p className="text-sm font-semibold text-gray-900">{t("outreachPage.prospecting.table.title")}</p>
-            {closedProspecting.length === 0 ? (
+            {filteredClosedProspecting.length === 0 ? (
               <p className="text-xs text-gray-500">{t("outreachPage.prospecting.table.empty")}</p>
             ) : (
               <table className="w-full text-xs" data-testid="prospecting-history">
@@ -745,7 +752,7 @@ export function OutreachPage({ navigationState = {}, onNavigate = () => {}, onOu
                   <th className="px-3 py-2 text-left font-medium">{t("outreachPage.prospecting.table.date")}</th>
                 </tr></thead>
                 <tbody className="divide-y divide-slate-100">
-                  {closedProspecting.map((email) => {
+                  {filteredClosedProspecting.map((email) => {
                     const decidedBy = decidedByName(email) || t("outreachPage.prospecting.table.unknownUser");
                     const decidedAt = email.status === "sent" ? email.sent_at : email.rejected_at;
                     return (
