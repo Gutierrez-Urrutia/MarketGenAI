@@ -9,7 +9,6 @@ Tasks:
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import re
@@ -32,6 +31,7 @@ from reportlab.platypus import (
     TableStyle,
 )
 
+from app.workers.async_runner import run_async
 from app.workers.celery_app import celery_app
 from app.config import settings
 from app.services import book_ai_service, deepseek_service
@@ -57,15 +57,8 @@ logger = logging.getLogger(__name__)
 
 
 def _run(coro):
-    """Run an async coroutine from a sync Celery task."""
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_closed():
-            raise RuntimeError
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-    return loop.run_until_complete(coro)
+    """Run an async coroutine from a sync Celery task (always on the shared loop: see app/workers/async_runner.py)."""
+    return run_async(coro)
 
 
 _CHAPTER_HEADING_RE = re.compile(r"^(?:chapter|cap[ií]tulo|capitulo)\s*\d+", re.IGNORECASE)

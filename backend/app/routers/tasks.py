@@ -55,10 +55,17 @@ async def enqueue_pilot_task(
     response_model=TaskStatusResponse,
     summary="Consultar estado y resultado de una tarea de Celery",
 )
-async def get_task_status(task_id: str):
+async def get_task_status(
+    task_id: str,
+    _admin: CurrentUser = Depends(require_roles("admin")),
+):
     """
     Consulta el estado actual de una tarea asíncrona mediante AsyncResult.
     Estados posibles: PENDING, STARTED, SUCCESS, FAILURE, RETRY.
+
+    RNF-05: estas tareas (la piloto) las encola solo un administrador y Celery no guarda quién las encoló;
+    por eso consultarlas también exige rol admin: un usuario sin ese rol no puede leer el resultado de otro.
+    El avance de las tareas de cada usuario se consulta en GET /jobs/{id}, que sí valida el dueño.
     """
     try:
         res = AsyncResult(task_id, app=celery_app)

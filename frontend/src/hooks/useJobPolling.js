@@ -13,6 +13,10 @@ const DONE_STATUSES = ['completed', 'succeeded', 'success']
 const ERROR_STATUSES = ['failed', 'error', 'cancelled']
 // RNF-04: si la API no responde varias veces seguidas, se deja de sondear y se avisa (antes sondeaba para siempre sin decir nada)
 export const MAX_CONSECUTIVE_POLL_FAILURES = 5
+// RNF-05: si nadie toma la tarea (worker detenido) o tarda demasiado, se deja de sondear y se avisa (antes la pantalla quedaba cargando para siempre)
+export const MAX_PENDING_MS = 5 * 60 * 1000   // la tarea sigue «pendiente»: ningún worker la tomó
+export const MAX_TOTAL_MS = 15 * 60 * 1000    // tope de espera total de cualquier tarea
+const PENDING_STATUSES = ['pending', 'queued']
 
 export function useJobPolling(jobId, { onProgress, onComplete, onError } = {}) {
   const [job,     setJob]     = useState(null)
@@ -21,6 +25,7 @@ export function useJobPolling(jobId, { onProgress, onComplete, onError } = {}) {
   const completedRef = useRef(false)
   const failedRef = useRef(false)
   const failuresRef = useRef(0)
+  const startedAtRef = useRef(Date.now())
 
   const poll = useCallback(async () => {
     if (!jobId) return
@@ -39,6 +44,14 @@ export function useJobPolling(jobId, { onProgress, onComplete, onError } = {}) {
         failedRef.current = true
         setIsError(true)
         onError?.(data.error || data.message || 'Job failed')
+      } else if (!completedRef.current && !failedRef.current) {
+        const waited = Date.now() - startedAtRef.current
+        const stalled = PENDING_STATUSES.includes(status) && waited >= MAX_PENDING_MS
+        if (stalled || waited >= MAX_TOTAL_MS) {
+          failedRef.current = true
+          setIsError(true)
+          onError?.(errorText(stalled ? 'taskStalled' : 'taskTooLong'))
+        }
       }
     } catch (err) {
       console.error('Job poll error:', err)
@@ -58,6 +71,7 @@ export function useJobPolling(jobId, { onProgress, onComplete, onError } = {}) {
     completedRef.current = false
     failedRef.current = false
     failuresRef.current = 0
+    startedAtRef.current = Date.now()
   }, [jobId])
 
   useEffect(() => {
