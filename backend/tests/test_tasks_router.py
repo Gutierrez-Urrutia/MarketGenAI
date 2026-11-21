@@ -77,6 +77,25 @@ async def test_task_status_requires_login(anon_client: AsyncClient):
 
 
 @pytest.mark.asyncio
+async def test_task_status_forbidden_for_non_admin(user_client: AsyncClient):
+    """RNF-05 (CP-179): un usuario sin rol admin no puede leer el estado ni el resultado de la tarea de otro."""
+    with patch("app.routers.tasks.AsyncResult") as mock_result:
+        r = await user_client.get("/api/v1/tasks/tarea-de-otro-usuario")
+    assert r.status_code == 403
+    mock_result.assert_not_called()  # ni siquiera se consulta el resultado
+
+
+def test_celery_redelivers_unacknowledged_tasks_within_minutes():
+    """RNF-05 (CP-178): sin visibility_timeout Redis reentrega una tarea de un worker caído recién a las 3600 s."""
+    from app.workers.celery_app import VISIBILITY_TIMEOUT_SECONDS, celery_app
+
+    options = celery_app.conf.broker_transport_options
+    assert options["visibility_timeout"] == VISIBILITY_TIMEOUT_SECONDS
+    assert 60 <= VISIBILITY_TIMEOUT_SECONDS <= 1800
+    assert celery_app.conf.task_acks_late is True
+
+
+@pytest.mark.asyncio
 async def test_debug_urls_requires_admin(anon_client: AsyncClient, user_client: AsyncClient):
     assert (await anon_client.get("/api/v1/auth/debug-urls")).status_code in (401, 403)
     assert (await user_client.get("/api/v1/auth/debug-urls")).status_code == 403

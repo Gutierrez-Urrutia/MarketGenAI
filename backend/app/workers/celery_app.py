@@ -9,6 +9,7 @@ Queues:
   llm      — LLM generation tasks (may be scaled independently)
   exports  — document export tasks
 """
+import os
 import ssl
 from celery import Celery
 from app.config import settings
@@ -31,6 +32,10 @@ def _result_backend_url() -> str:
 
 _broker = _broker_url()
 _backend = _result_backend_url()
+
+# Segundos que Redis espera antes de reentregar una tarea que un worker tomó y no confirmó (worker caído).
+# Se puede ajustar con CELERY_VISIBILITY_TIMEOUT; debe ser mayor que la tarea más larga o se duplicaría.
+VISIBILITY_TIMEOUT_SECONDS = int(os.getenv("CELERY_VISIBILITY_TIMEOUT", "600"))
 
 # Con Redis caído, Celery reintentaba reconectar el backend de resultados 20 veces (~5 s cada una):
 # `.delay()` tardaba ~110 s en fallar y la generación parecía no terminar. Sin reintentos, falla en
@@ -77,6 +82,10 @@ celery_app.conf.update(
         "socket_timeout": 5,
         "socket_keepalive": True,
         "health_check_interval": 25,
+        # RNF-05: con task_acks_late, si el worker cae a mitad de una tarea Redis solo la reentrega pasado este
+        # tiempo (por defecto 3600 s, y entretanto el trabajo parecía «en proceso» una hora). 600 s cubre con margen
+        # la tarea más larga (generar contenido de un libro) y deja la reentrega en minutos, no en horas.
+        "visibility_timeout": VISIBILITY_TIMEOUT_SECONDS,
     },
     result_backend_transport_options=RESULT_BACKEND_TRANSPORT_OPTIONS,
     task_routes={

@@ -6,7 +6,6 @@ Tasks:
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 import re
@@ -17,6 +16,7 @@ from typing import Any, Dict, List, Optional
 
 from celery import Task
 
+from app.workers.async_runner import run_async
 from app.workers.celery_app import celery_app
 from app.services import audit_service, deepseek_service
 from app.services.customer_profile_service import SIZE_RANGES, industry_label, size_label
@@ -28,15 +28,8 @@ logger = logging.getLogger(__name__)
 
 
 def _run(coro):
-    """Run an async coroutine from a sync Celery task."""
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_closed():
-            raise RuntimeError
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-    return loop.run_until_complete(coro)
+    """Run an async coroutine from a sync Celery task (always on the shared loop: see app/workers/async_runner.py)."""
+    return run_async(coro)
 
 
 def _output_dir() -> Path:
