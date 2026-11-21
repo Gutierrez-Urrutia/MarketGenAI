@@ -72,8 +72,16 @@ def _proposals_section(proposals: List[Dict[str, Any]], message: str) -> List[st
     lines: List[str] = []
     detailed = 0
     for p in proposals:
-        currency = p.get("currency") or ""
+        # El asistente web guarda el monto dentro de structured_content; otros flujos, en la propuesta.
+        structured = p.get("structured_content") or p.get("structuredContent") or {}
+        if not isinstance(structured, dict):
+            structured = {}
         amount = p.get("totalAmount")
+        if amount in (None, ""):
+            amount = p.get("total_amount")
+        if amount in (None, ""):
+            amount = structured.get("totalAmount")
+        currency = p.get("currency") or structured.get("currency") or ""
         lines.append(_line(
             p.get("title"),
             f"client: {p.get('clientName')}" if p.get("clientName") else "",

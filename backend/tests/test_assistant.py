@@ -73,6 +73,23 @@ async def test_status_is_readable_not_an_internal_code(data):
 
 
 @pytest.mark.asyncio
+async def test_proposal_total_is_read_from_structured_content(data):
+    """El asistente web guarda el monto dentro de structured_content: Noa también debe verlo."""
+    rows = [
+        {"id": "p5", "userId": FAKE_USER_SUB, "title": "Propuesta Wizard", "proposal_status": "enviada",
+         "structured_content": {"totalAmount": 10240, "currency": "USD"}},
+        {"id": "p6", "userId": FAKE_USER_SUB, "title": "Propuesta Camel", "proposal_status": "enviada",
+         "structuredContent": {"totalAmount": 5000}, "currency": "CLP"},
+        {"id": "p7", "userId": FAKE_USER_SUB, "title": "Propuesta Sin Monto", "proposal_status": "borrador"},
+    ]
+    with patch.object(ctx.proposals_repo, "list", _fake_list(rows)):
+        text = await ctx.build_context(FAKE_USER_SUB, "hola")
+    assert "Propuesta Wizard | status: enviada | total: 10240 USD" in text
+    assert "Propuesta Camel | status: enviada | total: 5000 CLP" in text
+    assert "Sin Monto | status: borrador" in text and "Sin Monto | status: borrador | total" not in text
+
+
+@pytest.mark.asyncio
 async def test_context_drops_foreign_rows_even_if_the_repo_returns_them(data):
     """Defense in depth: a repo that ignores the userId filter must not leak."""
     async def leaky(**_kwargs):
