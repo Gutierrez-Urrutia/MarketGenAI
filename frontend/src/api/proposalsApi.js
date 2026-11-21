@@ -1,4 +1,5 @@
 import api from "./axios";
+import { errorText } from "./errorMessages";
 
 const emitProposalUpdated = () => {
   if (typeof window !== "undefined") {
@@ -38,13 +39,14 @@ export const pollProposalJob = async (jobId, proposalId) => {
     }
 
     if (errorStatuses.includes(status)) {
-      throw new Error(job?.error || job?.message || "Proposal generation failed");
+      throw new Error(job?.error || job?.message || errorText("server"));
     }
 
     await sleep(POLL_INTERVAL_MS);
   }
 
-  throw new Error("Proposal generation timed out");
+  // RNF-05: si nadie toma la tarea (worker detenido) o tarda demasiado, el aviso sale traducido y sin jerga («timed out»)
+  throw new Error(errorText("taskTooLong"));
 };
 
 export const proposalsApi = {
