@@ -16,7 +16,7 @@ const formatDate = (value) => {
   return date && !Number.isNaN(date.getTime()) ? date.toLocaleDateString() : "—";
 };
 
-export function CustomerDetailModal({ open, onClose, customer, options }) {
+export function CustomerDetailModal({ open, onClose, customer, options, onCreateProposal }) {
   const { t } = useI18n();
   const [items, setItems] = useState([]);
   const [total, setTotal] = useState(0);
@@ -107,7 +107,10 @@ export function CustomerDetailModal({ open, onClose, customer, options }) {
           )}
         </div>
 
-        <div className="flex justify-end">
+        <div className="flex justify-end gap-2">
+          {onCreateProposal && (
+            <Button onClick={() => { onClose(); onCreateProposal(customer); }}>{t("customersPage.newProposal")}</Button>
+          )}
           <Button variant="secondary" onClick={onClose}>{t("customersPage.close")}</Button>
         </div>
       </div>

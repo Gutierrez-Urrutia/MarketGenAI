@@ -12,6 +12,7 @@ import {
 import { ProposalStatusControl } from "@/features/proposals/ProposalStatusControl";
 import { SignedDocumentAttachment } from "@/features/proposals/SignedDocumentAttachment";
 import { ProposalVersionHistory } from "@/features/proposals/ProposalVersionHistory";
+import { CustomerPicker } from "@/features/proposals/CustomerPicker";
 import { isAdminUser } from "@/utils/permissions";
 import { ProgressModal } from "@/components/dashboard/ProgressModal";
 import { ProposalDocumentPreview } from "@/features/proposals/ProposalDocumentPreview";
@@ -134,6 +135,7 @@ export function ContentLibraryPage({ navigationState = {}, onNavigate = () => {}
     discount: 0,
   });
   const [customProposalTag, setCustomProposalTag] = useState("");
+  const [selectedCustomer, setSelectedCustomer] = useState(null); // RF-VTA-03: cliente propio al que se vincula la propuesta
   const [pricingRows, setPricingRows] = useState([
     { id: 1, service: "Discovery and Solution Design", description: "Customer context, requirements, and implementation plan.", quantity: 1, unitPrice: 1200 },
     { id: 2, service: "AI Workflow Implementation", description: "Configuration of the main automation and operational workflow.", quantity: 1, unitPrice: 3800 },
@@ -216,6 +218,7 @@ export function ContentLibraryPage({ navigationState = {}, onNavigate = () => {}
       discount: 0,
     });
     setCustomProposalTag("");
+    setSelectedCustomer(null);
     setPricingRows([
       { id: 1, service: "Discovery and Solution Design", description: "Customer context, requirements, and implementation plan.", quantity: 1, unitPrice: 1200 },
       { id: 2, service: "AI Workflow Implementation", description: "Configuration of the main automation and operational workflow.", quantity: 1, unitPrice: 3800 },
@@ -246,6 +249,8 @@ export function ContentLibraryPage({ navigationState = {}, onNavigate = () => {}
   useEffect(() => {
     if (navigationState.openCreateContentModal) {
       openCreateContentModal("Proposal");
+      // Desde la ficha de un cliente la propuesta llega con ese cliente ya elegido.
+      if (navigationState.customer) pickCustomer(navigationState.customer);
     }
   }, [navigationState.openCreateContentModal]);
 
@@ -685,6 +690,18 @@ export function ContentLibraryPage({ navigationState = {}, onNavigate = () => {}
   const allProposalTags = [...new Set([...defaultProposalTags, ...proposalTags])];
   const canContinueProposalSetup = proposalForm.name.trim() && proposalForm.customer.trim();
   const updateProposalForm = (field, value) => setProposalForm((current) => ({ ...current, [field]: value }));
+  // Elegir un cliente propio completa nombre, empresa, correo e industria (siguen editables) y vincula la propuesta (RF-VTA-03).
+  const pickCustomer = (customer) => {
+    setSelectedCustomer(customer);
+    if (!customer) return;
+    setProposalForm((current) => ({
+      ...current,
+      customer: customer.company || customer.name || current.customer,
+      customerCompany: customer.company || current.customerCompany,
+      customerEmail: customer.email || current.customerEmail,
+    }));
+    if (customer.industry) templatePicker.setIndustry(customer.industry);
+  };
   const updateContentAiForm = (field, value) => setContentAiForm((current) => ({ ...current, [field]: value }));
   const splitListInput = (value) => String(value || "").split(",").map((item) => item.trim()).filter(Boolean);
   const contentAiLabel = (key) => t(`contentLibrary.aiFields.${key}`);
@@ -1082,6 +1099,7 @@ export function ContentLibraryPage({ navigationState = {}, onNavigate = () => {}
     custom_prompt: proposalCustomPrompt,
     customer_name: proposalForm.customer,
     clientName: proposalForm.customer,
+    customerId: selectedCustomer?.id,
     clientEmail: proposalForm.customerEmail || undefined,
     clientCompany: proposalForm.customerCompany || undefined,
     template: templatePicker.templateName,
@@ -1317,6 +1335,7 @@ export function ContentLibraryPage({ navigationState = {}, onNavigate = () => {}
     contextPriority: ["proposalDescription", "customer", "tags", "title", "template"],
     clientName: proposalForm.customer,
     customer: proposalForm.customer,
+    customerId: selectedCustomer?.id,
     template: templatePicker.templateName,
     ...templatePicker.generationFields(),
     tags: proposalTags,
@@ -1480,6 +1499,7 @@ export function ContentLibraryPage({ navigationState = {}, onNavigate = () => {}
         status: "draft",
         customer_name: proposalForm.customer,
         clientName: proposalForm.customer,
+        customerId: selectedCustomer?.id,
         clientEmail: proposalForm.customerEmail || undefined,
         clientCompany: proposalForm.customerCompany || undefined,
         template: templatePicker.templateName,
@@ -2471,6 +2491,11 @@ const filtered = allItems.filter((item) => {
 
         {createType === "Proposal" && wizardStep === 1 && (
           <div className="space-y-1.5">
+                {!structuredEditingProposalId && (
+                  <div data-testid="content-customer-picker">
+                    <CustomerPicker selected={selectedCustomer} onSelect={pickCustomer} />
+                  </div>
+                )}
                 <div className="grid grid-cols-2 gap-1.5">
                 <Field label={createT.customer}>
                   <Input value={proposalForm.customer} onChange={(e) => updateProposalForm("customer", e.target.value)} placeholder={createT.customerPlaceholder} />
