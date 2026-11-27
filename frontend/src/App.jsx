@@ -273,6 +273,7 @@ function LoginScreen({ onLogin }) {
       identityRequired: "Enter your username or email.",
       passwordRequired: "Enter your password.",
       invalidLogin: "Invalid email or password",
+      tooManyAttempts: "Too many failed attempts. Try again in a few minutes.",
       or: "or continue with",
       google: "Continue with Google",
       microsoft: "Continue with Microsoft",
@@ -322,6 +323,7 @@ function LoginScreen({ onLogin }) {
       identityRequired: "Ingresa tu nombre de usuario o correo.",
       passwordRequired: "Ingresa tu contraseña.",
       invalidLogin: "Correo o contraseña inválidos.",
+      tooManyAttempts: "Demasiados intentos fallidos. Intenta de nuevo en unos minutos.",
       or: "o continuar con",
       google: "Continuar con Google",
       microsoft: "Continuar con Microsoft",
@@ -371,6 +373,7 @@ function LoginScreen({ onLogin }) {
       identityRequired: "Insira seu nome de usuário ou e-mail.",
       passwordRequired: "Insira sua senha.",
       invalidLogin: "E-mail ou senha inválidos.",
+      tooManyAttempts: "Muitas tentativas malsucedidas. Tente novamente em alguns minutos.",
       or: "ou continuar com",
       google: "Continuar com Google",
       microsoft: "Continuar com Microsoft",
@@ -481,7 +484,15 @@ function LoginScreen({ onLogin }) {
       );
       toast.success(copy.signedIn);
       onLogin();
-    } catch {
+    } catch (error) {
+      // RNF-01: 429 = cuenta bloqueada un rato por intentos fallidos (o límite por IP). Se informa en vez de «credenciales inválidas».
+      if (error?.response?.status === 429) {
+        const message = error.response?.data?.detail?.message || copy.tooManyAttempts;
+        setPassword("");
+        setFormError(message);
+        toast.error(message);
+        return;
+      }
       const canUseDemoLogin =
         DEMO_LOGIN_ENABLED &&
         usernameOrEmail.trim().toLowerCase() === DEMO_EMAIL &&

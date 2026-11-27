@@ -48,6 +48,15 @@ def _use_gcs() -> bool:
     return (settings.storage_backend or "supabase").strip().lower() == "gcs"
 
 
+def local_files_are_served() -> bool:
+    """¿Se pueden abrir sin sesión los archivos del respaldo local (GET /assets/local/...)?
+
+    Esa ruta es pública porque los enlaces se abren como links simples. Solo se justifica en desarrollo con el respaldo en
+    disco: con almacenamiento en la nube (gcs) los archivos nunca están en disco y los enlaces son firmados y temporales, y
+    en producción no debe haber ninguna ruta que sirva archivos sin sesión (RNF-01)."""
+    return not _use_gcs() and (settings.app_env or "").strip().lower() != "production"
+
+
 _gcs_client = None
 
 

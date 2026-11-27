@@ -28,7 +28,7 @@ from app.schemas.asset import (
 )
 from app.schemas.job import JobAccepted
 from app.services.firestore_service import assets_repo, jobs_repo, books_repo
-from app.services.storage_service import storage_service
+from app.services.storage_service import local_files_are_served, storage_service
 from app.workers.tasks.asset_tasks import (
     generate_whitepaper_now,
     generate_one_pager_now,
@@ -158,6 +158,9 @@ async def download_asset(
 # ── Local Asset Serving ───────────────────────────────────────────────────────
 @router.get("/assets/local/{file_path:path}")
 async def get_local_asset(file_path: str):
+    # RNF-01: ruta sin sesión; solo existe para el respaldo en disco de desarrollo (ver storage_service.local_files_are_served).
+    if not local_files_are_served():
+        raise HTTPException(status_code=404, detail="File not found.")
     # Los documentos firmados de propuestas (RF-VTA-06) solo se abren con su enlace temporal, no por esta ruta pública.
     if "/signed/" in f"/{file_path}":
         raise HTTPException(status_code=404, detail="File not found.")
