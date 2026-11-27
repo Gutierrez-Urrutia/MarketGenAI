@@ -2,7 +2,7 @@ import { ArrowRightIcon, BookIcon, BriefIcon, CheckIcon, DownloadIcon, FileIcon,
 import { Badge, Btn, Card, Field, FormRow, Input, Select } from "@/components/dashboard/ui";
 import { Footer } from "docx";
 import Modal from "@/components/ui/Modal";
-import { PREF_KEYS, getContentItemKey, getStoredPreference, readDeletedContentIds, readLocalContentProposals, saveLocalContentProposal, writeDeletedContentIds } from "@/utils/localStore";
+import { PREF_KEYS, getContentItemKey, getStoredPreference, readDeletedContentIds, deleteLocalContentProposal, isLocalProposalId, readLocalContentProposals, writeDeletedContentIds } from "@/utils/localStore";
 import {
   proposalStatusColorClass,
   proposalStatusErrorMessage,
@@ -1110,13 +1110,46 @@ export function ContentLibraryPage({ navigationState = {}, onNavigate = () => {}
     total_amount: pricingTotal,
     structured_content: buildProposalStructure(title),
   });
+  // Cuerpo con el que se crea una propuesta nueva en el servidor (al guardar un borrador o al generar).
+  const buildNewProposalPayload = (title, structure) => ({
+    title,
+    description: contentDescription,
+    proposal_description: contentDescription,
+    detailed_description: detailedDescription,
+    team_sizing: teamSizing,
+    length: proposalLength,
+    language: platformGenerationLanguage,
+    custom_prompt: proposalCustomPrompt,
+    status: "draft",
+    customer_name: proposalForm.customer,
+    clientName: proposalForm.customer,
+    customerId: selectedCustomer?.id,
+    clientEmail: proposalForm.customerEmail || undefined,
+    clientCompany: proposalForm.customerCompany || undefined,
+    template: templatePicker.templateName,
+    ...templatePicker.persistenceFields(),
+    tags: proposalTags,
+    pricing_rows: pricingRows,
+    total_amount: pricingTotal,
+    structured_content: structure,
+  });
+  // Un borrador guardado solo en el navegador (id manual-proposal-…) no existe en el servidor: al regenerarlo o editarlo la API
+  // respondía «proposal not found». Al pasarlo al servidor se descarta la copia local.
+  const dropLocalDraft = (id) => {
+    if (!isLocalProposalId(id)) return;
+    deleteLocalContentProposal(id);
+    setProposals((current) => current.filter((proposal) => proposal.id !== id));
+  };
+  // ¿La propuesta que se está editando ya existe en el servidor?
+  const editingServerProposal = Boolean(structuredEditingProposalId) && !isLocalProposalId(structuredEditingProposalId);
+
   const saveCreateContentDraft = async () => {
     if (createType === "Proposal") {
       if (!isEmailFormatValid(proposalForm.customerEmail)) {
         setToast(createT.crmEmailInvalid);
         return;
       }
-      if (structuredEditingProposalId) {
+      if (editingServerProposal) {
         try {
           await updateProposal(structuredEditingProposalId, buildProposalPersistencePayload());
           setProposals((current) => current.map((proposal) => proposal.id === structuredEditingProposalId
@@ -1130,32 +1163,19 @@ export function ContentLibraryPage({ navigationState = {}, onNavigate = () => {}
         }
         return;
       }
-      const draft = {
-        id: `manual-proposal-${Date.now()}`,
-        title: proposalForm.name || contentTitle || "Proposal Draft",
-        type: "Proposal",
-        status: "draft",
-        description: contentDescription,
-        proposalDescription: contentDescription,
-        detailedDescription,
-        teamSizing,
-        length: proposalLength,
-        contentSource: proposalContentSource,
-        customerName: proposalForm.customer,
-        template: templatePicker.templateName,
-        ...templatePicker.persistenceFields(),
-        tags: proposalTags,
-        pricingRows,
-        lineItems: pricingRows.map(normalizeLineItem),
-        totalAmount: pricingTotal,
-        language: platformGenerationLanguage,
-        customPrompt: proposalCustomPrompt,
-        date: proposalForm.date,
-        content: "",
-        updated: "Today",
-      };
-      saveLocalContentProposal(draft);
-      setProposals((current) => [...current, draft]);
+      // El borrador se crea en el servidor, igual que al generar: así tiene un id real y se puede editar y regenerar.
+      const title = proposalForm.name || contentTitle || "Proposal Draft";
+      try {
+        const created = await createProposal(buildNewProposalPayload(title, buildProposalStructure(title)));
+        dropLocalDraft(structuredEditingProposalId);
+        upsertGeneratedProposal(created);
+        closeCreateContentModal();
+        setToast(createT.draftSaved);
+      } catch (error) {
+        console.error(error);
+        setToast(getApiErrorMessage(error, createT.draftCreationFailed));
+      }
+      return;
     }
     closeCreateContentModal();
     setToast(createT.draftSaved);
@@ -1478,7 +1498,7 @@ export function ContentLibraryPage({ navigationState = {}, onNavigate = () => {}
 
     let draftProposal = null;
     try {
-      if (structuredEditingProposalId) {
+      if (editingServerProposal) {
         draftProposal = { id: structuredEditingProposalId };
         setGenerationModal((current) => ({ ...current, draftId: structuredEditingProposalId }));
         await updateProposal(structuredEditingProposalId, buildProposalPersistencePayload(title));
@@ -1487,28 +1507,8 @@ export function ContentLibraryPage({ navigationState = {}, onNavigate = () => {}
         await completeProposalGeneration(generatedProposal, title, contextualStructure);
         return;
       }
-      draftProposal = await createProposal({
-        title,
-        description: contentDescription,
-        proposal_description: contentDescription,
-        detailed_description: detailedDescription,
-        team_sizing: teamSizing,
-        length: proposalLength,
-        language: platformGenerationLanguage,
-        custom_prompt: proposalCustomPrompt,
-        status: "draft",
-        customer_name: proposalForm.customer,
-        clientName: proposalForm.customer,
-        customerId: selectedCustomer?.id,
-        clientEmail: proposalForm.customerEmail || undefined,
-        clientCompany: proposalForm.customerCompany || undefined,
-        template: templatePicker.templateName,
-        ...templatePicker.persistenceFields(),
-        tags: proposalTags,
-        pricing_rows: pricingRows,
-        total_amount: pricingTotal,
-        structured_content: contextualStructure,
-      });
+      draftProposal = await createProposal(buildNewProposalPayload(title, contextualStructure));
+      dropLocalDraft(structuredEditingProposalId);
       upsertGeneratedProposal(draftProposal);
       setGenerationModal((current) => ({ ...current, draftId: draftProposal.id }));
       await advanceProposalProgressToPreview();
