@@ -244,6 +244,13 @@ export const Input = ({ className = "", ...p }) => (
 
 export const Select = ({ children, ...p }) => <select className="w-full border border-gray-300 rounded-lg px-3 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500" {...p}>{children}</select>;
 
+// Fila de campos de un formulario: 1 columna en pantallas chicas y 2 desde `sm`. `items-end` alinea los CONTROLES por
+// abajo, así un campo con texto de ayuda de varias líneas (o una etiqueta larga) no baja a su vecino de fila.
+// Un campo que deba ocupar todo el ancho va con className="sm:col-span-2".
+export const FormRow = ({ children, className = "" }) => (
+  <div className={`grid grid-cols-1 items-end gap-x-3 sm:grid-cols-2 ${className}`}>{children}</div>
+);
+
 export const Field = ({ label, hint, children }) => (
   <div className="mb-[18px]">
     <label className="block text-xs font-medium text-gray-700 mb-1">{label}</label>

@@ -485,7 +485,9 @@ export function OpportunityProposalModal({ opportunity, onClose }) {
           </div>
 
           {step === 1 && (
-            <div className="grid grid-cols-2 gap-3">
+            // items-end: los controles de una misma fila quedan alineados aunque un campo tenga texto de ayuda (Client email).
+            // Sin gap vertical: cada Field trae su margen inferior, igual que en el formulario de Crear contenido.
+            <div className="grid grid-cols-2 items-end gap-x-3">
               <div className="col-span-2">
                 <CustomerPicker selected={selectedCustomer} onSelect={pickCustomer} />
               </div>

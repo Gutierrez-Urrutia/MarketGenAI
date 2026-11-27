@@ -1,5 +1,5 @@
 import { ArrowRightIcon, BookIcon, BriefIcon, CheckIcon, DownloadIcon, FileIcon, LayersIcon, LinkIcon, PenIcon, PlugIcon, PlusIcon, RefreshIcon, SaveIcon, Share2Icon, SparkIcon, TrashIcon, XIcon } from "@/components/dashboard/icons";
-import { Badge, Btn, Card, Field, Input, Select } from "@/components/dashboard/ui";
+import { Badge, Btn, Card, Field, FormRow, Input, Select } from "@/components/dashboard/ui";
 import { Footer } from "docx";
 import Modal from "@/components/ui/Modal";
 import { PREF_KEYS, getContentItemKey, getStoredPreference, readDeletedContentIds, readLocalContentProposals, saveLocalContentProposal, writeDeletedContentIds } from "@/utils/localStore";
@@ -2386,7 +2386,7 @@ const filtered = allItems.filter((item) => {
         </Field>
 
         {createType === "Proposal" && (
-          <div className="grid grid-cols-3 gap-1">
+          <div className="mb-[18px] grid grid-cols-3 gap-1">
             {[createT.proposalDetails, createT.servicesPricing, createT.reviewProposal].map((label, index) => (
               <button
                 key={label}
@@ -2417,43 +2417,6 @@ const filtered = allItems.filter((item) => {
             onChange={(e) => createType === "Proposal" ? updateProposalForm("name", e.target.value) : setContentTitle(e.target.value)}
           />
         </Field>}
-
-        {createType === "Proposal" && wizardStep === 1 && (
-          <div className="space-y-1.5">
-          <Field label={createT.title}>
-            <Input
-              placeholder={`e.g. "${createT.titleExample}"`}
-              value={proposalForm.name}
-              onChange={(e) => updateProposalForm("name", e.target.value)}
-            />
-          </Field>
-          <Field label={createT.proposalDescription}>
-            <textarea
-              className="w-full border border-gray-300 rounded-lg px-3 py-4 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none h-20"
-              placeholder={createT.proposalDescriptionPlaceholder}
-              value={contentDescription}
-              onChange={(e) => setContentDescription(e.target.value)}
-            />
-          </Field>
-          <div className="max-w-xs">
-            <Field label={createT.proposalLanguage}>
-              <Select
-                value={proposalLanguage}
-                onChange={(e) => {
-                  setProposalLanguage(e.target.value);
-                  setProposalLanguageManuallySelected(true);
-                }}
-              >
-                {Object.entries(proposalLanguageLabels).map(([value, label]) => (
-                  <option key={value} value={value}>
-                    {label}{!proposalLanguageManuallySelected && proposalLanguage === value ? ` (${createT.detected})` : ""}
-                  </option>
-                ))}
-              </Select>
-            </Field>
-          </div>
-          </div>
-        )}
 
         {isAiContentType && createType !== "Proposal" && contentAiStep === 1 && (
           <div className="max-w-xs">
@@ -2490,28 +2453,64 @@ const filtered = allItems.filter((item) => {
         )}
 
         {createType === "Proposal" && wizardStep === 1 && (
-          <div className="space-y-1.5">
-                {!structuredEditingProposalId && (
-                  <div data-testid="content-customer-picker">
-                    <CustomerPicker selected={selectedCustomer} onSelect={pickCustomer} />
-                  </div>
-                )}
-                <div className="grid grid-cols-2 gap-1.5">
-                <Field label={createT.customer}>
-                  <Input value={proposalForm.customer} onChange={(e) => updateProposalForm("customer", e.target.value)} placeholder={createT.customerPlaceholder} />
+          <div>
+                {/* Sin space-y: cada Field (y cada FormRow) trae su margen inferior y así todos los espacios son iguales. */}
+                <Field label={createT.title}>
+                  <Input
+                    placeholder={`e.g. "${createT.titleExample}"`}
+                    value={proposalForm.name}
+                    onChange={(e) => updateProposalForm("name", e.target.value)}
+                  />
                 </Field>
-                </div>
-                <div className="grid grid-cols-2 gap-1.5">
-                  <ProposalTemplateFields picker={templatePicker} />
-                </div>
-                <div className="grid grid-cols-2 gap-1.5">
+                <Field label={createT.proposalDescription}>
+                  <textarea
+                    className="w-full border border-gray-300 rounded-lg px-3 py-4 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none h-20"
+                    placeholder={createT.proposalDescriptionPlaceholder}
+                    value={contentDescription}
+                    onChange={(e) => setContentDescription(e.target.value)}
+                  />
+                </Field>
+
+                {/* Cliente: buscador de clientes guardados, luego sus datos de contacto (RF-VTA-03) */}
+                {!structuredEditingProposalId && (
+                  <Field label={t("opportunitiesPage.proposalModal.customerPick")}>
+                    <div data-testid="content-customer-picker">
+                      <CustomerPicker selected={selectedCustomer} onSelect={pickCustomer} />
+                    </div>
+                  </Field>
+                )}
+                <FormRow>
+                  <Field label={createT.customer}>
+                    <Input value={proposalForm.customer} onChange={(e) => updateProposalForm("customer", e.target.value)} placeholder={createT.customerPlaceholder} />
+                  </Field>
+                  <Field label="Client company">
+                    <Input value={proposalForm.customerCompany} onChange={(e) => updateProposalForm("customerCompany", e.target.value)} placeholder="Acme Corp" />
+                  </Field>
+                </FormRow>
                 <Field label="Client email" hint="Used to send this proposal to your CRM">
                   <Input type="email" value={proposalForm.customerEmail} onChange={(e) => updateProposalForm("customerEmail", e.target.value)} placeholder="client@company.com" />
                 </Field>
-                <Field label="Client company">
-                  <Input value={proposalForm.customerCompany} onChange={(e) => updateProposalForm("customerCompany", e.target.value)} placeholder="Acme Corp" />
-                </Field>
-                </div>
+
+                {/* Plantilla, línea de servicio, industria e idioma: dos por fila, controles alineados por abajo */}
+                <FormRow>
+                  <ProposalTemplateFields picker={templatePicker}>
+                    <Field label={createT.proposalLanguage}>
+                      <Select
+                        value={proposalLanguage}
+                        onChange={(e) => {
+                          setProposalLanguage(e.target.value);
+                          setProposalLanguageManuallySelected(true);
+                        }}
+                      >
+                        {Object.entries(proposalLanguageLabels).map(([value, label]) => (
+                          <option key={value} value={value}>
+                            {label}{!proposalLanguageManuallySelected && proposalLanguage === value ? ` (${createT.detected})` : ""}
+                          </option>
+                        ))}
+                      </Select>
+                    </Field>
+                  </ProposalTemplateFields>
+                </FormRow>
                 <Field label={createT.tags}>
                   <div className="rounded-xl border border-gray-200 bg-gray-50 p-2.5">
                     <div className="flex flex-wrap gap-1">
@@ -2623,8 +2622,8 @@ const filtered = allItems.filter((item) => {
                   <tr>
                     <th className="px-2 py-4 text-left">{createT.serviceUnit}</th>
                     <th className="px-2 py-4 text-left">{createT.serviceDescription}</th>
-                    <th className="px-2 py-4 text-left">{createT.qty}</th>
-                    <th className="px-2 py-4 text-left">{createT.unitPrice}</th>
+                    <th className="py-4 pl-2 pr-5 text-right">{createT.qty}</th>
+                    <th className="py-4 pl-2 pr-5 text-right">{createT.unitPrice}</th>
                     <th className="px-2 py-4 text-right">{createT.subtotal}</th>
                     <th className="px-2 py-4" />
                   </tr>
@@ -2637,8 +2636,8 @@ const filtered = allItems.filter((item) => {
                     <tr key={row.id} className="border-t border-gray-100">
                       <td className="p-2"><Input value={row.service} onChange={(e) => updatePricingRow(row.id, "service", e.target.value)} /></td>
                       <td className="p-2"><Input value={row.description} onChange={(e) => updatePricingRow(row.id, "description", e.target.value)} /></td>
-                      <td className="p-2 w-20"><Input type="number" min="0" value={row.quantity} onChange={(e) => updatePricingRow(row.id, "quantity", e.target.value)} /></td>
-                      <td className="p-2 w-28"><Input type="number" min="0" value={row.unitPrice} onChange={(e) => updatePricingRow(row.id, "unitPrice", e.target.value)} /></td>
+                      <td className="p-2 w-20"><Input type="number" min="0" className="text-right" value={row.quantity} onChange={(e) => updatePricingRow(row.id, "quantity", e.target.value)} /></td>
+                      <td className="p-2 w-28"><Input type="number" min="0" className="text-right" value={row.unitPrice} onChange={(e) => updatePricingRow(row.id, "unitPrice", e.target.value)} /></td>
                       <td className="p-2 text-right font-semibold text-gray-700">{formatUsd(Number(row.quantity || 0) * Number(row.unitPrice || 0))}</td>
                       <td className="p-2"><button type="button" onClick={() => removePricingRow(row.id)} className="p-1 rounded hover:bg-red-50"><TrashIcon size={12} className="text-red-500" /></button></td>
                     </tr>
