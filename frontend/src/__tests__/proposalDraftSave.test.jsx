@@ -25,7 +25,7 @@ vi.mock("@/api/axios", async (importOriginal) => {
 
 import { LOCAL_PROPOSAL_ID_PREFIX, deleteLocalContentProposal, isLocalProposalId, readLocalContentProposals, saveLocalContentProposal } from "@/utils/localStore";
 
-const LOCAL_KEY = "marketgen_local_proposals";
+const LOCAL_KEY = "marketgen_local_content_library_proposals"; // clave real de localStore.js
 
 beforeEach(() => {
   vi.clearAllMocks();
