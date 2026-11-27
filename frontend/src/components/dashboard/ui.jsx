@@ -97,6 +97,14 @@ export const TagInput = ({ tags, placeholder }) => (
   </div>
 );
 
+// Alineación de los KPI de una misma fila: la etiqueta siempre reserva KPI_LABEL_LINES líneas (clamp + alto mínimo),
+// así el número queda a la misma altura sin importar si «Detectados» ocupa una línea o «Pendientes de revisión» dos.
+// El texto largo se recorta con puntos suspensivos y se ve completo en el tooltip (title). Si algún día hacen falta
+// 3 líneas, se cambia solo esta constante y las dos clases de abajo (Tailwind necesita las clases escritas completas).
+const KPI_LABEL_LINES = 2;
+const KPI_LABEL_CLASS = "line-clamp-2 min-h-8 text-xs leading-4 text-gray-500";
+const KPI_SUB_CLASS = "line-clamp-2 text-xs leading-4 text-gray-400";
+
 export const KpiCard = ({ icon: Ic, label, value, sub, color, onClick, ariaLabel, title, detail, actions }) => {
   const { theme } = useTheme();
   const isDark = theme === "dark" || (theme === "system" && window.matchMedia?.("(prefers-color-scheme: dark)").matches);
@@ -104,14 +112,14 @@ export const KpiCard = ({ icon: Ic, label, value, sub, color, onClick, ariaLabel
     ? `${color.replace(/\bbg-\S+/g, "bg-slate-900")} border border-white/10`
     : color;
   const content = (
-    <div>
+    <div className="h-full" data-kpi-label-lines={KPI_LABEL_LINES}>
       <div className="flex items-start justify-between gap-3">
-        <div className="flex items-center gap-3">
-          <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${iconClass}`}><Ic size={18} /></div>
-          <div>
-            <p className="text-xs text-gray-500">{label}</p>
-            <p className="text-lg font-bold text-gray-900">{value}</p>
-            {sub && <p className="text-xs text-gray-400">{sub}</p>}
+        <div className="flex min-w-0 items-start gap-3">
+          <div className={`w-10 h-10 shrink-0 rounded-xl flex items-center justify-center ${iconClass}`}><Ic size={18} /></div>
+          <div className="min-w-0">
+            <p className={KPI_LABEL_CLASS} title={typeof label === "string" ? label : undefined} data-testid="kpi-label">{label}</p>
+            <p className="text-lg font-bold text-gray-900" data-testid="kpi-value">{value}</p>
+            {sub && <p className={KPI_SUB_CLASS} title={typeof sub === "string" ? sub : undefined}>{sub}</p>}
             {detail && (
               <div style={{ fontSize: '0.8em', color: '#94A3B8', marginTop: 4 }}>
                 {detail}
@@ -135,20 +143,25 @@ export const KpiCard = ({ icon: Ic, label, value, sub, color, onClick, ariaLabel
         }}
         aria-label={ariaLabel || `Open ${label}`}
         title={title || `Open ${label}`}
-        className="w-full text-left bg-white rounded-2xl border border-gray-100 shadow-sm p-4 cursor-pointer transition-all hover:bg-[#F8FAFC] hover:border-indigo-200 hover:shadow-md active:scale-[0.99] focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
+        className="h-full w-full text-left bg-white rounded-2xl border border-gray-100 shadow-sm p-4 cursor-pointer transition-all hover:bg-[#F8FAFC] hover:border-indigo-200 hover:shadow-md active:scale-[0.99] focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
       >
         {content}
       </div>
     );
   }
 
-  return <Card className="p-4">{content}</Card>;
+  return <Card className="h-full p-4">{content}</Card>;
 };
+
+// Mismo criterio que KpiCard: la etiqueta reserva 2 líneas (interlínea leading-4 = 1rem; min-h-8 = 2 x 1rem) para que
+// los números de las métricas de una tarjeta queden alineados aunque una etiqueta sea más larga que otra.
+// Ojo: la altura mínima debe ser múltiplo de la interlínea; leading-3.5 no existe en Tailwind y dejaba 3px de desfase.
+const METRIC_LABEL_CLASS = "line-clamp-2 min-h-8 text-[11px] font-medium leading-4 text-gray-500";
 
 const QuickMetric = ({ label, value }) => (
   <div className="rounded-lg bg-gray-50 px-3 py-2">
-    <p className="text-[11px] font-medium text-gray-500 leading-tight">{label}</p>
-    <p className="mt-1 text-base font-bold text-gray-900">{value}</p>
+    <p className={METRIC_LABEL_CLASS} title={typeof label === "string" ? label : undefined} data-testid="metric-label">{label}</p>
+    <p className="mt-1 text-base font-bold text-gray-900" data-testid="metric-value">{value}</p>
   </div>
 );
 
