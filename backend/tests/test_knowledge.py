@@ -92,7 +92,7 @@ async def test_get_rag_context_empty_without_documents():
 
 
 @pytest.mark.asyncio
-async def test_get_rag_context_uses_user_documents():
+async def test_get_rag_context_uses_company_documents():
     docs = [{"id": "a", "title": "Propuesta Cobranza", "service": "cobranza", "client": ""}]
     chunks = [{"docId": "a", "text": "Cobranza BPO con 50 agentes", "tokens": rag._tokens("Cobranza BPO con 50 agentes")}]
     with (
@@ -101,7 +101,7 @@ async def test_get_rag_context_uses_user_documents():
     ):
         ctx = await rag.get_rag_context(FAKE_USER_SUB, "Acme", "servicio de cobranza")
     assert "Propuesta Cobranza" in ctx and "50 agentes" in ctx
-    assert lc.await_args.kwargs["filters"] == [("userId", "==", FAKE_USER_SUB)]
+    assert "filters" not in lc.await_args.kwargs  # base de la empresa, compartida entre usuarios
 
 
 @pytest.fixture
@@ -116,9 +116,22 @@ def manager(app):
 
 
 @pytest.mark.asyncio
-async def test_upload_requires_manager(client):
-    resp = await client.post(API, files=[("files", ("a.txt", b"hola", "text/plain"))])
-    assert resp.status_code == 403
+async def test_any_user_can_upload_to_the_company_base(client):
+    """Un usuario común (rol user) puede cargar documentos; quedan a disposición de toda la empresa."""
+    fake_doc = {"id": "d9", "title": "a.txt", "filename": "a.txt", "fileType": "txt"}
+    with patch.object(rag.knowledge_documents_repo, "list", new_callable=AsyncMock, return_value=[]),          patch.object(rag.knowledge_documents_repo, "create", new_callable=AsyncMock, return_value=fake_doc) as create,          patch.object(rag.knowledge_chunks_repo, "create", new_callable=AsyncMock):
+        resp = await client.post(API, files=[("files", ("a.txt", b"Cobranza de convenios para clinicas", "text/plain"))])
+    assert resp.status_code == 201 and resp.json()["uploaded"][0]["id"] == "d9"
+    assert create.await_args.args[0]["userId"] == FAKE_USER_SUB  # queda registrado quién lo subió
+
+
+@pytest.mark.asyncio
+async def test_any_user_lists_every_company_document(client):
+    docs = [{"id": "d1", "title": "Perfil", "userId": "otro"}, {"id": "d2", "title": "Caso", "userId": FAKE_USER_SUB}]
+    with patch("app.routers.knowledge.knowledge_documents_repo.list", new_callable=AsyncMock, return_value=docs) as lst:
+        resp = await client.get(f"{API}")
+    assert resp.status_code == 200 and [d["id"] for d in resp.json()["items"]] == ["d1", "d2"]
+    assert "filters" not in lst.await_args.kwargs
 
 
 @pytest.mark.asyncio
@@ -137,7 +150,16 @@ async def test_upload_partial_success(client, manager):
 
 
 @pytest.mark.asyncio
-async def test_delete_other_users_document_forbidden(client, manager):
+async def test_a_common_user_cannot_delete_company_documents(client):
     with patch("app.routers.knowledge.knowledge_documents_repo.get", new_callable=AsyncMock,
-               return_value={"id": "d1", "userId": "otro"}):
+               return_value={"id": "d1", "userId": FAKE_USER_SUB}) as get,          patch.object(rag, "delete_document", new_callable=AsyncMock) as delete:
         assert (await client.delete(f"{API}/d1")).status_code == 403
+    delete.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_manager_can_delete_a_document_uploaded_by_someone_else(client, manager):
+    with patch("app.routers.knowledge.knowledge_documents_repo.get", new_callable=AsyncMock,
+               return_value={"id": "d1", "userId": "otro"}),          patch.object(rag, "delete_document", new_callable=AsyncMock) as delete:
+        assert (await client.delete(f"{API}/d1")).status_code == 204
+    delete.assert_awaited_once_with("d1")

@@ -90,14 +90,14 @@ async def test_generate_returns_title_content_and_unique_sources():
 
 
 @pytest.mark.asyncio
-async def test_retrieve_sources_scoped_to_user_and_budgeted():
+async def test_retrieve_sources_reads_the_company_base_and_is_budgeted():
     docs = [{"id": "a", "title": "Cobranza", "service": "", "client": ""}]
     chunks = [{"docId": "a", "text": "Cobranza BPO " * 5, "tokens": rag._tokens("Cobranza BPO")}]
     with patch.object(rag.knowledge_documents_repo, "list", new_callable=AsyncMock, return_value=docs), \
          patch.object(rag.knowledge_chunks_repo, "list", new_callable=AsyncMock, return_value=chunks) as lc:
         out = await rag.retrieve_sources("u1", service_type="cobranza")
     assert out and out[0]["title"] == "Cobranza"
-    assert lc.await_args.kwargs["filters"] == [("userId", "==", "u1")]
+    assert "filters" not in lc.await_args.kwargs  # base de la empresa: no se filtra por quien la sube
     assert await rag.retrieve_sources(None, service_type="x") == []
 
 
