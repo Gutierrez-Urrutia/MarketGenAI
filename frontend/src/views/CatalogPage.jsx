@@ -30,7 +30,7 @@ export function CatalogPage() {
   const [error, setError] = useState(false);
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
-  const [status, setStatus] = useState("all");
+  const [status, setStatus] = useState("active"); // por defecto solo los servicios activos
   const [typeId, setTypeId] = useState("");
   const [offset, setOffset] = useState(0);
   const [formService, setFormService] = useState(undefined); // undefined = cerrado, null = nuevo
@@ -87,7 +87,7 @@ export function CatalogPage() {
     }
   };
 
-  const filtered = Boolean(debouncedSearch || status !== "all" || typeId);
+  const filtered = Boolean(debouncedSearch || status !== "active" || typeId); // «activos» es el valor por defecto, no un filtro del usuario
   const from = total === 0 ? 0 : offset + 1;
   const to = Math.min(offset + PAGE_SIZE, total);
 
