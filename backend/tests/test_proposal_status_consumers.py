@@ -126,6 +126,8 @@ async def test_reports_dashboard_uses_proposal_status(client, source):
         patch("app.routers.reports.books_repo.count", new_callable=AsyncMock, return_value=0),
         patch("app.routers.reports.proposals_repo.count", new_callable=AsyncMock, return_value=len(RAW_PROPOSALS)),
         patch("app.routers.reports.customers_repo.count", new_callable=AsyncMock, return_value=0),
+        patch("app.routers.reports.leads_repo.count", new_callable=AsyncMock, return_value=0),
+        patch("app.routers.reports.contacts_repo.count", new_callable=AsyncMock, return_value=0),
     ):
         resp = await client.get("/api/v1/reports/dashboard")
 

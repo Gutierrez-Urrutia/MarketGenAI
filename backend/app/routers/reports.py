@@ -24,7 +24,7 @@ from app.rendering.brand_styles import (
 from app.schemas.proposal import PROPOSAL_STATUS_VALUES, ProposalStatus, normalize_proposal_status
 from app.services import pipeline_report_service as pipeline_report
 from app.services.firestore_service import (
-    books_repo, proposals_repo, customers_repo, opportunities_repo,
+    books_repo, proposals_repo, customers_repo, opportunities_repo, leads_repo, contacts_repo,
 )
 
 router = APIRouter(prefix="/reports", tags=["Reports"])
@@ -139,10 +139,13 @@ async def reports_overview(
     """Return high-level KPIs for the current user."""
     # Run counts in parallel (Firestore async)
     import asyncio
-    total_books, total_proposals, total_customers = await asyncio.gather(
+    total_books, total_proposals, total_customers, total_leads, total_contacts = await asyncio.gather(
         books_repo.count(filters=[("userId", "==", user.sub)]),
         proposals_repo.count(filters=[("userId", "==", user.sub)]),
         customers_repo.count(filters=[("userId", "==", user.sub)]),
+        # Leads y contactos del pipeline de prospección guardan el dueño en `user_id` (snake_case).
+        leads_repo.count(filters=[("user_id", "==", user.sub)]),
+        contacts_repo.count(filters=[("user_id", "==", user.sub)]),
     )
 
     # Books — chapters count via listing
@@ -204,10 +207,13 @@ async def reports_dashboard(user: CurrentUser = Depends(get_current_user)):
     """Dashboard KPIs for the web app, scoped to the authenticated user."""
     import asyncio
 
-    total_books, total_proposals, total_customers = await asyncio.gather(
+    total_books, total_proposals, total_customers, total_leads, total_contacts = await asyncio.gather(
         books_repo.count(filters=[("userId", "==", user.sub)]),
         proposals_repo.count(filters=[("userId", "==", user.sub)]),
         customers_repo.count(filters=[("userId", "==", user.sub)]),
+        # Leads y contactos del pipeline de prospección guardan el dueño en `user_id` (snake_case).
+        leads_repo.count(filters=[("user_id", "==", user.sub)]),
+        contacts_repo.count(filters=[("user_id", "==", user.sub)]),
     )
     proposals = await proposals_repo.list(filters=[("userId", "==", user.sub)], limit=500)
     # Estado comercial (proposal_status), no el ciclo de generación (status).
@@ -215,8 +221,10 @@ async def reports_dashboard(user: CurrentUser = Depends(get_current_user)):
     accepted = codes.count(ProposalStatus.firmada.value)
     sent = len([c for c in codes if c in SENT_PROPOSAL_STATUSES])
     return {
-        "detected": total_customers + total_proposals + total_books,
-        "researched": total_customers,
+        # Embudo de prospección: «Detectados» son los leads que encontró el pipeline y «Investigados» los contactos
+        # que se les encontraron (antes sumaba clientes, propuestas y libros, y no reflejaba el pipeline).
+        "detected": total_leads,
+        "researched": total_contacts,
         "contacted": sent,
         "pendingReview": codes.count(ProposalStatus.borrador.value),
         "replied": len([c for c in codes if c in REPLIED_PROPOSAL_STATUSES]),
@@ -225,6 +233,8 @@ async def reports_dashboard(user: CurrentUser = Depends(get_current_user)):
             "books": total_books,
             "proposals": total_proposals,
             "customers": total_customers,
+            "leads": total_leads,
+            "contacts": total_contacts,
             "winRate": round((accepted / sent) * 100, 1) if sent else 0,
         },
         "generatedAt": datetime.now(timezone.utc).isoformat(),

@@ -245,12 +245,12 @@ export function ReportsPage({ onNavigate = () => {}, campaignFlow = null, setCam
           )}
         </div>
       )}
-      <div className="flex items-center justify-between">
-        <div>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="min-w-0">
           <h1 className="text-xl font-bold text-gray-900">{t("reports.title")}</h1>
           <p className="text-xs text-gray-500">{t("reports.subtitle")}</p>
         </div>
-        <div className="flex gap-1">
+        <div className="flex flex-wrap gap-1">
           <Btn
             variant="secondary"
             icon={<RefreshIcon size={13} className={reportsState.loading ? "animate-spin" : ""} />}
