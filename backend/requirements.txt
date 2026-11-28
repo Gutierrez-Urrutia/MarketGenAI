@@ -16,8 +16,8 @@ python-dotenv==1.0.1
 sqlalchemy==2.0.36
 psycopg[binary]==3.2.13
 
-# ── Authentication (Keycloak JWT) ─────────────────────────────────────────────
-python-jose[cryptography]==3.3.0
+# ── Authentication (JWT HS256) ─────────────────────────────────────────────
+PyJWT==2.15.0
 httpx==0.27.2
 cryptography==50.0.1
 
@@ -53,16 +53,17 @@ feedparser==6.0.11
 reportlab==4.2.5
 pypdf==5.1.0
 weasyprint==62.3
-jinja2==3.1.4
+jinja2==3.1.6
 openpyxl==3.1.5
 
 # ── Utils ─────────────────────────────────────────────────────────────────────
 python-slugify==8.0.4
-Pillow==11.0.0
+Pillow==13.0.0
 aiofiles==24.1.0
 
 # ── Testing ───────────────────────────────────────────────────────────────────
 pytest==8.3.3
 pytest-asyncio==0.24.0
-anyio[trio]==4.6.2
+anyio[trio]==4.14.2
+brotli==1.2.1
 httpx==0.27.2

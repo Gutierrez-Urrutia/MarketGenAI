@@ -18,7 +18,8 @@ from docx.oxml.ns import qn
 from docx.shared import Pt, RGBColor
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import FileResponse, JSONResponse
-from jose import JWTError, jwt
+import jwt
+from jwt import PyJWTError as JWTError
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import LETTER
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet

@@ -18,7 +18,7 @@ import pytest_asyncio
 from fastapi import HTTPException
 from fastapi.routing import APIRoute
 from httpx import ASGITransport, AsyncClient
-from jose import jwt
+import jwt
 
 from app.config import settings
 from app.core.public_routes import PUBLIC_ROUTES
