@@ -113,7 +113,7 @@ async def test_require_roles_raises_403_without_role():
 @pytest.mark.asyncio
 async def test_protected_endpoint_requires_auth():
     """
-    A request to a protected endpoint without a Bearer token should receive 403.
+    A request to a protected endpoint without a Bearer token should receive 401 (RNF-01).
 
     Note: the shared `client` fixture already has auth overridden.
     We create a clean client here to test the real auth path.
@@ -132,7 +132,8 @@ async def test_protected_endpoint_requires_auth():
             base_url="http://testserver",
         ) as ac:
             resp = await ac.get("/api/v1/books")
-        # Without a Bearer token, HTTPBearer returns 403
-        assert resp.status_code in (401, 403)
+        # Sin sesión es 401 (403 queda para «con sesión, sin permiso»).
+        assert resp.status_code == 401
+        assert resp.headers.get("www-authenticate") == "Bearer"
     finally:
         fastapi_app.dependency_overrides.update(original_overrides)

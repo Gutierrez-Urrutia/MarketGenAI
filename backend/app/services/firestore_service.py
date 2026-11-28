@@ -419,6 +419,11 @@ class RefreshTokensRepo(FirestoreRepo):
         await self.update(token_hash, {"revokedAt": now_utc()})
 
 
+class LoginAttemptsRepo(FirestoreRepo):
+    """Intentos de inicio de sesión fallidos por correo (RNF-01). El id es el hash del correo: no se guarda el correo."""
+    collection = "loginAttempts"
+
+
 class PasswordResetTokensRepo(FirestoreRepo):
     collection = "passwordResetTokens"
 
@@ -1781,6 +1786,7 @@ jobs_repo       = JobsRepo()
 users_repo      = UsersRepo()
 refresh_tokens_repo = RefreshTokensRepo()
 password_reset_tokens_repo = PasswordResetTokensRepo()
+login_attempts_repo = LoginAttemptsRepo()
 proposals_repo  = ProposalsRepo()
 campaigns_repo  = CampaignsRepo()
 opportunities_repo = OpportunitiesRepo()

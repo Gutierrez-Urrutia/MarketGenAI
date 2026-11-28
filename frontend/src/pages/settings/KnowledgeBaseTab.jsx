@@ -1,14 +1,16 @@
 /**
  * KnowledgeBaseTab — RF-VTA-01: the company loads its historical proposals
  * (PDF, Word, CSV, Excel) that the AI uses as RAG context when generating
- * new proposals. Mounted by Dashboard.jsx's Settings page ("knowledge" tab).
+ * new proposals and Sales enablement material. The base is shared: every user
+ * can upload, only a manager or admin can delete. Mounted by Dashboard.jsx's Settings page ("knowledge" tab).
  */
 import { useEffect, useRef, useState } from "react";
 import toast from "react-hot-toast";
 import { FileText, FileSpreadsheet, Trash2, UploadCloud, Loader2 } from "lucide-react";
 
-import { knowledgeApi } from "@/api/axios";
+import { authTokenStore, knowledgeApi } from "@/api/axios";
 import { useI18n } from "@/hooks/useI18n";
+import { canDeleteKnowledge } from "@/utils/permissions";
 
 const ACCEPT = ".pdf,.docx,.csv,.xlsx,.txt,.md";
 const SPREADSHEET_TYPES = new Set(["csv", "xlsx"]);
@@ -25,6 +27,7 @@ const formatSize = (bytes = 0) =>
 
 export default function KnowledgeBaseTab({ isDark }) {
   const { t } = useI18n();
+  const canDelete = canDeleteKnowledge(authTokenStore.getUser() || {});
   const inputRef = useRef(null);
   const [docs, setDocs] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -84,6 +87,7 @@ export default function KnowledgeBaseTab({ isDark }) {
       <div>
         <h2 className="text-sm font-semibold">{t("settings.kbTitle")}</h2>
         <p className="text-xs text-gray-500">{t("settings.kbDescription")}</p>
+        <p className="mt-1 text-xs text-gray-500">{t("settings.kbSharedNote")}</p>
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
@@ -121,9 +125,11 @@ export default function KnowledgeBaseTab({ isDark }) {
                       .filter(Boolean).join(" · ")}
                   </div>
                 </div>
-                <button onClick={() => remove(doc)} className="p-1 text-gray-400 hover:text-red-600" aria-label="delete">
-                  <Trash2 size={14} />
-                </button>
+                {canDelete && (
+                  <button onClick={() => remove(doc)} className="p-1 text-gray-400 hover:text-red-600" aria-label="delete">
+                    <Trash2 size={14} />
+                  </button>
+                )}
               </li>
             );
           })}

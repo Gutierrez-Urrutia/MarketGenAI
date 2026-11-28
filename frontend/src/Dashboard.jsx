@@ -72,7 +72,7 @@ export default function App() {
   const PAGES = {
     dashboard:  { label: t("sidebar.dashboard"),        icon: GridIcon,    component: DashboardPage },
     books:      { label: t("sidebar.books"),    icon: BookIcon,    component: ContentGeneratorPage },
-    opportunities: { label: t("sidebar.opportunities"),  icon: TargetIcon,  component: OpportunitiesPage },
+    opportunities: { label: t("sidebar.opportunities"),  icon: TargetIcon,  component: OpportunitiesPage, visible: false }, // oculto: el equipo no usa Oportunidades; el código y la API se conservan
     customers:  { label: t("sidebar.customers"),         icon: UsersIcon,   component: CustomersPage },
     campaign_brief: { label: "Campaign Brief", icon: TargetIcon, component: CampaignBriefPage },
     content:    { label: t("sidebar.contentLibrary"),   icon: FolderIcon,  component: ContentLibraryPage },

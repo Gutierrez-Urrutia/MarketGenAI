@@ -12,7 +12,8 @@ from urllib.parse import quote, urlencode
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
-from jose import JWTError, jwt
+import jwt
+from jwt import PyJWTError as JWTError
 
 from app.config import settings
 from app.dependencies.auth import CurrentUser, require_roles
@@ -328,7 +329,7 @@ async def microsoft_callback(
             # El id_token llega directo del endpoint de Microsoft por TLS (flujo de código): se comprueba de qué
             # directorio y para qué aplicación es; Entra ya impone el inquilino, esto es una segunda barrera.
             try:
-                claims = jwt.get_unverified_claims(token_body.get("id_token") or "")
+                claims = jwt.decode(token_body.get("id_token") or "", options={"verify_signature": False})
             except JWTError:
                 return _microsoft_error("microsoft_token_failed")
             if (

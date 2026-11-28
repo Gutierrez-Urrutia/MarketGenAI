@@ -9,7 +9,7 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict
 
-from jose import jwt
+import jwt
 
 from app.config import settings
 

@@ -5,14 +5,17 @@ from typing import Any, Dict, Optional
 
 from fastapi import Depends, HTTPException, Security, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from jose import JWTError, jwt
+import jwt
+from jwt import PyJWTError as JWTError
 from pydantic import BaseModel, Field
 
 from app.config import settings
 from app.core.rbac import is_manager
 from app.services.auth_service import JWT_ALGORITHM
 
-http_bearer = HTTPBearer(auto_error=True)
+# auto_error=False: con True, FastAPI responde 403 cuando falta la cabecera Authorization. RNF-01 exige 401 (sin sesión)
+# y 403 solo para «con sesión, sin permiso»; por eso la ausencia de credenciales se rechaza abajo, en verify_token.
+http_bearer = HTTPBearer(auto_error=False)
 
 
 class CurrentUser(BaseModel):
@@ -25,14 +28,16 @@ class CurrentUser(BaseModel):
 
 
 async def verify_token(
-    credentials: HTTPAuthorizationCredentials = Security(http_bearer),
+    credentials: Optional[HTTPAuthorizationCredentials] = Security(http_bearer),
 ) -> CurrentUser:
-    token = credentials.credentials
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
+    if credentials is None or not credentials.credentials:
+        raise credentials_exception
+    token = credentials.credentials
 
     try:
         payload: Dict[str, Any] = jwt.decode(

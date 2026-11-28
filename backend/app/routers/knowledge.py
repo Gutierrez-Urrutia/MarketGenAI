@@ -6,7 +6,9 @@ Endpoints:
   POST   /knowledge/documents                 — sube uno o varios archivos (pdf, docx, csv, xlsx, txt, md)
   DELETE /knowledge/documents/{doc_id}        — elimina un documento y sus fragmentos
 
-Cargar y eliminar requiere rol manager o admin; listar, cualquier usuario autenticado.
+La base de conocimiento es de la empresa: todos los usuarios autenticados pueden listar y cargar documentos, y la
+usan al generar propuestas y material de Sales enablement. Eliminar requiere rol manager o admin (un documento
+compartido no se modifica ni se borra por quien no administra la base).
 """
 from __future__ import annotations
 
@@ -42,7 +44,6 @@ def _public(doc: dict) -> dict:
 @router.get("/documents")
 async def list_documents(user: CurrentUser = Depends(get_current_user)):
     docs = await knowledge_documents_repo.list(
-        filters=[("userId", "==", user.sub)],
         order_by="createdAt", order_direction="DESCENDING", limit=rag_proposal_service.MAX_DOCS_PER_USER,
     )
     return {
@@ -61,7 +62,6 @@ async def upload_documents(
     user: CurrentUser = Depends(get_current_user),
 ):
     """Procesa cada archivo por separado: uno inválido no impide guardar los demás."""
-    require_role("manager")(user)
     if len(files) > MAX_FILES_PER_REQUEST:
         raise HTTPException(status_code=422, detail=f"Máximo {MAX_FILES_PER_REQUEST} archivos por solicitud.")
 
@@ -91,6 +91,4 @@ async def delete_document(doc_id: str, user: CurrentUser = Depends(get_current_u
     doc = await knowledge_documents_repo.get(doc_id)
     if not doc:
         raise HTTPException(status_code=404, detail="Documento no encontrado.")
-    if doc.get("userId") != user.sub:
-        raise HTTPException(status_code=403, detail="Access denied.")
     await rag_proposal_service.delete_document(doc_id)

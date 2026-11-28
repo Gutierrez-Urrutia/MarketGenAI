@@ -10,7 +10,8 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import RedirectResponse
 from google.auth.exceptions import DefaultCredentialsError
-from jose import JWTError, jwt
+import jwt
+from jwt import PyJWTError as JWTError
 from pydantic import BaseModel, Field
 
 from app.config import settings

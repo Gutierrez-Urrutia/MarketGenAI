@@ -103,7 +103,7 @@ export function useProposalTemplatePicker({ active = true } = {}) {
   };
 }
 
-export function ProposalTemplateFields({ picker }) {
+export function ProposalTemplateFields({ picker, children = null }) {
   const { t, language } = useI18n();
   const label = (key) => t(`proposalTemplatePicker.${key}`);
 
@@ -131,6 +131,7 @@ export function ProposalTemplateFields({ picker }) {
           {(picker.catalog?.industries || []).map((option) => <option key={option.value} value={option.value}>{catalogLabel(option, language)}</option>)}
         </Select>
       </Field>
+      {children}
       {picker.customVariables.length > 0 && (
         <div className="col-span-2">
           <Field label={label("templateVariables")} hint={label("templateVariablesHint")}>

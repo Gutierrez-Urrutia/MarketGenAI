@@ -296,3 +296,20 @@ describe("traducciones", () => {
     }
   });
 });
+
+describe("nueva propuesta desde el cliente (RF-VTA-03)", () => {
+  it("el botón de la fila y el de la ficha abren la propuesta con ese cliente elegido", async () => {
+    customersApi.list.mockResolvedValue(listOf([customer()]));
+    const onNavigate = vi.fn();
+    render(<CustomersPage onNavigate={onNavigate} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "customersPage.newProposal" }));
+    expect(onNavigate).toHaveBeenLastCalledWith("content", { openCreateContentModal: true, customer: expect.objectContaining({ id: "c1" }) });
+
+    fireEvent.click(screen.getByRole("button", { name: "customersPage.view" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "customersPage.newProposal" }));
+    expect(onNavigate).toHaveBeenCalledTimes(2);
+    expect(onNavigate).toHaveBeenLastCalledWith("content", { openCreateContentModal: true, customer: expect.objectContaining({ id: "c1" }) });
+  });
+});

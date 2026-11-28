@@ -1,8 +1,8 @@
 import { ArrowRightIcon, BookIcon, BriefIcon, CheckIcon, DownloadIcon, FileIcon, LayersIcon, LinkIcon, PenIcon, PlugIcon, PlusIcon, RefreshIcon, SaveIcon, Share2Icon, SparkIcon, TrashIcon, XIcon } from "@/components/dashboard/icons";
-import { Badge, Btn, Card, Field, Input, Select } from "@/components/dashboard/ui";
+import { Badge, Btn, Card, Field, FormRow, Input, Select } from "@/components/dashboard/ui";
 import { Footer } from "docx";
 import Modal from "@/components/ui/Modal";
-import { PREF_KEYS, getContentItemKey, getStoredPreference, readDeletedContentIds, readLocalContentProposals, saveLocalContentProposal, writeDeletedContentIds } from "@/utils/localStore";
+import { PREF_KEYS, getContentItemKey, getStoredPreference, readDeletedContentIds, deleteLocalContentProposal, isLocalProposalId, readLocalContentProposals, writeDeletedContentIds } from "@/utils/localStore";
 import {
   proposalStatusColorClass,
   proposalStatusErrorMessage,
@@ -12,6 +12,7 @@ import {
 import { ProposalStatusControl } from "@/features/proposals/ProposalStatusControl";
 import { SignedDocumentAttachment } from "@/features/proposals/SignedDocumentAttachment";
 import { ProposalVersionHistory } from "@/features/proposals/ProposalVersionHistory";
+import { CustomerPicker } from "@/features/proposals/CustomerPicker";
 import { isAdminUser } from "@/utils/permissions";
 import { ProgressModal } from "@/components/dashboard/ProgressModal";
 import { ProposalDocumentPreview } from "@/features/proposals/ProposalDocumentPreview";
@@ -134,6 +135,7 @@ export function ContentLibraryPage({ navigationState = {}, onNavigate = () => {}
     discount: 0,
   });
   const [customProposalTag, setCustomProposalTag] = useState("");
+  const [selectedCustomer, setSelectedCustomer] = useState(null); // RF-VTA-03: cliente propio al que se vincula la propuesta
   const [pricingRows, setPricingRows] = useState([
     { id: 1, service: "Discovery and Solution Design", description: "Customer context, requirements, and implementation plan.", quantity: 1, unitPrice: 1200 },
     { id: 2, service: "AI Workflow Implementation", description: "Configuration of the main automation and operational workflow.", quantity: 1, unitPrice: 3800 },
@@ -216,6 +218,7 @@ export function ContentLibraryPage({ navigationState = {}, onNavigate = () => {}
       discount: 0,
     });
     setCustomProposalTag("");
+    setSelectedCustomer(null);
     setPricingRows([
       { id: 1, service: "Discovery and Solution Design", description: "Customer context, requirements, and implementation plan.", quantity: 1, unitPrice: 1200 },
       { id: 2, service: "AI Workflow Implementation", description: "Configuration of the main automation and operational workflow.", quantity: 1, unitPrice: 3800 },
@@ -246,6 +249,8 @@ export function ContentLibraryPage({ navigationState = {}, onNavigate = () => {}
   useEffect(() => {
     if (navigationState.openCreateContentModal) {
       openCreateContentModal("Proposal");
+      // Desde la ficha de un cliente la propuesta llega con ese cliente ya elegido.
+      if (navigationState.customer) pickCustomer(navigationState.customer);
     }
   }, [navigationState.openCreateContentModal]);
 
@@ -685,6 +690,18 @@ export function ContentLibraryPage({ navigationState = {}, onNavigate = () => {}
   const allProposalTags = [...new Set([...defaultProposalTags, ...proposalTags])];
   const canContinueProposalSetup = proposalForm.name.trim() && proposalForm.customer.trim();
   const updateProposalForm = (field, value) => setProposalForm((current) => ({ ...current, [field]: value }));
+  // Elegir un cliente propio completa nombre, empresa, correo e industria (siguen editables) y vincula la propuesta (RF-VTA-03).
+  const pickCustomer = (customer) => {
+    setSelectedCustomer(customer);
+    if (!customer) return;
+    setProposalForm((current) => ({
+      ...current,
+      customer: customer.company || customer.name || current.customer,
+      customerCompany: customer.company || current.customerCompany,
+      customerEmail: customer.email || current.customerEmail,
+    }));
+    if (customer.industry) templatePicker.setIndustry(customer.industry);
+  };
   const updateContentAiForm = (field, value) => setContentAiForm((current) => ({ ...current, [field]: value }));
   const splitListInput = (value) => String(value || "").split(",").map((item) => item.trim()).filter(Boolean);
   const contentAiLabel = (key) => t(`contentLibrary.aiFields.${key}`);
@@ -1082,6 +1099,7 @@ export function ContentLibraryPage({ navigationState = {}, onNavigate = () => {}
     custom_prompt: proposalCustomPrompt,
     customer_name: proposalForm.customer,
     clientName: proposalForm.customer,
+    customerId: selectedCustomer?.id,
     clientEmail: proposalForm.customerEmail || undefined,
     clientCompany: proposalForm.customerCompany || undefined,
     template: templatePicker.templateName,
@@ -1092,13 +1110,46 @@ export function ContentLibraryPage({ navigationState = {}, onNavigate = () => {}
     total_amount: pricingTotal,
     structured_content: buildProposalStructure(title),
   });
+  // Cuerpo con el que se crea una propuesta nueva en el servidor (al guardar un borrador o al generar).
+  const buildNewProposalPayload = (title, structure) => ({
+    title,
+    description: contentDescription,
+    proposal_description: contentDescription,
+    detailed_description: detailedDescription,
+    team_sizing: teamSizing,
+    length: proposalLength,
+    language: platformGenerationLanguage,
+    custom_prompt: proposalCustomPrompt,
+    status: "draft",
+    customer_name: proposalForm.customer,
+    clientName: proposalForm.customer,
+    customerId: selectedCustomer?.id,
+    clientEmail: proposalForm.customerEmail || undefined,
+    clientCompany: proposalForm.customerCompany || undefined,
+    template: templatePicker.templateName,
+    ...templatePicker.persistenceFields(),
+    tags: proposalTags,
+    pricing_rows: pricingRows,
+    total_amount: pricingTotal,
+    structured_content: structure,
+  });
+  // Un borrador guardado solo en el navegador (id manual-proposal-…) no existe en el servidor: al regenerarlo o editarlo la API
+  // respondía «proposal not found». Al pasarlo al servidor se descarta la copia local.
+  const dropLocalDraft = (id) => {
+    if (!isLocalProposalId(id)) return;
+    deleteLocalContentProposal(id);
+    setProposals((current) => current.filter((proposal) => proposal.id !== id));
+  };
+  // ¿La propuesta que se está editando ya existe en el servidor?
+  const editingServerProposal = Boolean(structuredEditingProposalId) && !isLocalProposalId(structuredEditingProposalId);
+
   const saveCreateContentDraft = async () => {
     if (createType === "Proposal") {
       if (!isEmailFormatValid(proposalForm.customerEmail)) {
         setToast(createT.crmEmailInvalid);
         return;
       }
-      if (structuredEditingProposalId) {
+      if (editingServerProposal) {
         try {
           await updateProposal(structuredEditingProposalId, buildProposalPersistencePayload());
           setProposals((current) => current.map((proposal) => proposal.id === structuredEditingProposalId
@@ -1112,32 +1163,19 @@ export function ContentLibraryPage({ navigationState = {}, onNavigate = () => {}
         }
         return;
       }
-      const draft = {
-        id: `manual-proposal-${Date.now()}`,
-        title: proposalForm.name || contentTitle || "Proposal Draft",
-        type: "Proposal",
-        status: "draft",
-        description: contentDescription,
-        proposalDescription: contentDescription,
-        detailedDescription,
-        teamSizing,
-        length: proposalLength,
-        contentSource: proposalContentSource,
-        customerName: proposalForm.customer,
-        template: templatePicker.templateName,
-        ...templatePicker.persistenceFields(),
-        tags: proposalTags,
-        pricingRows,
-        lineItems: pricingRows.map(normalizeLineItem),
-        totalAmount: pricingTotal,
-        language: platformGenerationLanguage,
-        customPrompt: proposalCustomPrompt,
-        date: proposalForm.date,
-        content: "",
-        updated: "Today",
-      };
-      saveLocalContentProposal(draft);
-      setProposals((current) => [...current, draft]);
+      // El borrador se crea en el servidor, igual que al generar: así tiene un id real y se puede editar y regenerar.
+      const title = proposalForm.name || contentTitle || "Proposal Draft";
+      try {
+        const created = await createProposal(buildNewProposalPayload(title, buildProposalStructure(title)));
+        dropLocalDraft(structuredEditingProposalId);
+        upsertGeneratedProposal(created);
+        closeCreateContentModal();
+        setToast(createT.draftSaved);
+      } catch (error) {
+        console.error(error);
+        setToast(getApiErrorMessage(error, createT.draftCreationFailed));
+      }
+      return;
     }
     closeCreateContentModal();
     setToast(createT.draftSaved);
@@ -1317,6 +1355,7 @@ export function ContentLibraryPage({ navigationState = {}, onNavigate = () => {}
     contextPriority: ["proposalDescription", "customer", "tags", "title", "template"],
     clientName: proposalForm.customer,
     customer: proposalForm.customer,
+    customerId: selectedCustomer?.id,
     template: templatePicker.templateName,
     ...templatePicker.generationFields(),
     tags: proposalTags,
@@ -1459,7 +1498,7 @@ export function ContentLibraryPage({ navigationState = {}, onNavigate = () => {}
 
     let draftProposal = null;
     try {
-      if (structuredEditingProposalId) {
+      if (editingServerProposal) {
         draftProposal = { id: structuredEditingProposalId };
         setGenerationModal((current) => ({ ...current, draftId: structuredEditingProposalId }));
         await updateProposal(structuredEditingProposalId, buildProposalPersistencePayload(title));
@@ -1468,27 +1507,8 @@ export function ContentLibraryPage({ navigationState = {}, onNavigate = () => {}
         await completeProposalGeneration(generatedProposal, title, contextualStructure);
         return;
       }
-      draftProposal = await createProposal({
-        title,
-        description: contentDescription,
-        proposal_description: contentDescription,
-        detailed_description: detailedDescription,
-        team_sizing: teamSizing,
-        length: proposalLength,
-        language: platformGenerationLanguage,
-        custom_prompt: proposalCustomPrompt,
-        status: "draft",
-        customer_name: proposalForm.customer,
-        clientName: proposalForm.customer,
-        clientEmail: proposalForm.customerEmail || undefined,
-        clientCompany: proposalForm.customerCompany || undefined,
-        template: templatePicker.templateName,
-        ...templatePicker.persistenceFields(),
-        tags: proposalTags,
-        pricing_rows: pricingRows,
-        total_amount: pricingTotal,
-        structured_content: contextualStructure,
-      });
+      draftProposal = await createProposal(buildNewProposalPayload(title, contextualStructure));
+      dropLocalDraft(structuredEditingProposalId);
       upsertGeneratedProposal(draftProposal);
       setGenerationModal((current) => ({ ...current, draftId: draftProposal.id }));
       await advanceProposalProgressToPreview();
@@ -2366,7 +2386,7 @@ const filtered = allItems.filter((item) => {
         </Field>
 
         {createType === "Proposal" && (
-          <div className="grid grid-cols-3 gap-1">
+          <div className="mb-[18px] grid grid-cols-3 gap-1">
             {[createT.proposalDetails, createT.servicesPricing, createT.reviewProposal].map((label, index) => (
               <button
                 key={label}
@@ -2397,43 +2417,6 @@ const filtered = allItems.filter((item) => {
             onChange={(e) => createType === "Proposal" ? updateProposalForm("name", e.target.value) : setContentTitle(e.target.value)}
           />
         </Field>}
-
-        {createType === "Proposal" && wizardStep === 1 && (
-          <div className="space-y-1.5">
-          <Field label={createT.title}>
-            <Input
-              placeholder={`e.g. "${createT.titleExample}"`}
-              value={proposalForm.name}
-              onChange={(e) => updateProposalForm("name", e.target.value)}
-            />
-          </Field>
-          <Field label={createT.proposalDescription}>
-            <textarea
-              className="w-full border border-gray-300 rounded-lg px-3 py-4 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none h-20"
-              placeholder={createT.proposalDescriptionPlaceholder}
-              value={contentDescription}
-              onChange={(e) => setContentDescription(e.target.value)}
-            />
-          </Field>
-          <div className="max-w-xs">
-            <Field label={createT.proposalLanguage}>
-              <Select
-                value={proposalLanguage}
-                onChange={(e) => {
-                  setProposalLanguage(e.target.value);
-                  setProposalLanguageManuallySelected(true);
-                }}
-              >
-                {Object.entries(proposalLanguageLabels).map(([value, label]) => (
-                  <option key={value} value={value}>
-                    {label}{!proposalLanguageManuallySelected && proposalLanguage === value ? ` (${createT.detected})` : ""}
-                  </option>
-                ))}
-              </Select>
-            </Field>
-          </div>
-          </div>
-        )}
 
         {isAiContentType && createType !== "Proposal" && contentAiStep === 1 && (
           <div className="max-w-xs">
@@ -2470,23 +2453,64 @@ const filtered = allItems.filter((item) => {
         )}
 
         {createType === "Proposal" && wizardStep === 1 && (
-          <div className="space-y-1.5">
-                <div className="grid grid-cols-2 gap-1.5">
-                <Field label={createT.customer}>
-                  <Input value={proposalForm.customer} onChange={(e) => updateProposalForm("customer", e.target.value)} placeholder={createT.customerPlaceholder} />
+          <div>
+                {/* Sin space-y: cada Field (y cada FormRow) trae su margen inferior y así todos los espacios son iguales. */}
+                <Field label={createT.title}>
+                  <Input
+                    placeholder={`e.g. "${createT.titleExample}"`}
+                    value={proposalForm.name}
+                    onChange={(e) => updateProposalForm("name", e.target.value)}
+                  />
                 </Field>
-                </div>
-                <div className="grid grid-cols-2 gap-1.5">
-                  <ProposalTemplateFields picker={templatePicker} />
-                </div>
-                <div className="grid grid-cols-2 gap-1.5">
+                <Field label={createT.proposalDescription}>
+                  <textarea
+                    className="w-full border border-gray-300 rounded-lg px-3 py-4 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none h-20"
+                    placeholder={createT.proposalDescriptionPlaceholder}
+                    value={contentDescription}
+                    onChange={(e) => setContentDescription(e.target.value)}
+                  />
+                </Field>
+
+                {/* Cliente: buscador de clientes guardados, luego sus datos de contacto (RF-VTA-03) */}
+                {!structuredEditingProposalId && (
+                  <Field label={t("opportunitiesPage.proposalModal.customerPick")}>
+                    <div data-testid="content-customer-picker">
+                      <CustomerPicker selected={selectedCustomer} onSelect={pickCustomer} />
+                    </div>
+                  </Field>
+                )}
+                <FormRow>
+                  <Field label={createT.customer}>
+                    <Input value={proposalForm.customer} onChange={(e) => updateProposalForm("customer", e.target.value)} placeholder={createT.customerPlaceholder} />
+                  </Field>
+                  <Field label="Client company">
+                    <Input value={proposalForm.customerCompany} onChange={(e) => updateProposalForm("customerCompany", e.target.value)} placeholder="Acme Corp" />
+                  </Field>
+                </FormRow>
                 <Field label="Client email" hint="Used to send this proposal to your CRM">
                   <Input type="email" value={proposalForm.customerEmail} onChange={(e) => updateProposalForm("customerEmail", e.target.value)} placeholder="client@company.com" />
                 </Field>
-                <Field label="Client company">
-                  <Input value={proposalForm.customerCompany} onChange={(e) => updateProposalForm("customerCompany", e.target.value)} placeholder="Acme Corp" />
-                </Field>
-                </div>
+
+                {/* Plantilla, línea de servicio, industria e idioma: dos por fila, controles alineados por abajo */}
+                <FormRow>
+                  <ProposalTemplateFields picker={templatePicker}>
+                    <Field label={createT.proposalLanguage}>
+                      <Select
+                        value={proposalLanguage}
+                        onChange={(e) => {
+                          setProposalLanguage(e.target.value);
+                          setProposalLanguageManuallySelected(true);
+                        }}
+                      >
+                        {Object.entries(proposalLanguageLabels).map(([value, label]) => (
+                          <option key={value} value={value}>
+                            {label}{!proposalLanguageManuallySelected && proposalLanguage === value ? ` (${createT.detected})` : ""}
+                          </option>
+                        ))}
+                      </Select>
+                    </Field>
+                  </ProposalTemplateFields>
+                </FormRow>
                 <Field label={createT.tags}>
                   <div className="rounded-xl border border-gray-200 bg-gray-50 p-2.5">
                     <div className="flex flex-wrap gap-1">
@@ -2598,8 +2622,8 @@ const filtered = allItems.filter((item) => {
                   <tr>
                     <th className="px-2 py-4 text-left">{createT.serviceUnit}</th>
                     <th className="px-2 py-4 text-left">{createT.serviceDescription}</th>
-                    <th className="px-2 py-4 text-left">{createT.qty}</th>
-                    <th className="px-2 py-4 text-left">{createT.unitPrice}</th>
+                    <th className="py-4 pl-2 pr-5 text-right">{createT.qty}</th>
+                    <th className="py-4 pl-2 pr-5 text-right">{createT.unitPrice}</th>
                     <th className="px-2 py-4 text-right">{createT.subtotal}</th>
                     <th className="px-2 py-4" />
                   </tr>
@@ -2612,8 +2636,8 @@ const filtered = allItems.filter((item) => {
                     <tr key={row.id} className="border-t border-gray-100">
                       <td className="p-2"><Input value={row.service} onChange={(e) => updatePricingRow(row.id, "service", e.target.value)} /></td>
                       <td className="p-2"><Input value={row.description} onChange={(e) => updatePricingRow(row.id, "description", e.target.value)} /></td>
-                      <td className="p-2 w-20"><Input type="number" min="0" value={row.quantity} onChange={(e) => updatePricingRow(row.id, "quantity", e.target.value)} /></td>
-                      <td className="p-2 w-28"><Input type="number" min="0" value={row.unitPrice} onChange={(e) => updatePricingRow(row.id, "unitPrice", e.target.value)} /></td>
+                      <td className="p-2 w-20"><Input type="number" min="0" className="text-right" value={row.quantity} onChange={(e) => updatePricingRow(row.id, "quantity", e.target.value)} /></td>
+                      <td className="p-2 w-28"><Input type="number" min="0" className="text-right" value={row.unitPrice} onChange={(e) => updatePricingRow(row.id, "unitPrice", e.target.value)} /></td>
                       <td className="p-2 text-right font-semibold text-gray-700">{formatUsd(Number(row.quantity || 0) * Number(row.unitPrice || 0))}</td>
                       <td className="p-2"><button type="button" onClick={() => removePricingRow(row.id)} className="p-1 rounded hover:bg-red-50"><TrashIcon size={12} className="text-red-500" /></button></td>
                     </tr>

@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
 
-from jose import jwt
+import jwt
 
 from app.config import settings
 from app.services.auth_service import JWT_ALGORITHM

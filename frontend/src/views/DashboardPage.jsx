@@ -170,8 +170,8 @@ export function DashboardPage({ onNavigate, setCampaignFlow = () => {} }) {
           onNavigate={onNavigate}
         />
       )}
-      <div className="flex items-center justify-between">
-        <div>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="min-w-0">
           <h1 className="text-xl font-bold text-gray-900">{t("dashboard.title")}</h1>
           <p className="text-xs text-gray-500">{t("dashboard.subtitle")}</p>
           <div className="mt-1 flex items-center gap-1 text-xs text-gray-400">
@@ -183,7 +183,7 @@ export function DashboardPage({ onNavigate, setCampaignFlow = () => {} }) {
             />
           </div>
         </div>
-        <div className="flex gap-1">
+        <div className="flex flex-wrap gap-1">
           <Btn
             variant="secondary"
             icon={<RefreshIcon size={13} className={refreshing ? "animate-spin" : ""} />}
@@ -192,7 +192,7 @@ export function DashboardPage({ onNavigate, setCampaignFlow = () => {} }) {
           >
             {t("dashboard.refresh")}
           </Btn>
-          <Btn variant="teal" icon={<PlayIcon size={13} />}>{t("dashboard.runPipeline")}</Btn>
+          <Btn variant="teal" icon={<PlayIcon size={13} />} onClick={() => navigate("leads")}>{t("dashboard.runPipeline")}</Btn>
         </div>
       </div>
 

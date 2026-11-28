@@ -75,6 +75,10 @@ class Settings(BaseSettings):
     app_secret_key: str = "change-me-in-production"
     access_token_expire_minutes: int = 30
     refresh_token_expire_days: int = 14
+    # RNF-01: bloqueo temporal de una cuenta tras demasiados inicios de sesión fallidos (por correo, exista o no la cuenta).
+    login_max_attempts: int = 5
+    login_attempt_window_minutes: int = 15
+    login_lock_minutes: int = 15
     password_reset_token_expire_minutes: int = 60
     local_dev_auth_enabled: bool = True
     local_dev_auth_email: str = "admin@noondalton.com"

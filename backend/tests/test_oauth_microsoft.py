@@ -6,7 +6,7 @@ from urllib.parse import parse_qs, urlparse
 
 import httpx
 import pytest
-from jose import jwt
+import jwt
 from starlette.requests import Request
 
 from app.routers import oauth

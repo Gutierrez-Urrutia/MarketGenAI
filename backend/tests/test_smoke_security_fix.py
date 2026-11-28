@@ -106,6 +106,8 @@ async def test_reports_dashboard_scoped_by_user(client):
         patch("app.routers.reports.books_repo.count", new_callable=AsyncMock, return_value=0),
         patch("app.routers.reports.proposals_repo.count", new_callable=AsyncMock, return_value=0),
         patch("app.routers.reports.customers_repo.count", new_callable=AsyncMock, return_value=0) as mock_count,
+        patch("app.routers.reports.leads_repo.count", new_callable=AsyncMock, return_value=0),
+        patch("app.routers.reports.contacts_repo.count", new_callable=AsyncMock, return_value=0),
         patch("app.routers.reports.proposals_repo.list", new_callable=AsyncMock, return_value=[]),
     ):
         resp = await client.get("/api/v1/reports/dashboard")
@@ -174,3 +176,21 @@ async def test_social_connect_with_auth(client):
     resp = await client.post("/api/v1/settings/social/twitter/connect")
     assert resp.status_code == 200
     assert resp.json()["platform"] == "twitter"
+
+
+@pytest.mark.asyncio
+async def test_reports_dashboard_counts_pipeline_leads_and_contacts(client):
+    """CP-181: «Detectados» son los leads del pipeline y «Investigados» sus contactos, de este usuario (no clientes+propuestas+libros)."""
+    with (
+        patch("app.routers.reports.books_repo.count", new_callable=AsyncMock, return_value=4),
+        patch("app.routers.reports.proposals_repo.count", new_callable=AsyncMock, return_value=13),
+        patch("app.routers.reports.customers_repo.count", new_callable=AsyncMock, return_value=6),
+        patch("app.routers.reports.leads_repo.count", new_callable=AsyncMock, return_value=36) as leads_count,
+        patch("app.routers.reports.contacts_repo.count", new_callable=AsyncMock, return_value=9) as contacts_count,
+        patch("app.routers.reports.proposals_repo.list", new_callable=AsyncMock, return_value=[]),
+    ):
+        body = (await client.get("/api/v1/reports/dashboard")).json()
+    assert body["detected"] == 36 and body["researched"] == 9
+    assert body["totals"]["leads"] == 36 and body["totals"]["contacts"] == 9
+    assert leads_count.call_args.kwargs["filters"] == [("user_id", "==", FAKE_USER_SUB)]
+    assert contacts_count.call_args.kwargs["filters"] == [("user_id", "==", FAKE_USER_SUB)]

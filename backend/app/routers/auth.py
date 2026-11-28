@@ -35,6 +35,7 @@ from app.services.auth_service import (
     utc_now,
     verify_password,
 )
+from app.services import login_throttle_service
 from app.services.firestore_service import (
     password_reset_tokens_repo,
     refresh_tokens_repo,
@@ -149,10 +150,27 @@ async def register(request: Request, body: RegisterRequest = Body(...)) -> Login
     return await _issue_session(user)
 
 
+def _locked_http(exc: login_throttle_service.LoginLocked) -> HTTPException:
+    """429 ACCOUNT_LOCKED (RNF-01 / CP-162): la cuenta quedó bloqueada un rato por demasiados intentos fallidos."""
+    return HTTPException(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        detail={
+            "code": "ACCOUNT_LOCKED",
+            "message": f"Demasiados intentos fallidos. Intenta de nuevo en {exc.retry_after_minutes} minuto(s).",
+            "retryAfterSeconds": exc.retry_after_seconds,
+        },
+        headers={"Retry-After": str(exc.retry_after_seconds)},
+    )
+
+
 @router.post("/login", response_model=LoginResponse, status_code=status.HTTP_200_OK)
 @limiter.limit("10/minute")
 async def login(request: Request, body: LoginRequest = Body(...)) -> LoginResponse:
     identifier = (body.usernameOrEmail or "").strip()
+    try:
+        await login_throttle_service.ensure_not_locked(identifier)
+    except login_throttle_service.LoginLocked as exc:
+        raise _locked_http(exc) from exc
     logger.info(
         "🔐 [Auth Login] Intento de login: identifier='%s', local_dev_enabled=%s, app_env='%s'",
         identifier,
@@ -162,6 +180,7 @@ async def login(request: Request, body: LoginRequest = Body(...)) -> LoginRespon
     local_user = _authenticate_local_dev_user(identifier, body.password)
     if local_user:
         logger.info("✅ [Auth Login] Autenticación local exitosa para: '%s'", local_user.get("email"))
+        await login_throttle_service.record_success(identifier)
         return await _issue_local_dev_session(local_user)
 
     logger.info("ℹ️ [Auth Login] No es usuario local dev. Buscando en Firestore email: '%s'", identifier.lower())
@@ -192,6 +211,10 @@ async def login(request: Request, body: LoginRequest = Body(...)) -> LoginRespon
 
     if not user or not verify_password(body.password, user.get("passwordHash", "")):
         logger.warning("❌ [Auth Login] Credenciales incorrectas para: '%s'", identifier)
+        try:
+            await login_throttle_service.record_failure(identifier)
+        except login_throttle_service.LoginLocked as exc:
+            raise _locked_http(exc) from exc
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail={"code": "INVALID_CREDENTIALS", "message": "Email o contrasena incorrectos."},
@@ -203,6 +226,7 @@ async def login(request: Request, body: LoginRequest = Body(...)) -> LoginRespon
             detail={"code": "ACCOUNT_DISABLED", "message": "La cuenta esta deshabilitada."},
         )
     logger.info("✅ [Auth Login] Login Firestore exitoso para ID='%s'", user.get("id"))
+    await login_throttle_service.record_success(identifier)
     return await _issue_session(user)
 
 
@@ -272,11 +296,14 @@ async def update_user_roles(
 ):
     require_role("admin")(current_user)
 
-    new_roles = body.get("roles", [])
+    new_roles = body.get("roles")
     valid_roles = {"admin", "manager", "user"}
-    if not all(r in valid_roles for r in new_roles):
+    if not isinstance(new_roles, list) or not new_roles or not all(isinstance(r, str) and r in valid_roles for r in new_roles):
         raise HTTPException(status_code=400, detail="Invalid roles")
+    new_roles = list(dict.fromkeys(new_roles))   # sin repetidos, conservando el orden
 
+    if not await users_repo.get(user_id):
+        raise HTTPException(status_code=404, detail="User not found")
     await users_repo.update(user_id, {"roles": new_roles})
     return {"message": "Roles updated", "roles": new_roles}
 

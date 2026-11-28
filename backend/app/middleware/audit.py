@@ -2,7 +2,8 @@ from datetime import datetime, timezone
 import logging
 import uuid
 
-from jose import JWTError, jwt
+import jwt
+from jwt import PyJWTError as JWTError
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 

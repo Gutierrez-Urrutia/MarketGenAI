@@ -88,7 +88,7 @@ class TestCP100:
         assert resp.status_code == 422
         assert resp.json()["detail"]["failed"][0]["error"] == "Máximo de 200 documentos alcanzado; elimina alguno."
         create.assert_not_called()
-        assert lst.call_args.kwargs["filters"] == [("userId", "==", FAKE_USER_SUB)]  # cuenta solo los del usuario
+        assert "filters" not in lst.call_args.kwargs  # el tope cuenta los documentos de toda la empresa
 
     async def test_CP_100_con_199_documentos_todavia_se_puede_subir_uno_mas(self, client, manager):
         casi = [_fake_doc(i) for i in range(199)]

@@ -140,6 +140,16 @@ describe("CatalogPage · lista", () => {
     expect(await screen.findByText("Mesa de ayuda")).toBeTruthy();
   });
 
+  it("por defecto lista solo los servicios activos y «Todos» sigue disponible", async () => {
+    render(<CatalogPage />);
+    await screen.findByText("catalogPage.empty"); // lista vacía sin filtros: no es el aviso de «sin resultados»
+    expect(catalogApi.listServices).toHaveBeenCalledWith(expect.objectContaining({ active: true }));
+    expect(screen.getByLabelText("catalogPage.status").value).toBe("active");
+
+    fireEvent.change(screen.getByLabelText("catalogPage.status"), { target: { value: "all" } });
+    await waitFor(() => expect(catalogApi.listServices).toHaveBeenLastCalledWith(expect.not.objectContaining({ active: expect.anything() })));
+  });
+
   it("PA-06: la búsqueda y los filtros de estado y tipo llegan al servidor", async () => {
     render(<CatalogPage />);
     await screen.findByText("catalogPage.empty");

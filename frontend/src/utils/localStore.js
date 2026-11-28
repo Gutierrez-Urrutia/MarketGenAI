@@ -77,6 +77,18 @@ export const saveLocalContentProposal = (proposal) => {
   return next;
 };
 
+// Borradores de propuesta guardados solo en el navegador (id `manual-proposal-<fecha>`): no existen en el servidor.
+export const LOCAL_PROPOSAL_ID_PREFIX = "manual-proposal-";
+export const isLocalProposalId = (id) => String(id || "").startsWith(LOCAL_PROPOSAL_ID_PREFIX);
+
+export const deleteLocalContentProposal = (id) => {
+  const next = readLocalContentProposals().filter((item) => item.id !== id);
+  writeLocalContentProposals(next);
+  window.dispatchEvent(new CustomEvent("marketgen:proposal-updated"));
+  window.dispatchEvent(new CustomEvent("marketgen:content-library-updated"));
+  return next;
+};
+
 export const readLocalCampaigns = () => {
   try {
     const stored = JSON.parse(localStorage.getItem(LOCAL_CAMPAIGNS_KEY) || "[]");

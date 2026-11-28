@@ -16,11 +16,13 @@ import { useI18n } from "@/hooks/useI18n";
 const PAGE_SIZE = 20;
 const filterClass = "px-3 py-2 text-sm border border-slate-300 rounded-lg bg-white text-slate-900 focus:outline-none focus:ring-2 focus:ring-primary-500";
 
-export function CustomersPage() {
+export function CustomersPage({ onNavigate = () => {} } = {}) {
   const { t } = useI18n();
   const tRef = useRef(t); // useI18n devuelve un t nuevo en cada render: no debe disparar la recarga
   tRef.current = t;
   const options = useCustomerOptions();
+  // RF-VTA-03: la propuesta nueva se abre en la biblioteca con este cliente ya elegido.
+  const createProposalFor = (customer) => onNavigate("content", { openCreateContentModal: true, customer });
 
   const [customers, setCustomers] = useState([]);
   const [total, setTotal] = useState(0);
@@ -167,6 +169,7 @@ export function CustomersPage() {
                 <td className="px-3 py-2 text-right">
                   <div className="inline-flex gap-2">
                     <Button size="sm" variant="secondary" onClick={() => setDetailCustomer(customer)}>{t("customersPage.view")}</Button>
+                    <Button size="sm" variant="secondary" onClick={() => createProposalFor(customer)}>{t("customersPage.newProposal")}</Button>
                     <Button size="sm" variant="secondary" onClick={() => setFormCustomer(customer)}>{t("customersPage.edit")}</Button>
                     <Button size="sm" variant="secondary" onClick={() => { setToDelete(customer); setDeleteError(""); }}>{t("customersPage.delete")}</Button>
                   </div>
@@ -199,6 +202,7 @@ export function CustomersPage() {
         onClose={() => setDetailCustomer(null)}
         customer={detailCustomer}
         options={options}
+        onCreateProposal={createProposalFor}
       />
       <CustomerImportModal open={importOpen} onClose={() => setImportOpen(false)} onImported={load} />
 

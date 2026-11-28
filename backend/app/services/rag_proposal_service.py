@@ -89,10 +89,11 @@ async def ingest_document(
     service: str | None = None,
     client: str | None = None,
 ) -> dict[str, Any]:
-    """Extrae, fragmenta e indexa un archivo. Lanza DocumentExtractionError si no es válido."""
-    existing = await knowledge_documents_repo.list(
-        filters=[("userId", "==", user_id)], limit=MAX_DOCS_PER_USER + 1
-    )
+    """Extrae, fragmenta e indexa un archivo. Lanza DocumentExtractionError si no es válido.
+
+    La base de conocimiento es de la empresa: el documento lo ven y lo usan todos los usuarios.
+    `user_id` queda solo como quien lo subió (trazabilidad)."""
+    existing = await knowledge_documents_repo.list(limit=MAX_DOCS_PER_USER + 1)
     if len(existing) >= MAX_DOCS_PER_USER:
         raise ValueError(f"Máximo de {MAX_DOCS_PER_USER} documentos alcanzado; elimina alguno.")
 
@@ -204,18 +205,16 @@ async def retrieve_sources(
     extra_query: str = "",
     min_coverage: float = 0.0,
 ) -> list[dict[str, str]]:
-    """Fragmentos más relevantes del usuario como [{docId, title, text}], dentro del presupuesto
-    de caracteres. Lista vacía si no hay documentos relevantes."""
+    """Fragmentos más relevantes de la base de conocimiento de la empresa como [{docId, title, text}],
+    dentro del presupuesto de caracteres. Lista vacía si no hay documentos relevantes.
+
+    Los documentos son compartidos por todos los usuarios; `user_id` solo exige una sesión válida."""
     if not user_id:
         return []
-    docs = await knowledge_documents_repo.list(
-        filters=[("userId", "==", user_id)], limit=MAX_DOCS_PER_USER
-    )
+    docs = await knowledge_documents_repo.list(limit=MAX_DOCS_PER_USER)
     if not docs:
         return []
-    chunks = await knowledge_chunks_repo.list(
-        filters=[("userId", "==", user_id)], limit=_MAX_CHUNKS_SCANNED
-    )
+    chunks = await knowledge_chunks_repo.list(limit=_MAX_CHUNKS_SCANNED)
     docs_by_id = {d["id"]: d for d in docs}
     query = " ".join(filter(None, [service_type, extra_query, client_name]))
     top = rank_chunks(query, chunks, docs_by_id, client_name=client_name, min_coverage=min_coverage, focus_query=service_type)
